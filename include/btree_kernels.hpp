@@ -54,7 +54,7 @@ __global__ void concurrent_find_erase_kernel_versioned(const key_type* find_keys
 
   // operations tile
   auto block = cg::this_thread_block();
-  auto tile  = cg::tiled_partition<btree::branching_factor>(block);
+  auto tile  = cg::tiled_partition<btree::cg_tile_size>(block);
 
   // allocator
   using allocator_type = device_allocator_context<typename btree::allocator_type>;
@@ -177,7 +177,7 @@ __global__ void concurrent_insert_range_kernel(const key_type* keys,
 
   // operations tile
   auto block = cg::this_thread_block();
-  auto tile  = cg::tiled_partition<btree::branching_factor>(block);
+  auto tile  = cg::tiled_partition<btree::cg_tile_size>(block);
 
   // allocator
   using allocator_type = device_allocator_context<typename btree::allocator_type>;
@@ -268,8 +268,8 @@ __global__ void concurrent_insert_range_kernel(const key_type* keys,
              lower_bound);
 #endif
 
-      auto tile_id              = thread_id / btree::branching_factor;
-      auto first_tile_thread_id = tile_id * btree::branching_factor;
+      auto tile_id              = thread_id / btree::cg_tile_size;
+      auto first_tile_thread_id = tile_id * btree::cg_tile_size;
 
       auto work_queue = tile.ballot(to_find);
       uint32_t timestamp;  // one timestamp per find tile
@@ -318,9 +318,9 @@ __global__ void range_query_kernel(const key_type* lower_bounds,
   auto thread_id = threadIdx.x + blockIdx.x * blockDim.x;
 
   auto block                = cg::this_thread_block();
-  auto tile                 = cg::tiled_partition<btree::branching_factor>(block);
-  auto tile_id              = thread_id / btree::branching_factor;
-  auto first_tile_thread_id = tile_id * btree::branching_factor;
+  auto tile                 = cg::tiled_partition<btree::cg_tile_size>(block);
+  auto tile_id              = thread_id / btree::cg_tile_size;
+  auto first_tile_thread_id = tile_id * btree::cg_tile_size;
   if ((thread_id - tile.thread_rank()) >= keys_count) { return; }
 
   auto lower_bound = btree::invalid_key;
@@ -367,7 +367,7 @@ __global__ void insert_in_place_kernel(const key_type* keys,
                                        btree tree) {
   auto thread_id = threadIdx.x + blockIdx.x * blockDim.x;
   auto block     = cg::this_thread_block();
-  auto tile      = cg::tiled_partition<btree::branching_factor>(block);
+  auto tile      = cg::tiled_partition<btree::cg_tile_size>(block);
 
   if ((thread_id - tile.thread_rank()) >= keys_count) { return; }
 
@@ -404,7 +404,7 @@ __global__ void insert_out_of_place_kernel(const key_type* keys,
                                            const size_type num_insertions,
                                            btree tree) {
   auto block                         = cg::this_thread_block();
-  auto tile                          = cg::tiled_partition<btree::branching_factor>(block);
+  auto tile                          = cg::tiled_partition<btree::cg_tile_size>(block);
   auto block_id                      = blockIdx.x;
   auto block_size                    = blockDim.x;
   unsigned insertion_blocks          = gridDim.x;
@@ -473,7 +473,7 @@ __global__ void insert_out_of_place_kernel(const key_type* keys,
 template <typename btree>
 __global__ void take_snapshot_kernel(btree tree) {
   auto block = cg::this_thread_block();
-  auto tile  = cg::tiled_partition<btree::branching_factor>(block);
+  auto tile  = cg::tiled_partition<btree::cg_tile_size>(block);
   tree.take_snapshot(tile);
 }
 
@@ -489,7 +489,7 @@ __global__ void find_kernel(const key_type* keys,
   auto thread_id = threadIdx.x + blockIdx.x * blockDim.x;
 
   auto block = cg::this_thread_block();
-  auto tile  = cg::tiled_partition<btree::branching_factor>(block);
+  auto tile  = cg::tiled_partition<btree::cg_tile_size>(block);
 
   if ((thread_id - tile.thread_rank()) >= keys_count) { return; }
 
@@ -525,7 +525,7 @@ __global__ void find_kernel(const key_type* keys,
 template <typename btree>
 __global__ void initialize_kernel(btree tree) {
   auto block = cg::this_thread_block();
-  auto tile  = cg::tiled_partition<btree::branching_factor>(block);
+  auto tile  = cg::tiled_partition<btree::cg_tile_size>(block);
 
   using allocator_type = typename btree::device_allocator_context_type;
   allocator_type allocator{tree.allocator_, tile};
@@ -542,7 +542,7 @@ __global__ void find_kernel(const key_type* keys,
   auto thread_id  = threadIdx.x + blockIdx.x * blockDim.x;
 
   auto block = cg::this_thread_block();
-  auto tile  = cg::tiled_partition<btree::branching_factor>(block);
+  auto tile  = cg::tiled_partition<btree::cg_tile_size>(block);
 
   if ((thread_id - tile.thread_rank()) >= keys_count) { return; }
 
@@ -584,9 +584,9 @@ __global__ void range_query_kernel(const key_type* lower_bounds,
   auto thread_id = threadIdx.x + blockIdx.x * blockDim.x;
 
   auto block                = cg::this_thread_block();
-  auto tile                 = cg::tiled_partition<btree::branching_factor>(block);
-  auto tile_id              = thread_id / btree::branching_factor;
-  auto first_tile_thread_id = tile_id * btree::branching_factor;
+  auto tile                 = cg::tiled_partition<btree::cg_tile_size>(block);
+  auto tile_id              = thread_id / btree::cg_tile_size;
+  auto first_tile_thread_id = tile_id * btree::cg_tile_size;
   if ((thread_id - tile.thread_rank()) >= keys_count) { return; }
 
   auto lower_bound = btree::invalid_key;
@@ -635,7 +635,7 @@ __global__ void erase_kernel(const key_type* keys,
   auto thread_id = threadIdx.x + blockIdx.x * blockDim.x;
 
   auto block = cg::this_thread_block();
-  auto tile  = cg::tiled_partition<btree::branching_factor>(block);
+  auto tile  = cg::tiled_partition<btree::cg_tile_size>(block);
 
   if ((thread_id - tile.thread_rank()) >= keys_count) { return; }
 
@@ -694,7 +694,7 @@ __global__ void concurrent_find_erase_kernel_blink(const key_type* find_keys,
 
   // operations tile
   auto block = cg::this_thread_block();
-  auto tile  = cg::tiled_partition<btree::branching_factor>(block);
+  auto tile  = cg::tiled_partition<btree::cg_tile_size>(block);
 
   // allocator
   using allocator_type = device_allocator_context<typename btree::allocator_type>;
@@ -794,7 +794,7 @@ __global__ void concurrent_insert_range_kernel_blink(const key_type* keys,
 
   // operations tile
   auto block = cg::this_thread_block();
-  auto tile  = cg::tiled_partition<btree::branching_factor>(block);
+  auto tile  = cg::tiled_partition<btree::cg_tile_size>(block);
 
   // allocator
   using allocator_type = device_allocator_context<typename btree::allocator_type>;
@@ -847,8 +847,8 @@ __global__ void concurrent_insert_range_kernel_blink(const key_type* keys,
         to_find     = true;
       }
 
-      auto tile_id              = thread_id / btree::branching_factor;
-      auto first_tile_thread_id = tile_id * btree::branching_factor;
+      auto tile_id              = thread_id / btree::cg_tile_size;
+      auto first_tile_thread_id = tile_id * btree::cg_tile_size;
 
       auto work_queue = tile.ballot(to_find);
 
@@ -881,7 +881,7 @@ __global__ void insert_kernel(const key_type* keys,
                               btree tree) {
   auto thread_id = threadIdx.x + blockIdx.x * blockDim.x;
   auto block     = cg::this_thread_block();
-  auto tile      = cg::tiled_partition<btree::branching_factor>(block);
+  auto tile      = cg::tiled_partition<btree::cg_tile_size>(block);
 
   if ((thread_id - tile.thread_rank()) >= keys_count) { return; }
 
