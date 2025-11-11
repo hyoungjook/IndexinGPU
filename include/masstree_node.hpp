@@ -53,7 +53,7 @@ struct masstree_node {
     is_locked_ = false;
     is_intermediate_ = false;
     has_sibling_ = false;
-    num_keys_ = 1; // zero as sentinel?
+    num_keys_ = 0;
     write_metadata_to_registers();
   }
 
@@ -136,8 +136,8 @@ struct masstree_node {
     return unset_metadata_bit(value);
   }
   DEVICE_QUALIFIER bool key_is_in_upperhalf(const key_type& key) const {
-    auto next_location = find_next_location(key);
-    return next_location >= half_node_width_;
+    auto key_at_upper_half = get_key_from_location(half_node_width_);
+    return (key >= key_at_upper_half);
   }
 
   DEVICE_QUALIFIER int find_key_location_in_node(const key_type& key) const {
@@ -276,6 +276,11 @@ struct masstree_node {
       lane_elem_ = right_sibling_index;
     }
 
+    // first key of intermediate node is always zero
+    if (is_intermediate_ && tile_.thread_rank() == get_key_lane_from_location(0)) {
+      right_sibling_elem = 0;
+    }
+
     // create right sibling node
     masstree_node right_sibling_node =
         masstree_node(right_sibling_ptr, tile_, right_sibling_elem, make_sibling_locked, is_intermediate_, has_sibling_, right_num_keys);
@@ -299,6 +304,9 @@ struct masstree_node {
                                                    elem_type* parent_ptr,
                                                    const bool make_sibling_locked = false) {
     // We assume here that the parent is locked
+    
+    // get pivot_key here in case it's cleared in do_split() for intermediate node
+    auto pivot_key = get_key_from_location(half_node_width_);
     auto split_result = do_split(right_sibling_index, right_sibling_ptr, make_sibling_locked);
 
     // Update parent
@@ -306,7 +314,6 @@ struct masstree_node {
     parent_node.load(cuda_memory_order::memory_order_relaxed);
 
     // update the parent
-    auto pivot_key = split_result.get_key_from_location(0);
     parent_node.insert(pivot_key, right_sibling_index);
     return {parent_node, split_result};
   }
@@ -330,7 +337,10 @@ struct masstree_node {
     if (!is_intermediate_) { is_intermediate_ = true; }
     // Make new root
     num_keys_ = 2;
-    if (tile_.thread_rank() == get_value_lane_from_location(0)) {
+    if (tile_.thread_rank() == get_key_lane_from_location(0)) {
+      lane_elem_ = 0; // first key of intermediate node is always zero (min key)
+    }
+    else if (tile_.thread_rank() == get_value_lane_from_location(0)) {
       lane_elem_ = left_sibling_index;
     }
     else if (tile_.thread_rank() == get_key_lane_from_location(1)) {
