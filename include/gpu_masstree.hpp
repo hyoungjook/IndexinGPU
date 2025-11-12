@@ -282,11 +282,11 @@ struct gpu_masstree {
                                           bool concurrent = false) {
     
     auto value              = std::numeric_limits<uint32_t>::max();
-    using node_type         = masstree_node<Key, tile_type, branching_factor>;
+    using node_type         = masstree_node<tile_type>;
     auto current_node_index = *d_root_index_;
     while (true) {
       node_type current_node = node_type(
-          reinterpret_cast<key_type*>(allocator.address(allocator_, current_node_index)), tile);
+          reinterpret_cast<key_type*>(allocator.address(allocator_, current_node_index)), current_node_index, tile);
       if (concurrent) {
         current_node.load(cuda_memory_order::memory_order_relaxed);
         traverse_side_links(current_node, current_node_index, key, tile, allocator);
@@ -313,12 +313,12 @@ struct gpu_masstree {
                                                      pair_type* buffer = nullptr,
                                                      bool concurrent   = false) /*const*/
   {
-    using node_type         = masstree_node<Key, tile_type, branching_factor>;
+    using node_type         = masstree_node<tile_type>;
     auto current_node_index = *d_root_index_;
     size_type count         = 0;
     while (true) {
       node_type current_node = node_type(
-          reinterpret_cast<key_type*>(allocator.address(allocator_, current_node_index)), tile);
+          reinterpret_cast<key_type*>(allocator.address(allocator_, current_node_index)), current_node_index, tile);
       if (concurrent) {
         current_node.load(cuda_memory_order::memory_order_relaxed);
         traverse_side_links(current_node, current_node_index, lower_bound, tile, allocator);
@@ -339,6 +339,7 @@ struct gpu_masstree {
             current_node_index = current_node.get_sibling_index();
             current_node       = node_type(
                 reinterpret_cast<key_type*>(allocator.address(allocator_, current_node_index)),
+                current_node_index,
                 tile);
             if (concurrent) {
               current_node.load(cuda_memory_order::memory_order_relaxed);
@@ -361,11 +362,11 @@ struct gpu_masstree {
                                           const tile_type& tile,
                                           DeviceAllocator& allocator,
                                           bool concurrent = false) {
-    using node_type         = masstree_node<Key, tile_type, branching_factor>;
+    using node_type         = masstree_node<tile_type>;
     auto current_node_index = *d_root_index_;
     while (true) {
       node_type current_node = node_type(
-          reinterpret_cast<key_type*>(allocator.address(allocator_, current_node_index)), tile);
+          reinterpret_cast<key_type*>(allocator.address(allocator_, current_node_index)), current_node_index, tile);
       if (concurrent) {
         current_node.load(cuda_memory_order::memory_order_relaxed);
         traverse_side_links(current_node, current_node_index, key, tile, allocator);
@@ -396,14 +397,14 @@ struct gpu_masstree {
                                                           const Value& value,
                                                           const tile_type& tile,
                                                           DeviceAllocator& allocator) {
-    using node_type         = masstree_node<Key, tile_type, branching_factor>;
+    using node_type         = masstree_node<tile_type>;
     auto root_index         = *d_root_index_;
     auto current_node_index = root_index;
     auto parent_index       = root_index;
     bool keep_going         = true;
     do {
       auto current_node = node_type(
-          reinterpret_cast<key_type*>(allocator.address(allocator_, current_node_index)), tile);
+          reinterpret_cast<key_type*>(allocator.address(allocator_, current_node_index)), current_node_index, tile);
       current_node.lock();
       current_node.load(cuda_memory_order::memory_order_relaxed);
       bool is_intermediate = current_node.is_intermediate();
@@ -462,7 +463,7 @@ struct gpu_masstree {
         // it is safe to release the parent's lock now
         if (parent_index != current_node_index) {
           auto parent_node = node_type(
-              reinterpret_cast<key_type*>(allocator.address(allocator_, parent_index)), tile);
+              reinterpret_cast<key_type*>(allocator.address(allocator_, parent_index)), parent_index, tile);
           parent_node.unlock();
         }
       }
@@ -492,7 +493,7 @@ struct gpu_masstree {
     while (node.has_sibling() && key >= node.get_high_key()) {
       node_index = node.get_sibling_index();
       node =
-          node_type(reinterpret_cast<key_type*>(allocator.address(allocator_, node_index)), tile);
+          node_type(reinterpret_cast<key_type*>(allocator.address(allocator_, node_index)), node_index, tile);
       node.load(cuda_memory_order::memory_order_relaxed);
       traversed |= true;
     }
@@ -511,7 +512,7 @@ struct gpu_masstree {
     while (node.has_sibling() && key >= node.get_high_key()) {
       node_index = node.get_sibling_index();
       node_type sibling_node =
-          node_type(reinterpret_cast<key_type*>(allocator.address(allocator_, node_index)), tile);
+          node_type(reinterpret_cast<key_type*>(allocator.address(allocator_, node_index)), node_index, tile);
       sibling_node.lock();
       node.unlock();
       node = sibling_node;
@@ -526,7 +527,7 @@ struct gpu_masstree {
                                                  const Value& value,
                                                  const tile_type& tile,
                                                  DeviceAllocator& allocator) {
-    using node_type         = masstree_node<Key, tile_type, branching_factor>;
+    using node_type         = masstree_node<tile_type>;
     auto root_index         = *d_root_index_;
     auto current_node_index = root_index;
     auto parent_index       = root_index;
@@ -534,7 +535,7 @@ struct gpu_masstree {
     bool link_traversed     = false;
     do {
       auto current_node = node_type(
-          reinterpret_cast<key_type*>(allocator.address(allocator_, current_node_index)), tile);
+          reinterpret_cast<key_type*>(allocator.address(allocator_, current_node_index)), current_node_index, tile);
       current_node.load(cuda_memory_order::memory_order_relaxed);
 
       // if we restarted from root, we reset the traversal
@@ -567,6 +568,7 @@ struct gpu_masstree {
             current_node_index = current_node.get_sibling_index();
             current_node       = node_type(
                 reinterpret_cast<key_type*>(allocator.address(allocator_, current_node_index)),
+                current_node_index,
                 tile);
             if (is_leaf) { current_node.lock(); }
             current_node.load(cuda_memory_order::memory_order_relaxed);
@@ -631,7 +633,7 @@ struct gpu_masstree {
       // splitting an intermediate node
       if (is_full && (current_node_index != root_index)) {
         auto parent_node = node_type(
-            reinterpret_cast<key_type*>(allocator.address(allocator_, parent_index)), tile);
+            reinterpret_cast<key_type*>(allocator.address(allocator_, parent_index)), parent_index, tile);
         parent_node.lock();
         parent_node.load(cuda_memory_order::memory_order_relaxed);
         bool parent_is_full = parent_node.is_full();
@@ -1015,14 +1017,14 @@ struct gpu_masstree {
 
   template <typename tile_type>
   DEVICE_QUALIFIER void print_tree_nodes_device_func(const tile_type& tile) {
-    using node_type         = masstree_node<Key, tile_type, branching_factor>;
+    using node_type         = masstree_node<tile_type>;
     uint32_t root_index = *d_root_index_;
     if (tile.thread_rank() == 0) printf("root: %u\n", root_index);
     device_allocator_context_type allocator{allocator_, tile};
-    uint32_t allocated_count = 5;
+    uint32_t allocated_count = 20;
     for (uint32_t index = 0; index < allocated_count; ++index) {
       masstree_node current_node(
-        reinterpret_cast<key_type*>(allocator.address(allocator_, index)), tile);
+        reinterpret_cast<key_type*>(allocator.address(allocator_, index)), index, tile);
       current_node.load(cuda_memory_order::memory_order_seq_cst);
       current_node.print(index);
     }
@@ -1111,10 +1113,11 @@ struct gpu_masstree {
   DEVICE_QUALIFIER void allocate_root_node(const tile_type& tile, DeviceAllocator& allocator) {
     auto root_index = allocator.allocate(allocator_, 1, tile);
     *d_root_index_  = root_index;
-    using node_type = masstree_node<Key, tile_type, branching_factor>;
+    using node_type = masstree_node<tile_type>;
 
     auto root_node =
         node_type(reinterpret_cast<key_type*>(allocator.address(allocator_, root_index)),
+                  root_index,
                   tile);
     root_node.initialize_root();
     root_node.store();
