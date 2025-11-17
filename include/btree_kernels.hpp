@@ -1024,5 +1024,165 @@ __global__ void bulk_build_kernel(const key_type* keys,
   if (tid == 0) { tree.allocator_.set_allocated_count(num_nodes); }
 }
 
+template <typename key_slice_type, typename value_type, typename size_type, typename btree>
+__global__ void insert_fixlen_kernel(const key_slice_type* keys,
+                                     const size_type key_length,
+                                     const value_type* values,
+                                     const size_type keys_count,
+                                     btree tree) {
+  auto thread_id = threadIdx.x + blockIdx.x * blockDim.x;
+  auto block = cg::this_thread_block();
+  auto tile = cg::tiled_partition<btree::cg_tile_size>(block);
+
+  if ((thread_id - tile.thread_rank()) >= keys_count) { return; }
+
+  const key_slice_type* key = nullptr;
+  value_type value = btree::invalid_value;
+  bool to_insert = false;
+  if (thread_id < keys_count) {
+    key = &keys[key_length * thread_id];
+    value = values[thread_id];
+    to_insert = true;
+  }
+  using allocator_type = typename btree::device_allocator_context_type;
+  allocator_type allocator{tree.allocator_, tile};
+
+  size_type num_inserted = 1;
+  auto work_queue = tile.ballot(to_insert);
+  while (work_queue) {
+    auto cur_rank = __ffs(work_queue) - 1;
+    auto cur_key = tile.shfl(key, cur_rank);
+    auto cur_value = tile.shfl(value, cur_rank);
+
+    tree.cooperative_insert(cur_key, key_length, cur_value, tile, allocator);
+
+    if (tile.thread_rank() == cur_rank) { to_insert = false; }
+    num_inserted++;
+    work_queue = tile.ballot(to_insert);
+  }
+}
+
+template <typename key_slice_type, typename value_type, typename size_type, typename btree>
+__global__ void find_fixlen_kernel(const key_slice_type* keys,
+                                   const size_type key_length,
+                                   value_type* values,
+                                   const size_type keys_count,
+                                   btree tree) {
+  auto thread_id = threadIdx.x + blockIdx.x * blockDim.x;
+  auto block = cg::this_thread_block();
+  auto tile = cg::tiled_partition<btree::cg_tile_size>(block);
+
+  if ((thread_id - tile.thread_rank()) >= keys_count) { return; }
+
+  const key_slice_type* key = nullptr;
+  value_type value = btree::invalid_value;
+  bool to_find = false;
+  if (thread_id < keys_count) {
+    key = &keys[key_length * thread_id];
+    to_find = true;
+  }
+  using allocator_type = typename btree::device_allocator_context_type;
+  allocator_type allocator{tree.allocator_, tile};
+
+  auto work_queue = tile.ballot(to_find);
+  while (work_queue) {
+    auto cur_rank = __ffs(work_queue) - 1;
+    auto cur_key = tile.shfl(key, cur_rank);
+
+    auto cur_result = tree.cooperative_find(cur_key, key_length, tile, allocator);
+    if (cur_rank == tile.thread_rank()) {
+      value = cur_result;
+      to_find = false;
+    }
+    work_queue = tile.ballot(to_find);
+  }
+
+  if (thread_id < keys_count) { values[thread_id] = value; }
+}
+
+template <typename key_slice_type, typename value_type, typename size_type, typename btree>
+__global__ void insert_varlen_kernel(const key_slice_type* keys,
+                                     const size_type max_key_length,
+                                     const size_type* key_lengths,
+                                     const value_type* values,
+                                     const size_type keys_count,
+                                     btree tree) {
+  auto thread_id = threadIdx.x + blockIdx.x * blockDim.x;
+  auto block = cg::this_thread_block();
+  auto tile = cg::tiled_partition<btree::cg_tile_size>(block);
+
+  if ((thread_id - tile.thread_rank()) >= keys_count) { return; }
+
+  const key_slice_type* key = nullptr;
+  size_type key_length = 0;
+  value_type value = btree::invalid_value;
+  bool to_insert = false;
+  if (thread_id < keys_count) {
+    key = &keys[max_key_length * thread_id];
+    key_length = key_lengths[thread_id];
+    value = values[thread_id];
+    to_insert = true;
+  }
+  using allocator_type = typename btree::device_allocator_context_type;
+  allocator_type allocator{tree.allocator_, tile};
+
+  size_type num_inserted = 1;
+  auto work_queue = tile.ballot(to_insert);
+  while (work_queue) {
+    auto cur_rank = __ffs(work_queue) - 1;
+    auto cur_key = tile.shfl(key, cur_rank);
+    auto cur_key_length = tile.shfl(key_length, cur_rank);
+    auto cur_value = tile.shfl(value, cur_rank);
+
+    tree.cooperative_insert(cur_key, cur_key_length, cur_value, tile, allocator);
+
+    if (tile.thread_rank() == cur_rank) { to_insert = false; }
+    num_inserted++;
+    work_queue = tile.ballot(to_insert);
+  }
+}
+
+template <typename key_slice_type, typename value_type, typename size_type, typename btree>
+__global__ void find_varlen_kernel(const key_slice_type* keys,
+                                   const size_type max_key_length,
+                                   const size_type* key_lengths,
+                                   value_type* values,
+                                   const size_type keys_count,
+                                   btree tree) {
+  auto thread_id = threadIdx.x + blockIdx.x * blockDim.x;
+  auto block = cg::this_thread_block();
+  auto tile = cg::tiled_partition<btree::cg_tile_size>(block);
+
+  if ((thread_id - tile.thread_rank()) >= keys_count) { return; }
+
+  const key_slice_type* key = nullptr;
+  size_type key_length = 0;
+  value_type value = btree::invalid_value;
+  bool to_find = false;
+  if (thread_id < keys_count) {
+    key = &keys[max_key_length * thread_id];
+    key_length = key_lengths[thread_id];
+    to_find = true;
+  }
+  using allocator_type = typename btree::device_allocator_context_type;
+  allocator_type allocator{tree.allocator_, tile};
+
+  auto work_queue = tile.ballot(to_find);
+  while (work_queue) {
+    auto cur_rank = __ffs(work_queue) - 1;
+    auto cur_key = tile.shfl(key, cur_rank);
+    auto cur_key_length = tile.shfl(key_length, cur_rank);
+
+    auto cur_result = tree.cooperative_find(cur_key, cur_key_length, tile, allocator);
+    if (cur_rank == tile.thread_rank()) {
+      value = cur_result;
+      to_find = false;
+    }
+    work_queue = tile.ballot(to_find);
+  }
+
+  if (thread_id < keys_count) { values[thread_id] = value; }
+}
+
 }  // namespace kernels
 }  // namespace GpuBTree
