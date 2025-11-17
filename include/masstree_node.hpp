@@ -169,15 +169,19 @@ struct masstree_node {
     set_bit_in_metadata<lock_bit_offset_, false>();
   }
 
-  DEVICE_QUALIFIER bool traverse_required(const key_type& key, const bool last_slice) const {
+  DEVICE_QUALIFIER bool traverse_required(const key_type& key, const bool last_slice, const bool for_find) const {
     // note last_slice is not used if this is non-leaf
     if (!has_sibling()) return false;
     else {
       auto high_key = get_high_key();
       if (high_key < key) return true;
       else if (is_leaf_ && high_key == key && last_slice) {
-        // check if this node contains (key, last_slice) pair
-        return !key_is_in_node(key, last_slice);
+        if (for_find) {
+          // check if this node contains (key, last_slice) pair
+          return !key_is_in_node(key, last_slice);
+        }
+        // if for insert, no need to go to the next leaf if the metabit=0 entry exists in this node
+        // because we can just insert after that entry
       }
     }
     return false;
