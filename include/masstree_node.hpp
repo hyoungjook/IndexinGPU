@@ -20,6 +20,9 @@
 #include <memory_utils.hpp>
 #include <utils.hpp>
 
+#ifndef NDEBUG
+#define NODE_DEBUG
+#endif
 template <typename tile_type>
 struct masstree_node {
   using elem_type = uint32_t;
@@ -29,7 +32,11 @@ struct masstree_node {
   static constexpr int node_width = 16;
   static constexpr key_type max_key = std::numeric_limits<key_type>::max();
   DEVICE_QUALIFIER masstree_node(elem_type* ptr, const size_type index, const tile_type& tile)
-      : node_ptr_(ptr), node_index_(index), tile_(tile), is_locked_(false) {
+      : node_ptr_(ptr), tile_(tile), is_locked_(false)
+      #ifdef NODE_DEBUG
+      , node_index_(index)
+      #endif
+  {
     assert(tile_.size() == 2 * node_width);
   }
   DEVICE_QUALIFIER masstree_node(elem_type* ptr,
@@ -42,7 +49,9 @@ struct masstree_node {
                                  bool has_sibling,
                                  bool key_meta_bit)
       : node_ptr_(ptr)
+      #ifdef NODE_DEBUG
       , node_index_(index)
+      #endif
       , lane_elem_(elem)
       , tile_(tile)
       , num_keys_(num_keys)
@@ -441,7 +450,9 @@ struct masstree_node {
   DEVICE_QUALIFIER masstree_node<tile_type>& operator=(
       const masstree_node<tile_type>& other) {
     node_ptr_ = other.node_ptr_;
+    #ifdef NODE_DEBUG
     node_index_ = other.node_index_;
+    #endif
     lane_elem_ = other.lane_elem_;
     num_keys_ = other.num_keys_;
     is_locked_ = other.is_locked_;
@@ -452,6 +463,7 @@ struct masstree_node {
   }
 
   DEVICE_QUALIFIER void print() const {
+    #ifdef NODE_DEBUG
     bool lead_lane = (tile_.thread_rank() == 0);
     if (lead_lane) printf("node[%u](%p): {", node_index_, node_ptr_);
     if (num_keys_ > max_num_keys_) {
@@ -474,11 +486,14 @@ struct masstree_node {
     elem_type sibling_index = get_sibling_index();
     if (has_sibling() && lead_lane) printf("rsbl(%u %u)", sibling_key, sibling_index);
     if (lead_lane) printf("}\n");
+    #endif
   }
 
  private:
   elem_type* node_ptr_;
-  size_type node_index_;
+  #ifdef NODE_DEBUG
+  size_type node_index_; // TODO only use on debug mode
+  #endif
   elem_type lane_elem_;
   const tile_type tile_;
   

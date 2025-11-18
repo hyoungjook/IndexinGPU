@@ -96,4 +96,36 @@ inline std::vector<key_type> generate_keys(const uint32_t num_keys,
   return keys;
 }
 
+template <typename key_slice_type, typename size_type, typename rng_type>
+inline void generate_varlen_keys(std::vector<key_slice_type>& keys,
+                                 std::vector<size_type>& key_lengths,
+                                 const uint32_t num_keys,
+                                 const uint32_t min_key_length,
+                                 const uint32_t max_key_length,
+                                 rng_type& rng,
+                                 const distribution_type dist,
+                                 const float common_prefix_ratio = 0.1f) {
+  auto reverse_endian = [](uint32_t num) -> uint32_t {
+    return ((num & 0xFF000000) >> 24) |
+           ((num & 0x00FF0000) >> 8)  |
+           ((num & 0x0000FF00) << 8)  |
+           ((num & 0x000000FF) << 24);
+  };
+  keys = std::vector<key_slice_type>(num_keys * max_key_length, 0);
+  key_lengths = std::vector<size_type>(num_keys, 0);
+  auto base_keys = generate_keys<key_slice_type>(num_keys, rng, dist);
+  const uint32_t key_length_mod = max_key_length - min_key_length + 1;
+  for (uint32_t i = 0; i < num_keys; i++) {
+    const size_type length = min_key_length + (i % key_length_mod);
+    key_lengths[i] = length;
+    uint32_t prefix_denominator = 1;
+    for (uint32_t s = 0; s < length; s++) {
+      uint32_t keylen_idx = length - 1 - s;
+      keys[i * max_key_length + keylen_idx] = reverse_endian(base_keys[i] / prefix_denominator);
+      prefix_denominator = (float)prefix_denominator / common_prefix_ratio;
+      prefix_denominator = std::min<uint32_t>(prefix_denominator, num_keys);
+    }
+  }
+}
+
 }  // namespace rkg

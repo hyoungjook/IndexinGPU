@@ -6,6 +6,7 @@ set(BENCHMARKS
     concurrent_insert_range_bench
     concurrent_insert_range_variable_range_bench
     concurrent_erase_find_bench
+    masstree_insert_find_bench
 )
 
 foreach(BENCHMARK ${BENCHMARKS})
