@@ -76,10 +76,11 @@ struct gpu_masstree {
                    const size_type key_length,
                    value_type* values,
                    const size_type num_keys,
-                   cudaStream_t stream = 0) {
+                   cudaStream_t stream = 0,
+                   bool concurrent = false) {
     const uint32_t block_size = 512;
     const uint32_t num_blocks = (num_keys + block_size - 1) / block_size;
-    kernels::find_fixlen_kernel<<<num_blocks, block_size, 0, stream>>>(keys, key_length, values, num_keys, *this);
+    kernels::find_fixlen_kernel<<<num_blocks, block_size, 0, stream>>>(keys, key_length, values, num_keys, *this, concurrent);
   }
 
   void insert_varlen(const key_slice_type* keys,
@@ -98,10 +99,11 @@ struct gpu_masstree {
                    const size_type* key_lengths,
                    value_type* values,
                    const size_type num_keys,
-                   cudaStream_t stream = 0) {
+                   cudaStream_t stream = 0,
+                   bool concurrent = false) {
     const uint32_t block_size = 512;
     const uint32_t num_blocks = (num_keys + block_size - 1) / block_size;
-    kernels::find_varlen_kernel<<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, values, num_keys, *this);
+    kernels::find_varlen_kernel<<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, values, num_keys, *this, concurrent);
   }
 
   // device-side APIs
@@ -109,7 +111,8 @@ struct gpu_masstree {
   DEVICE_QUALIFIER value_type cooperative_find(const key_slice_type* key,
                                                const size_type key_length,
                                                const tile_type& tile,
-                                               DeviceAllocator& allocator) {
+                                               DeviceAllocator& allocator,
+                                               bool concurrent = false) {
     using node_type = masstree_node<tile_type>;
     size_type current_node_index = *d_root_index_;
     for (size_type slice = 0; slice < key_length; slice++) {
@@ -120,7 +123,12 @@ struct gpu_masstree {
             reinterpret_cast<elem_type*>(allocator.address(allocator_, current_node_index)),
             current_node_index,
             tile);
-        current_node.load(cuda_memory_order::memory_order_relaxed);
+        if (concurrent) {
+          current_node.load(cuda_memory_order::memory_order_relaxed);
+        }
+        else {
+          current_node.load();
+        }
         traverse_side_links(current_node, current_node_index, key_slice, last_slice, tile, allocator, true);
         if (current_node.is_leaf()) {
           const bool found = current_node.get_key_value_from_node(key_slice, current_node_index, last_slice);
@@ -460,7 +468,8 @@ struct gpu_masstree {
                                                      const size_type key_length,
                                                      value_type* values,
                                                      const size_type keys_count,
-                                                     btree tree);
+                                                     btree tree,
+                                                     bool concurrent);
 
   template <typename key_slice_type, typename value_type, typename size_type, typename btree>
   friend __global__ void kernels::insert_varlen_kernel(const key_slice_type* keys,
@@ -476,7 +485,8 @@ struct gpu_masstree {
                                             const size_type* key_lengths,
                                             value_type* values,
                                             const size_type keys_count,
-                                            btree tree);
+                                            btree tree,
+                                            bool concurrent);
 }; // struct gpu_masstree
 
 } // namespace GPUBTree

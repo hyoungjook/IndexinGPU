@@ -1067,7 +1067,7 @@ __global__ void find_fixlen_kernel(const key_slice_type* keys,
                                    const size_type key_length,
                                    value_type* values,
                                    const size_type keys_count,
-                                   btree tree) {
+                                   btree tree, bool concurrent) {
   auto thread_id = threadIdx.x + blockIdx.x * blockDim.x;
   auto block = cg::this_thread_block();
   auto tile = cg::tiled_partition<btree::cg_tile_size>(block);
@@ -1089,7 +1089,7 @@ __global__ void find_fixlen_kernel(const key_slice_type* keys,
     auto cur_rank = __ffs(work_queue) - 1;
     auto cur_key = tile.shfl(key, cur_rank);
 
-    auto cur_result = tree.cooperative_find(cur_key, key_length, tile, allocator);
+    auto cur_result = tree.cooperative_find(cur_key, key_length, tile, allocator, concurrent);
     if (cur_rank == tile.thread_rank()) {
       value = cur_result;
       to_find = false;
@@ -1148,7 +1148,8 @@ __global__ void find_varlen_kernel(const key_slice_type* keys,
                                    const size_type* key_lengths,
                                    value_type* values,
                                    const size_type keys_count,
-                                   btree tree) {
+                                   btree tree,
+                                   bool concurrent) {
   auto thread_id = threadIdx.x + blockIdx.x * blockDim.x;
   auto block = cg::this_thread_block();
   auto tile = cg::tiled_partition<btree::cg_tile_size>(block);
@@ -1173,7 +1174,7 @@ __global__ void find_varlen_kernel(const key_slice_type* keys,
     auto cur_key = tile.shfl(key, cur_rank);
     auto cur_key_length = tile.shfl(key_length, cur_rank);
 
-    auto cur_result = tree.cooperative_find(cur_key, cur_key_length, tile, allocator);
+    auto cur_result = tree.cooperative_find(cur_key, cur_key_length, tile, allocator, concurrent);
     if (cur_rank == tile.thread_rank()) {
       value = cur_result;
       to_find = false;

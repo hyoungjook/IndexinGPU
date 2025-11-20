@@ -47,7 +47,7 @@ set(CUDA_FLAGS
         -G -src-in-ptx,
         -lineinfo>
     ${CUDA_ARCHS}
-    -maxrregcount=70
+    -maxrregcount=64
 	--expt-extended-lambda
     --expt-relaxed-constexpr
     -Wno-deprecated-gpu-targets #silence deprecated architectures
