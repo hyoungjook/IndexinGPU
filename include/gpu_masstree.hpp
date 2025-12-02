@@ -179,6 +179,16 @@ struct gpu_masstree {
 
         bool is_leaf = current_node.is_leaf();
         if (is_leaf) {
+          // If it's not last slice, first check if the entry exists without lock
+          if (!last_slice) {
+            size_type next_root_index;
+            if (current_node.get_key_value_from_node(key_slice, next_root_index, last_slice)) {
+              // we found the next layer index, move on
+              current_root_index = next_root_index;
+              break;
+            }
+            // entry doesn't exist, we should insert, so try to lock the node
+          }
           if (current_node.try_lock()) {
             current_node.load(cuda_memory_order::memory_order_relaxed);
             bool parent_unknown =

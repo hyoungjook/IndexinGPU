@@ -17,6 +17,8 @@
 #include <gpu_btree.h>
 #include <stdlib.h>
 #include <thrust/sequence.h>
+#include <thrust/logical.h>
+#include <thrust/count.h>
 #include <algorithm>
 #include <cmd.hpp>
 #include <cstdint>
@@ -48,12 +50,15 @@ bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>&
                                           thrust::device_vector<key_slice_type>& d_query_keys,
                                           thrust::device_vector<size_type>& d_query_lengths,
                                           thrust::device_vector<value_type>& d_query_results,
+                                          uint32_t num_keys,
                                           uint32_t max_key_length,
-                                          std::size_t num_experiments) {
+                                          std::size_t num_experiments,
+                                          bool validate_result = false) {
   cudaStream_t insertion_stream{0};
   cudaStream_t find_stream{0};
   float average_insertion_seconds(0.0f);
   float average_find_seconds(0.0f);
+  std::size_t valid_count = 0;
 
   for (std::size_t exp = 0; exp < num_experiments; exp++) {
     BTree tree;
@@ -64,14 +69,14 @@ bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>&
     insert_timer.start_timer();
     if constexpr (use_masstree) {
       if constexpr (fixlen_key) {
-        tree.insert_fixlen(d_keys.data().get(), max_key_length, d_values.data().get(), d_lengths.size(), insertion_stream);
+        tree.insert_fixlen(d_keys.data().get(), max_key_length, d_values.data().get(), num_keys, insertion_stream);
       }
       else {
-        tree.insert_varlen(d_keys.data().get(), max_key_length, d_lengths.data().get(), d_values.data().get(), d_lengths.size(), insertion_stream);
+        tree.insert_varlen(d_keys.data().get(), max_key_length, d_lengths.data().get(), d_values.data().get(), num_keys, insertion_stream);
       }
     }
     else {
-      tree.insert(d_keys.data().get(), d_values.data().get(), d_keys.size(), insertion_stream);
+      tree.insert(d_keys.data().get(), d_values.data().get(), num_keys, insertion_stream);
     }
     insert_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
@@ -82,14 +87,14 @@ bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>&
     find_timer.start_timer();
     if constexpr (use_masstree) {
       if constexpr (fixlen_key) {
-        tree.find_fixlen(d_query_keys.data().get(), max_key_length, d_query_results.data().get(), d_query_lengths.size(), find_stream);
+        tree.find_fixlen(d_query_keys.data().get(), max_key_length, d_query_results.data().get(), num_keys, find_stream);
       }
       else {
-        tree.find_varlen(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), d_query_results.data().get(), d_query_lengths.size(), find_stream);
+        tree.find_varlen(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), d_query_results.data().get(), num_keys, find_stream);
       }
     }
     else {
-      tree.find(d_query_keys.data().get(), d_query_results.data().get(), d_query_keys.size(), find_stream);
+      tree.find(d_query_keys.data().get(), d_query_results.data().get(), num_keys, find_stream);
     }
     find_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
@@ -98,6 +103,18 @@ bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>&
     std::cout << exp << std::setw(6) << '\t';
     std::cout << insertion_elapsed << std::setw(6) << '\t';
     std::cout << find_elapsed << std::setw(6) << '\n';
+
+    if (validate_result) {
+      thrust::device_vector<bool> cmp_result(num_keys);
+      thrust::transform(d_values.begin(), d_values.end(), d_query_results.begin(), cmp_result.begin(), thrust::equal_to<value_type>());
+      int matching_count = thrust::count(cmp_result.begin(), cmp_result.end(), true);
+      if (matching_count == num_keys) {
+        valid_count++;
+      }
+      else {
+        std::cout << "validation failed: " << matching_count << "/" << num_keys << " matches" << std::endl;
+      }
+    }
   }
 
   average_insertion_seconds /= float(num_experiments);
@@ -106,6 +123,14 @@ bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>&
   float find_rate      = float(d_query_lengths.size()) / 1e6 / average_find_seconds;
   std::cout << "insertion_rate: " << insertion_rate << '\n';
   std::cout << "find_rate: " << find_rate << std::endl;
+  if (validate_result) {
+    if (valid_count == num_experiments) {
+      std::cout << "all results valid" << std::endl;
+    }
+    else {
+      std::cout << "validation: " << valid_count << "/" << num_experiments << " valid" << std::endl;
+    }
+  }
   return {insertion_rate, find_rate};
 }
 
@@ -115,6 +140,8 @@ int main(int argc, char** argv) {
   int device_id     = get_arg_value<int>(arguments, "device").value_or(0);
   uint32_t min_key_length = get_arg_value<uint32_t>(arguments, "min-key-length").value_or(1u);
   uint32_t max_key_length = get_arg_value<uint32_t>(arguments, "max-key-length").value_or(1u);
+  float common_prefix_ratio = get_arg_value<float>(arguments, "common-prefix-ratio").value_or(0.1f);
+  bool validate_result   = get_arg_value<bool>(arguments, "validate-result").value_or(false);
   std::size_t num_experiments =
       get_arg_value<std::size_t>(arguments, "num-experiments").value_or(1llu);
   if (min_key_length > max_key_length) {
@@ -139,9 +166,8 @@ int main(int argc, char** argv) {
   std::cout << "Generating input...\n";
   static constexpr value_type invalid_value = std::numeric_limits<value_type>::max();
 
-  unsigned seed = 0;
   std::random_device rd;
-  std::mt19937 rng(seed);
+  std::mt19937 rng(rd());
 
   // device vectors
   auto d_keys      = thrust::device_vector<key_slice_type>(num_keys * max_key_length, 0);
@@ -154,7 +180,9 @@ int main(int argc, char** argv) {
   // host vectors
   std::vector<key_slice_type> h_keys;
   std::vector<size_type> h_lengths;
-  rkg::generate_varlen_keys<key_slice_type, size_type>(h_keys, h_lengths, num_keys, min_key_length, max_key_length, rng, rkg::distribution_type::unique_random);
+  rkg::generate_varlen_keys<key_slice_type, size_type>(
+    h_keys, h_lengths, num_keys, min_key_length, max_key_length, rng, rkg::distribution_type::unique_random,
+    common_prefix_ratio);
 
   // copy to device
   d_keys = h_keys;
@@ -167,7 +195,7 @@ int main(int argc, char** argv) {
     // fnv1a_32 hash
     const unsigned char* byte_data = (const unsigned char*)key;
     uint32_t hash = 2166136261UL;
-    for (size_t i = 0; i < length; ++i) {
+    for (size_t i = 0; i < sizeof(key_slice_type) * length; ++i) {
         hash ^= byte_data[i];
         hash *= 16777619UL;
     }
@@ -191,7 +219,8 @@ int main(int argc, char** argv) {
   std::cout << "Benchmarking...\n";
   std::cout << "num_keys = " << num_keys << ", ";
   std::cout << "min_key_length = " << min_key_length << ", ";
-  std::cout << "max_key_length = " << max_key_length << std::endl;
+  std::cout << "max_key_length = " << max_key_length << ", ";
+  std::cout << "common_prefix_ratio = " << common_prefix_ratio << std::endl;
   static constexpr int branching_factor = 16;
   using node_type           = GpuBTree::node_type<key_slice_type, value_type, branching_factor>;
   using slab_allocator_type = device_allocator::SlabAllocLight<node_type, 4, 1024 * 8, 32, 128>;
@@ -206,21 +235,21 @@ int main(int argc, char** argv) {
     std::cout << "Benchmarking masstree_slab_type" << std::endl;
     bench_masstree_insertion_find<masstree_slab_type, true, false>(
       d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-      max_key_length, num_experiments
+      num_keys, max_key_length, num_experiments, validate_result
     );
   }
   if (min_key_length == max_key_length) {
     std::cout << "Benchmarking masstree_slab_type with fixlen keys" << std::endl;
     bench_masstree_insertion_find<masstree_slab_type, true, true>(
       d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-      max_key_length, num_experiments
+      num_keys, max_key_length, num_experiments, validate_result
     );
   }
   if (max_key_length == 1) {
     std::cout << "Benchmarking blink_tree_slab_type" << std::endl;
     bench_masstree_insertion_find<blink_tree_slab_type, false, false>(
       d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-      max_key_length, num_experiments
+      num_keys, max_key_length, num_experiments, validate_result
     );
   }
 }
