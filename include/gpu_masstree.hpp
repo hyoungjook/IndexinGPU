@@ -383,6 +383,7 @@ struct gpu_masstree {
                 tile);
               next_root_node.initialize_root();
               next_root_node.store(cuda_memory_order::memory_order_relaxed);
+              __threadfence();
               value_to_insert = next_root_index;
             }
           }

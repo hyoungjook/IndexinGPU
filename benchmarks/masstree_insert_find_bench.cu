@@ -108,7 +108,7 @@ bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>&
     if (validate_result) {
       thrust::device_vector<bool> cmp_result(num_keys);
       thrust::transform(d_values.begin(), d_values.end(), d_query_results.begin(), cmp_result.begin(), thrust::equal_to<value_type>());
-      int matching_count = thrust::count(cmp_result.begin(), cmp_result.end(), true);
+      uint32_t matching_count = (uint32_t)thrust::count(cmp_result.begin(), cmp_result.end(), true);
       if (matching_count == num_keys) {
         valid_count++;
       }
