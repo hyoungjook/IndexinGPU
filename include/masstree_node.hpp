@@ -290,7 +290,7 @@ struct masstree_node {
 
     // update the parent
     auto pivot_key = get_key_from_location(left_width - 1);
-    parent_node.insert_nonleaf(pivot_key, right_sibling_index);
+    parent_node.insert(pivot_key, right_sibling_index, false);
     return {parent_node, split_result, pivot_key};
   }
 
@@ -334,7 +334,7 @@ struct masstree_node {
     return {left_child, right_child};
   }
 
-  DEVICE_QUALIFIER void insert(const key_type& key, const value_type& value, bool last_slice, const size_type& key_location) {
+  DEVICE_QUALIFIER void do_insert(const key_type& key, const value_type& value, bool last_slice, const size_type& key_location) {
     // shuffle the keys and do the insertion
     ++num_keys_;
     const int key_lane = get_key_lane_from_location(key_location);
@@ -362,62 +362,22 @@ struct masstree_node {
     write_metadata_to_registers();
   }
 
-  DEVICE_QUALIFIER void insert_nonleaf(const key_type& key, const value_type& value) {
-    assert(!is_full());
-    const bool key_is_larger = is_valid_key_lane() && (key > lane_elem_);
-    uint32_t key_is_larger_bitmap = tile_.ballot(key_is_larger);
-    auto key_location = utils::bits::bfind(key_is_larger_bitmap) + 1;
-    //// if duplicates, this is the location of the first duplicate.
-    //if (get_key_from_location(key_location) == key) {
-    //  // if duplicates here, insert after the first duplicate
-    //  // because the value is right sibling pointer
-    //  key_location++;
-    //} // TODO check right logic?
-    insert(key, value, false, key_location);
-  }
-
-  template <typename DeviceAllocator, typename allocator_type>
-  DEVICE_QUALIFIER void insert_leaf(const key_type& key,
-                                    value_type& value,
-                                    bool last_slice,
-                                    DeviceAllocator& allocator,
-                                    allocator_type& tree_allocator) {
+  DEVICE_QUALIFIER void insert(const key_type& key,
+                               const value_type& value,
+                               bool last_slice_and_leaf) {
     assert(!is_full());
     const bool key_is_larger = is_valid_key_lane() && (key > lane_elem_);
     uint32_t key_is_larger_bitmap = tile_.ballot(key_is_larger);
     auto key_location = utils::bits::bfind(key_is_larger_bitmap) + 1;
     // if duplicates, this is the location of the first duplicate.
-    const bool duplicate_exists = (get_key_from_location(key_location) == key);
-    const bool non_last_slice_entry_exists =
-        duplicate_exists && (!get_key_meta_bit_from_location(key_location));
-    if (!last_slice) {
-      // non-last-slice entry should be unique & first among duplicate keys
-      if (non_last_slice_entry_exists) {
-        // looking for next layer root node
-        value = get_value_from_location(key_location);
-        return;
-      }
-      else {
-        // allocate a new root node for the next layer and return the value
-        auto next_layer_root_index = allocator.allocate(tree_allocator, 1, tile_);
-        auto next_layer_root_node = masstree_node<tile_type>(
-          reinterpret_cast<elem_type*>(allocator.address(tree_allocator, next_layer_root_index)),
-          next_layer_root_index,
-          tile_);
-        next_layer_root_node.initialize_root();
-        next_layer_root_node.store();
-        __threadfence();
-        value = next_layer_root_index;
-        // insert the next_layer_root_index to the leaf node
-      }
+    if (last_slice_and_leaf &&
+        (!get_key_meta_bit_from_location(key_location)) &&
+        (get_key_from_location(key_location) == key)) {
+      // if inserting a last-slice entry but there's a same-key non-last slice,
+      // we should insert after the non-last slice.
+      key_location++;
     }
-    else {
-      // last-slice entries can have duplicates, but should be after the non-last-slice entry
-      if (non_last_slice_entry_exists) {
-        key_location++;
-      }
-    }
-    insert(key, value, last_slice, key_location);
+    do_insert(key, value, last_slice_and_leaf, key_location);
   }
 
   /*DEVICE_QUALIFIER bool erase(const key_type& key) {

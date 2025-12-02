@@ -364,18 +364,43 @@ struct gpu_masstree {
         // traversal and insertion
         is_leaf = current_node.is_leaf();
         if (is_leaf) {
-          value_type layer_value = value;
-          current_node.insert_leaf(key_slice, layer_value, last_slice, allocator, allocator_);
-          current_node.store(cuda_memory_order::memory_order_relaxed);
-          current_node.unlock();
-          if (last_slice) {
-            // we inserted value to the last layer
-            return true;
+          value_type value_to_insert;
+          if (!last_slice) {
+            value_type next_root_index;
+            // if not last slice, check if the entry exists
+            if (current_node.get_key_value_from_node(key_slice, next_root_index, last_slice)) {
+              // found, move on to next layer
+              current_node.unlock();
+              current_root_index = next_root_index; // next_root_index
+              break;
+            }
+            else {
+              // not found: allocate next root node and insert it
+              next_root_index = allocator.allocate(allocator_, 1, tile);
+              auto next_root_node = masstree_node<tile_type>(
+                reinterpret_cast<elem_type*>(allocator.address(allocator_, next_root_index)),
+                next_root_index,
+                tile);
+              next_root_node.initialize_root();
+              next_root_node.store(cuda_memory_order::memory_order_relaxed);
+              value_to_insert = next_root_index;
+            }
           }
           else {
-            // layer_value points to the next root node
-            current_root_index = layer_value;
-            break; // move on to the next layer
+            // last slice, leaf node: insert the value
+            value_to_insert = value;
+          }
+          current_node.insert(key_slice, value_to_insert, last_slice);
+          current_node.store(cuda_memory_order::memory_order_relaxed);
+          current_node.unlock();
+          if (!last_slice) {
+            // move on to the next layer
+            current_root_index = value_to_insert; // == next_root_index
+            break;
+          }
+          else {
+            // we inserted value to the last layer
+            return true;
           }
         } else {  // traverse
           parent_index       = link_traversed ? current_root_index : current_node_index;
