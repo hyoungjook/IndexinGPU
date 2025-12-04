@@ -202,7 +202,9 @@ struct masstree_node {
   }
   DEVICE_QUALIFIER int find_next_location(const key_type& key) const {
     assert(!is_leaf());
-    const bool key_less_equal = is_valid_key_lane() && (key <= lane_elem_);
+    //const bool key_less_equal = is_valid_key_lane() && (key <= lane_elem_);
+    // __ffs() will filter out the values from non-valid key lanes
+    const bool key_less_equal = (key <= lane_elem_);
     uint32_t key_less_equal_bitmap = tile_.ballot(key_less_equal);
     auto next_location = __ffs(key_less_equal_bitmap) - 1;
     assert(0 <= next_location && next_location < num_keys_ + 1);
@@ -216,12 +218,11 @@ struct masstree_node {
     return (pivot_key < key);
   }
 
-  DEVICE_QUALIFIER int find_key_location_in_node(const key_type& key, bool last_slice) const {
+  DEVICE_QUALIFIER uint32_t match_key_in_node(const key_type& key, bool last_slice) const {
     assert(is_leaf());
-    auto key_exist = tile_.ballot(is_valid_key_lane() &&
-                                  lane_elem_ == key &&
-                                  get_this_lane_key_meta_bit() == last_slice);
-    return __ffs(key_exist) - 1;
+    return tile_.ballot(is_valid_key_lane() &&
+                        lane_elem_ == key &&
+                        get_this_lane_key_meta_bit() == last_slice);
   }
   DEVICE_QUALIFIER bool key_is_in_node(const key_type& key, bool last_slice) const {
     assert(is_leaf());
@@ -236,9 +237,9 @@ struct masstree_node {
   }
   DEVICE_QUALIFIER bool get_key_value_from_node(const key_type& key, value_type& value, bool last_slice) const {
     assert(is_leaf());
-    auto key_location = find_key_location_in_node(key, last_slice);
-    if (key_location < 0) return false;
-    value = get_value_from_location(key_location);
+    auto key_exists = match_key_in_node(key, last_slice);
+    if (key_exists == 0) return false;
+    value = get_value_from_location(__ffs(key_exists) - 1);
     return true;
   }
 
