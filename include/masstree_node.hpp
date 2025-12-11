@@ -139,7 +139,7 @@ struct masstree_node {
   }
   DEVICE_QUALIFIER bool has_sibling() const { return has_sibling_; }
   DEVICE_QUALIFIER key_type get_high_key() const {
-    assert(num_keys_ > 0); // never called
+    assert(is_border_ || num_keys_ > 0); // never called
     return tile_.shfl(lane_elem_, is_border_ ? (border_high_key_lane_) : (num_keys_ - 1));
   }
   DEVICE_QUALIFIER value_type get_sibling_index() const {
@@ -404,7 +404,7 @@ struct masstree_node {
   }
 
   DEVICE_QUALIFIER bool erase(const key_type& key) {
-    // erase entry (key, last_slice=true)
+    // erase entry (key, key_end=true)
     assert(is_border());
     uint32_t key_exists = match_key_in_node(key, true);
     if (key_exists == 0) return false;

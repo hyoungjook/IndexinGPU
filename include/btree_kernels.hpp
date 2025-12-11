@@ -1185,5 +1185,43 @@ __global__ void masstree_find_kernel(const key_slice_type* keys,
   if (thread_id < keys_count) { values[thread_id] = value; }
 }
 
+template <typename key_slice_type, typename size_type, typename btree>
+__global__ void masstree_erase_kernel(const key_slice_type* keys,
+                                     const size_type max_key_length,
+                                     const size_type* key_lengths,
+                                     const size_type keys_count,
+                                     btree tree,
+                                     bool concurrent) {
+  auto thread_id = threadIdx.x + blockIdx.x * blockDim.x;
+  auto block = cg::this_thread_block();
+  auto tile = cg::tiled_partition<btree::cg_tile_size>(block);
+
+  if ((thread_id - tile.thread_rank()) >= keys_count) { return; }
+
+  const key_slice_type* key = nullptr;
+  size_type key_length = 0;
+  bool to_erase = false;
+  if (thread_id < keys_count) {
+    key = &keys[max_key_length * thread_id];
+    key_length = key_lengths ? key_lengths[thread_id] : max_key_length;
+    to_erase = true;
+  }
+  using allocator_type = typename btree::device_allocator_context_type;
+  allocator_type allocator{tree.allocator_, tile};
+
+  auto work_queue = tile.ballot(to_erase);
+  while (work_queue) {
+    auto cur_rank = __ffs(work_queue) - 1;
+    auto cur_key = tile.shfl(key, cur_rank);
+    auto cur_key_length = tile.shfl(key_length, cur_rank);
+
+    tree.cooperative_erase(cur_key, cur_key_length, tile, allocator, concurrent);
+    if (cur_rank == tile.thread_rank()) {
+      to_erase = false;
+    }
+    work_queue = tile.ballot(to_erase);
+  }
+}
+
 }  // namespace kernels
 }  // namespace GpuBTree

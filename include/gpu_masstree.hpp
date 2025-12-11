@@ -86,6 +86,17 @@ struct gpu_masstree {
     kernels::masstree_find_kernel<<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, values, num_keys, *this, concurrent);
   }
 
+  void erase(const key_slice_type* keys,
+             const size_type max_key_length,
+             const size_type* key_lengths,
+             const size_type num_keys,
+             cudaStream_t stream = 0,
+             bool concurrent = false) {
+    const uint32_t block_size = 512;
+    const uint32_t num_blocks = (num_keys + block_size - 1) / block_size;
+    kernels::masstree_erase_kernel<<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, num_keys, *this, concurrent);
+  }
+
   // device-side APIs
   template <typename tile_type, typename DeviceAllocator>
   DEVICE_QUALIFIER value_type cooperative_find(const key_slice_type* key,
@@ -387,6 +398,58 @@ struct gpu_masstree {
     return false;
   }
 
+  template <typename tile_type, typename DeviceAllocator>
+  DEVICE_QUALIFIER bool cooperative_erase(const key_slice_type* key,
+                                                const size_type key_length,
+                                                const tile_type& tile,
+                                                DeviceAllocator& allocator,
+                                                bool concurrent = false) {
+    using node_type = masstree_node<tile_type>;
+    size_type current_node_index = *d_root_index_;
+    for (size_type slice = 0; slice < key_length; slice++) {
+      const key_slice_type key_slice = key[slice];
+      const bool last_slice = (slice == key_length - 1);
+      while (true) {
+        node_type current_node = node_type(
+            reinterpret_cast<elem_type*>(allocator.address(allocator_, current_node_index)),
+            current_node_index,
+            tile);
+        if (concurrent) {
+          current_node.load(cuda_memory_order::memory_order_relaxed);
+          traverse_side_links(current_node, current_node_index, key_slice, tile, allocator);
+        }
+        else {
+          current_node.load();
+        }
+        if (current_node.is_border()) {
+          if (last_slice) {
+            current_node.lock();
+            current_node.load(cuda_memory_order::memory_order_relaxed);
+            if (concurrent) {
+              traverse_side_links_with_locks(current_node, current_node_index, key_slice, tile, allocator);
+            }
+            const bool success = current_node.erase(key_slice);
+            if (success) {
+              current_node.store(cuda_memory_order::memory_order_relaxed);
+            }
+            current_node.unlock();
+            return success;
+          }
+          else {
+            const bool found = current_node.get_key_value_from_node(key_slice, current_node_index, false);
+            if (!found) return false; // not exists
+            else break; // value in current_node_index. continue to next layer.
+          }
+        }
+        else {
+          current_node_index = current_node.find_next(key_slice);
+        }
+      }
+    }
+    assert(false);
+    return false;
+  }
+
   template <typename tile_type>
   DEVICE_QUALIFIER void cooperative_debug_find_varlen_print(
       const key_slice_type* key, const size_type key_length, tile_type& tile) {
@@ -585,6 +648,28 @@ struct gpu_masstree {
     return traversed;
   }
 
+  // Tries to traverse the side-links with locks
+  // Return true if a side-link was traversed
+  template <typename tile_type, typename node_type, typename DeviceAllocator>
+  DEVICE_QUALIFIER bool traverse_side_links_with_locks(node_type& node,
+                                                       size_type& node_index,
+                                                       const key_slice_type& key_slice,
+                                                       const tile_type& tile,
+                                                       DeviceAllocator& allocator) {
+    bool traversed = false;
+    while (node.traverse_required(key_slice)) {
+      node_index = node.get_sibling_index();
+      node_type sibling_node =
+          node_type(reinterpret_cast<key_slice_type*>(allocator.address(allocator_, node_index)), node_index, tile);
+      sibling_node.lock();
+      node.unlock();
+      node = sibling_node;
+      node.load(cuda_memory_order::memory_order_relaxed);
+      traversed |= true;
+    }
+    return traversed;
+  }
+
   template <typename tile_type, typename DeviceAllocator>
   DEVICE_QUALIFIER void allocate_root_node(const tile_type& tile, DeviceAllocator& allocator) {
     auto root_index = allocator.allocate(allocator_, 1, tile);
@@ -636,6 +721,14 @@ struct gpu_masstree {
                                                        const size_type keys_count,
                                                        btree tree,
                                                        bool concurrent);
+
+  template <typename key_slice_type, typename size_type, typename btree>
+  friend __global__ void kernels::masstree_erase_kernel(const key_slice_type* keys,
+                                                        const size_type max_key_length,
+                                                        const size_type* key_lengths,
+                                                        const size_type keys_count,
+                                                        btree tree,
+                                                        bool concurrent);
 
 }; // struct gpu_masstree
 

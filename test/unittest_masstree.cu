@@ -184,7 +184,7 @@ void test_notexist(btree* tree, uint32_t min_key_length_bytes, uint32_t max_key_
   input.free();
 }
 
-/*template <typename btree>
+template <typename btree>
 void test_eraseall(btree* tree, uint32_t min_key_length_bytes, uint32_t max_key_length_bytes) {
   const size_type min_key_length = min_key_length_bytes / sizeof(key_slice_type);
   const size_type max_key_length = max_key_length_bytes / sizeof(key_slice_type);
@@ -257,7 +257,7 @@ void test_eraseallinsertall(btree* tree, uint32_t min_key_length_bytes, uint32_t
   }
   find_results.free();
   input.free();
-}*/
+}
 
 #define DECLARE_TESTS_FOR_KEY_LENGTHS(min_length, max_length) \
 TYPED_TEST(BTreeMapTest, ValidateKey##min_length##_##max_length) { \
@@ -268,6 +268,15 @@ TYPED_TEST(BTreeMapTest, FindExistKey##min_length##_##max_length) { \
 } \
 TYPED_TEST(BTreeMapTest, FindNotExistKey##min_length##_##max_length) { \
   test_notexist(this->btree_map_, min_length, max_length); \
+} \
+TYPED_TEST(BTreeMapTest, EraseAll##min_length##_##max_length) { \
+  test_eraseall(this->btree_map_, min_length, max_length); \
+} \
+TYPED_TEST(BTreeMapTest, EraseNone##min_length##_##max_length) { \
+  test_erasenone(this->btree_map_, min_length, max_length); \
+} \
+TYPED_TEST(BTreeMapTest, EraseAllInsertAll##min_length##_##max_length) { \
+  test_eraseallinsertall(this->btree_map_, min_length, max_length); \
 }
 
 DECLARE_TESTS_FOR_KEY_LENGTHS(4, 4)
