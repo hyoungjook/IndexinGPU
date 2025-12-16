@@ -257,7 +257,7 @@ struct gpu_masstree {
           continue;
         }
 
-        // splitting an intermediate node
+        // splitting a non-root node
         if (is_full && (current_node_index != current_root_index)) {
           auto parent_node = node_type(
               reinterpret_cast<elem_type*>(allocator.address(allocator_, parent_index)), parent_index, tile);
@@ -291,15 +291,15 @@ struct gpu_masstree {
               sibling_index,
               parent_index,
               reinterpret_cast<elem_type*>(allocator.address(allocator_, sibling_index)),
-              reinterpret_cast<elem_type*>(allocator.address(allocator_, parent_index)),
+              parent_node,
               true);
 
           split_result.sibling.store(cuda_memory_order::memory_order_relaxed);
           __threadfence();
           current_node.store(cuda_memory_order::memory_order_relaxed);
           __threadfence();
-          split_result.parent.store(cuda_memory_order::memory_order_relaxed);
-          split_result.parent.unlock();
+          parent_node.store(cuda_memory_order::memory_order_relaxed);
+          parent_node.unlock();
 
           if (current_node.key_is_in_upperhalf(split_result.pivot_key, key_slice)) {
             current_node_index = sibling_index;
@@ -400,10 +400,10 @@ struct gpu_masstree {
 
   template <typename tile_type, typename DeviceAllocator>
   DEVICE_QUALIFIER bool cooperative_erase(const key_slice_type* key,
-                                                const size_type key_length,
-                                                const tile_type& tile,
-                                                DeviceAllocator& allocator,
-                                                bool concurrent = false) {
+                                          const size_type key_length,
+                                          const tile_type& tile,
+                                          DeviceAllocator& allocator,
+                                          bool concurrent = false) {
     using node_type = masstree_node<tile_type>;
     size_type current_node_index = *d_root_index_;
     for (size_type slice = 0; slice < key_length; slice++) {
@@ -448,6 +448,245 @@ struct gpu_masstree {
     }
     assert(false);
     return false;
+  }
+
+  template <typename tile_type, typename DeviceAllocator>
+  DEVICE_QUALIFIER bool cooperative_erase_merge(const key_slice_type* key,
+                                                const size_type key_length,
+                                                const tile_type& tile,
+                                                DeviceAllocator& allocator) {
+    using node_type = masstree_node<tile_type>;
+    size_type current_root_index = *d_root_index_;
+    bool link_traversed = false;
+    for (size_type slice = 0; slice < key_length; slice++) {
+      const key_slice_type key_slice = key[slice];
+      const bool last_slice = (slice == key_length - 1);
+      size_type current_node_index = current_root_index;
+      size_type parent_index = current_root_index;
+      while (true) {
+        auto current_node = node_type(
+            reinterpret_cast<elem_type*>(allocator.address(allocator_, current_node_index)),
+            current_node_index,
+            tile);
+        current_node.load(cuda_memory_order::memory_order_relaxed);
+
+        // if we restarted from root, we reset the traversal
+        link_traversed = current_node_index == current_root_index ? false : link_traversed;
+
+        // Traversing side-links
+        link_traversed |= traverse_side_links(current_node, current_node_index, key_slice, tile, allocator);
+
+        bool is_border = current_node.is_border();
+        if (is_border) {
+          if (!last_slice) {
+            size_type next_root_index;
+            if (current_node.get_key_value_from_node(key_slice, next_root_index, last_slice)) {
+              // we found the next layer index, move on
+              current_root_index = next_root_index;
+              break;
+            }
+            else {
+              // next layer doesn't exist
+              return false;
+            }
+          }
+          // if last_slice
+          if (current_node.try_lock()) {
+            current_node.load(cuda_memory_order::memory_order_relaxed);
+            bool parent_unknown =
+                current_node_index == parent_index && current_node_index != current_root_index;
+            bool traverse_required = current_node.traverse_required(key_slice);
+            // if the parent is unknown we will not proceed
+            if (parent_unknown && traverse_required) {
+              current_node.unlock();
+              current_node_index = current_root_index;
+              parent_index = current_root_index;
+              continue;
+            }
+            is_border = current_node.is_border();
+            // if the node is not a leaf anymore, we don't need the lock
+            if (!is_border) { current_node.unlock(); }
+            // traversal while holding the lock
+            while (current_node.traverse_required(key_slice)) {
+              if (is_border) { current_node.unlock(); }
+              current_node_index = current_node.get_sibling_index();
+              current_node       = node_type(
+                  reinterpret_cast<elem_type*>(allocator.address(allocator_, current_node_index)),
+                  current_node_index,
+                  tile);
+              if (is_border) { current_node.lock(); }
+              current_node.load(cuda_memory_order::memory_order_relaxed);
+              is_border = current_node.is_border();
+              // if the node is not a leaf anymore, we don't need the lock
+              if (!is_border) { current_node.unlock(); }
+              link_traversed = true;
+            }
+          }
+          else {
+            current_node_index = parent_index;
+            continue;
+          }
+        }
+
+        // make sure that if the node is underflow, we know the parent
+        // we only know the parent if we didn't do side-traversal
+        bool is_underflow = (current_node_index != current_root_index) && current_node.is_underflow();
+        if (is_underflow && link_traversed) {
+          if (is_border) {
+            current_node.unlock();
+            current_node_index = current_root_index;
+            parent_index = current_root_index;
+            continue;
+          }
+        }
+
+        // if is underflow and not leaf, we need to acquire the lock
+        if (is_underflow && !is_border) {
+          if (current_node.try_lock()) {
+            current_node.load(cuda_memory_order::memory_order_relaxed);
+            is_underflow = current_node.is_underflow();
+            if (is_underflow) {
+              // if we traverse, parent will change so we will restart
+              if (current_node.traverse_required(key_slice)) {
+                current_node.unlock();
+                current_node_index = current_root_index;
+                parent_index = current_root_index;
+                continue;
+              }
+            }
+            else {
+              current_node.unlock();
+              // Traversing side links
+              link_traversed |=
+                  traverse_side_links(current_node, current_node_index, key_slice, tile, allocator);
+            }
+          }
+          else {
+            current_node_index = parent_index;
+            continue;
+          }
+        }
+
+        is_underflow = (current_node_index != current_root_index) && current_node.is_underflow();
+        // if the node is underflow after we restarted we can't proceed
+        if (is_underflow && (current_node_index == parent_index)) {
+          current_node.unlock();
+          current_node_index = current_root_index;
+          parent_index = current_root_index;
+          continue;
+        }
+
+        if (is_underflow) {
+          // first lock the parent and the sibling
+          auto parent_node = node_type(
+              reinterpret_cast<elem_type*>(allocator.address(allocator_, parent_index)), parent_index, tile);
+          parent_node.lock();
+          parent_node.load(cuda_memory_order::memory_order_relaxed);
+          bool parent_is_underflow = parent_node.is_underflow();
+
+          // make sure parent is not underflow
+          if (parent_is_underflow) {
+            current_node.unlock();
+            parent_node.unlock();
+            current_node_index = current_root_index;
+            parent_index = current_root_index;
+            continue;
+          }
+
+          // make sure parent is correct parent
+          auto plan = parent_node.get_merge_plan(current_node_index);
+          if (plan.left_location < 0) { // incorrect parent
+            current_node.unlock();
+            parent_node.unlock();
+            current_node_index = current_root_index;
+            parent_index = current_root_index;
+            continue;
+          }
+
+          // try lock the merge sibling, to avoid deadlock
+          auto sibling_node = node_type(
+              reinterpret_cast<elem_type*>(allocator.address(allocator_, plan.sibling_index)), plan.sibling_index, tile);
+          if (sibling_node.try_lock()) {
+            sibling_node.load(cuda_memory_order::memory_order_relaxed);
+          }
+          else {
+            current_node.unlock();
+            parent_node.unlock();
+            current_node_index = current_root_index;
+            parent_index = current_root_index;
+            continue;
+          }
+
+          // now all three nodes are locked
+          if (current_node.is_mergeable(sibling_node)) {
+            // merge
+            auto& left_sibling_node = plan.sibling_at_left ? sibling_node : current_node;
+            auto& right_sibling_node = plan.sibling_at_left ? current_node : sibling_node;
+            if (parent_index != current_root_index || parent_node.num_keys() > 2) {
+              auto left_sibling_index = plan.sibling_at_left ? plan.sibling_index : current_node_index;
+              left_sibling_node.merge(left_sibling_index, right_sibling_node, parent_node, plan.left_location);
+              left_sibling_node.store(cuda_memory_order::memory_order_relaxed);
+              __threadfence();
+              parent_node.store(cuda_memory_order::memory_order_relaxed);
+              __threadfence();
+              right_sibling_node.store(cuda_memory_order::memory_order_relaxed);
+              right_sibling_node.unlock();
+              parent_node.unlock();
+              // TODO mark right_sibling_node as to-garbage-collect
+              if (plan.sibling_at_left) {
+                current_node_index = plan.sibling_index;
+                current_node = sibling_node;
+              }
+            }
+            else {
+              parent_node.merge_to_root(current_root_index, left_sibling_node, right_sibling_node);
+              parent_node.store(cuda_memory_order::memory_order_relaxed);
+              __threadfence();
+              left_sibling_node.store(cuda_memory_order::memory_order_relaxed);
+              __threadfence();
+              right_sibling_node.store(cuda_memory_order::memory_order_relaxed);
+              left_sibling_node.unlock();
+              right_sibling_node.unlock();
+              // two sibling nodes are not modified
+              // TODO mark left_sibling_node and right_sibling_node as to-garbage-collect
+              current_node_index = current_root_index;
+              current_node = parent_node;
+            }
+          }
+          else {
+            // borrow
+            current_node.borrow(sibling_node, parent_node, plan.left_location, plan.sibling_at_left);
+            current_node.store(cuda_memory_order::memory_order_relaxed);
+            __threadfence();
+            sibling_node.store(cuda_memory_order::memory_order_relaxed);
+            __threadfence();
+            parent_node.store(cuda_memory_order::memory_order_relaxed);
+            parent_node.unlock();
+            sibling_node.unlock();
+          }
+
+          is_border = current_node.is_border();
+          if (!is_border) { current_node.unlock(); }
+        }
+
+        // traversal and erase
+        is_border = current_node.is_border();
+        if (is_border) {
+          if (!last_slice) {
+            const bool found = current_node.get_key_value_from_node(key_slice, current_node_index, false);
+            if (!found) return false; // not exists
+            else break; // value in current_node_index. continue to next layer.
+          }
+          else {
+            
+          }
+        }
+        else { // traverse
+          parent_index = link_traversed ? current_root_index : current_node_index;
+          current_node_index = current_node.find_next(key_slice);
+        }
+      }
+    }
   }
 
   template <typename tile_type>
