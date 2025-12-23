@@ -94,7 +94,17 @@ struct gpu_masstree {
              bool concurrent = false) {
     const uint32_t block_size = 512;
     const uint32_t num_blocks = (num_keys + block_size - 1) / block_size;
-    kernels::masstree_erase_kernel<<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, num_keys, *this, concurrent);
+    kernels::masstree_erase_kernel<false><<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, num_keys, *this, concurrent);
+  }
+
+  void erase_merge(const key_slice_type* keys,
+                   const size_type max_key_length,
+                   const size_type* key_lengths,
+                   const size_type num_keys,
+                   cudaStream_t stream = 0) {
+    const uint32_t block_size = 512;
+    const uint32_t num_blocks = (num_keys + block_size - 1) / block_size;
+    kernels::masstree_erase_kernel<true><<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, num_keys, *this, false);
   }
 
   // device-side APIs
@@ -456,15 +466,35 @@ struct gpu_masstree {
                                                 const tile_type& tile,
                                                 DeviceAllocator& allocator) {
     using node_type = masstree_node<tile_type>;
-    size_type current_root_index = *d_root_index_;
-    bool link_traversed = false;
-    for (size_type slice = 0; slice < key_length; slice++) {
+    // read-only traverse before the last slice
+    size_type current_node_index = *d_root_index_;
+    for (size_type slice = 0; slice < key_length - 1; slice++) {
       const key_slice_type key_slice = key[slice];
-      const bool last_slice = (slice == key_length - 1);
-      size_type current_node_index = current_root_index;
+      while (true) {
+        node_type current_node = node_type(
+            reinterpret_cast<elem_type*>(allocator.address(allocator_, current_node_index)),
+            current_node_index,
+            tile);
+        current_node.load(cuda_memory_order::memory_order_relaxed);
+        traverse_side_links(current_node, current_node_index, key_slice, tile, allocator);
+        if (current_node.is_border()) {
+          const bool found = current_node.get_key_value_from_node(key_slice, current_node_index, false);
+          if (!found) return false; // not exists
+          else break; // value in current_node_index. continue to next layer.
+        }
+        else {
+          current_node_index = current_node.find_next(key_slice);
+        }
+      }
+    }
+    // now erase and merge the entry at the last_slice layer
+    size_type current_root_index = current_node_index;
+    bool link_traversed = false;
+    {
+      const key_slice_type key_slice = key[key_length - 1];
       size_type parent_index = current_root_index;
       while (true) {
-        auto current_node = node_type(
+        node_type current_node = node_type(
             reinterpret_cast<elem_type*>(allocator.address(allocator_, current_node_index)),
             current_node_index,
             tile);
@@ -478,19 +508,7 @@ struct gpu_masstree {
 
         bool is_border = current_node.is_border();
         if (is_border) {
-          if (!last_slice) {
-            size_type next_root_index;
-            if (current_node.get_key_value_from_node(key_slice, next_root_index, last_slice)) {
-              // we found the next layer index, move on
-              current_root_index = next_root_index;
-              break;
-            }
-            else {
-              // next layer doesn't exist
-              return false;
-            }
-          }
-          // if last_slice
+          // TODO return immediately if no such key found(?)
           if (current_node.try_lock()) {
             current_node.load(cuda_memory_order::memory_order_relaxed);
             bool parent_unknown =
@@ -585,7 +603,7 @@ struct gpu_masstree {
           bool parent_is_underflow = parent_node.is_underflow();
 
           // make sure parent is not underflow
-          if (parent_is_underflow) {
+          if (parent_is_underflow && parent_index != current_root_index) {
             current_node.unlock();
             parent_node.unlock();
             current_node_index = current_root_index;
@@ -672,14 +690,14 @@ struct gpu_masstree {
         // traversal and erase
         is_border = current_node.is_border();
         if (is_border) {
-          if (!last_slice) {
-            const bool found = current_node.get_key_value_from_node(key_slice, current_node_index, false);
-            if (!found) return false; // not exists
-            else break; // value in current_node_index. continue to next layer.
+          // current_node is already locked
+          traverse_side_links_with_locks(current_node, current_node_index, key_slice, tile, allocator);
+          const bool success = current_node.erase(key_slice);
+          if (success) {
+            current_node.store(cuda_memory_order::memory_order_relaxed);
           }
-          else {
-            
-          }
+          current_node.unlock();
+          return success;
         }
         else { // traverse
           parent_index = link_traversed ? current_root_index : current_node_index;
@@ -687,6 +705,8 @@ struct gpu_masstree {
         }
       }
     }
+    assert(false);
+    return false;
   }
 
   template <typename tile_type>
@@ -961,7 +981,7 @@ struct gpu_masstree {
                                                        btree tree,
                                                        bool concurrent);
 
-  template <typename key_slice_type, typename size_type, typename btree>
+  template <bool do_merge, typename key_slice_type, typename size_type, typename btree>
   friend __global__ void kernels::masstree_erase_kernel(const key_slice_type* keys,
                                                         const size_type max_key_length,
                                                         const size_type* key_lengths,

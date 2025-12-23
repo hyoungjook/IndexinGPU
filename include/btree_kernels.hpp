@@ -1185,7 +1185,7 @@ __global__ void masstree_find_kernel(const key_slice_type* keys,
   if (thread_id < keys_count) { values[thread_id] = value; }
 }
 
-template <typename key_slice_type, typename size_type, typename btree>
+template <bool do_merge, typename key_slice_type, typename size_type, typename btree>
 __global__ void masstree_erase_kernel(const key_slice_type* keys,
                                      const size_type max_key_length,
                                      const size_type* key_lengths,
@@ -1215,7 +1215,12 @@ __global__ void masstree_erase_kernel(const key_slice_type* keys,
     auto cur_key = tile.shfl(key, cur_rank);
     auto cur_key_length = tile.shfl(key_length, cur_rank);
 
-    tree.cooperative_erase(cur_key, cur_key_length, tile, allocator, concurrent);
+    if constexpr (do_merge) {
+      tree.cooperative_erase_merge(cur_key, cur_key_length, tile, allocator);
+    }
+    else {
+      tree.cooperative_erase(cur_key, cur_key_length, tile, allocator, concurrent);
+    }
     if (cur_rank == tile.thread_rank()) {
       to_erase = false;
     }
