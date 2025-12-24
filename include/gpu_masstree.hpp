@@ -276,7 +276,7 @@ struct gpu_masstree {
           bool parent_is_full = parent_node.is_full();
 
           // make sure parent is not full
-          if (parent_is_full) {
+          if (parent_is_full || parent_node.is_garbage()) {
             current_node.unlock();
             parent_node.unlock();
             current_node_index = current_root_index;
