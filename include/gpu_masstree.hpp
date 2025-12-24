@@ -488,11 +488,13 @@ struct gpu_masstree {
       }
     }
     // now erase and merge the entry at the last_slice layer
-    size_type current_root_index = current_node_index;
-    bool link_traversed = false;
     {
+      size_type current_root_index = current_node_index;
+      bool link_traversed = false;
       const key_slice_type key_slice = key[key_length - 1];
       size_type parent_index = current_root_index;
+      size_type sibling_index = current_root_index;
+      bool sibling_at_left = false;
       while (true) {
         node_type current_node = node_type(
             reinterpret_cast<elem_type*>(allocator.address(allocator_, current_node_index)),
@@ -508,7 +510,6 @@ struct gpu_masstree {
 
         bool is_border = current_node.is_border();
         if (is_border) {
-          // TODO return immediately if no such key found(?)
           if (current_node.try_lock()) {
             current_node.load(cuda_memory_order::memory_order_relaxed);
             bool parent_unknown =
@@ -519,6 +520,7 @@ struct gpu_masstree {
               current_node.unlock();
               current_node_index = current_root_index;
               parent_index = current_root_index;
+              sibling_index = current_root_index;
               continue;
             }
             is_border = current_node.is_border();
@@ -542,6 +544,7 @@ struct gpu_masstree {
           }
           else {
             current_node_index = parent_index;
+            sibling_index = current_root_index;
             continue;
           }
         }
@@ -554,6 +557,7 @@ struct gpu_masstree {
             current_node.unlock();
             current_node_index = current_root_index;
             parent_index = current_root_index;
+            sibling_index = current_root_index;
             continue;
           }
         }
@@ -569,6 +573,7 @@ struct gpu_masstree {
                 current_node.unlock();
                 current_node_index = current_root_index;
                 parent_index = current_root_index;
+                sibling_index = current_root_index;
                 continue;
               }
             }
@@ -581,6 +586,7 @@ struct gpu_masstree {
           }
           else {
             current_node_index = parent_index;
+            sibling_index = current_root_index;
             continue;
           }
         }
@@ -591,47 +597,59 @@ struct gpu_masstree {
           current_node.unlock();
           current_node_index = current_root_index;
           parent_index = current_root_index;
+          sibling_index = current_root_index;
           continue;
         }
 
         if (is_underflow) {
-          // first lock the parent and the sibling
+          assert(sibling_index != current_root_index);
+          // first lock the sibling
+          auto sibling_node = node_type(
+              reinterpret_cast<elem_type*>(allocator.address(allocator_, sibling_index)), sibling_index, tile);
+          if (sibling_at_left) {
+            // if sibling is at left, use try_lock and retry to avoid deadlock
+            if (!sibling_node.try_lock()) {
+              current_node.unlock();
+              current_node_index = parent_index;
+              sibling_index = current_root_index;
+              continue;
+            }
+          }
+          else {
+            sibling_node.lock();
+          }
+          sibling_node.load(cuda_memory_order::memory_order_relaxed);
+          // check sibling validity
+          if (sibling_node.is_garbage() ||
+              (sibling_at_left ?
+               (sibling_node.get_sibling_index() != current_node_index) :
+               (current_node.get_sibling_index() != sibling_index))) {
+            current_node.unlock();
+            sibling_node.unlock();
+            current_node_index = current_root_index;
+            parent_index = current_root_index;
+            sibling_index = current_root_index;
+            continue;
+          }
+
+          // lock the parent
           auto parent_node = node_type(
               reinterpret_cast<elem_type*>(allocator.address(allocator_, parent_index)), parent_index, tile);
           parent_node.lock();
           parent_node.load(cuda_memory_order::memory_order_relaxed);
-          bool parent_is_underflow = parent_node.is_underflow();
 
-          // make sure parent is not underflow
-          if (parent_is_underflow && parent_index != current_root_index) {
-            current_node.unlock();
-            parent_node.unlock();
-            current_node_index = current_root_index;
-            parent_index = current_root_index;
-            continue;
-          }
-
-          // make sure parent is correct parent
+          // make sure parent is not underflow and is correct parent
           auto plan = parent_node.get_merge_plan(current_node_index);
-          if (plan.left_location < 0) { // incorrect parent
+          if ((parent_node.is_garbage()) ||
+              (parent_node.is_underflow() && parent_index != current_root_index) ||
+              (plan.left_location < 0) ||
+              (plan.sibling_index != sibling_index)) {
             current_node.unlock();
+            sibling_node.unlock();
             parent_node.unlock();
             current_node_index = current_root_index;
             parent_index = current_root_index;
-            continue;
-          }
-
-          // try lock the merge sibling, to avoid deadlock
-          auto sibling_node = node_type(
-              reinterpret_cast<elem_type*>(allocator.address(allocator_, plan.sibling_index)), plan.sibling_index, tile);
-          if (sibling_node.try_lock()) {
-            sibling_node.load(cuda_memory_order::memory_order_relaxed);
-          }
-          else {
-            current_node.unlock();
-            parent_node.unlock();
-            current_node_index = current_root_index;
-            parent_index = current_root_index;
+            sibling_index = current_root_index;
             continue;
           }
 
@@ -645,11 +663,11 @@ struct gpu_masstree {
               left_sibling_node.merge(left_sibling_index, right_sibling_node, parent_node, plan.left_location);
               left_sibling_node.store(cuda_memory_order::memory_order_relaxed);
               __threadfence();
-              parent_node.store(cuda_memory_order::memory_order_relaxed);
-              __threadfence();
               right_sibling_node.store(cuda_memory_order::memory_order_relaxed);
-              right_sibling_node.unlock();
+              __threadfence();
+              parent_node.store(cuda_memory_order::memory_order_relaxed);
               parent_node.unlock();
+              right_sibling_node.unlock();
               // TODO mark right_sibling_node as to-garbage-collect
               if (plan.sibling_at_left) {
                 current_node_index = plan.sibling_index;
@@ -673,12 +691,28 @@ struct gpu_masstree {
           }
           else {
             // borrow
-            current_node.borrow(sibling_node, parent_node, plan.left_location, plan.sibling_at_left);
-            current_node.store(cuda_memory_order::memory_order_relaxed);
-            __threadfence();
-            sibling_node.store(cuda_memory_order::memory_order_relaxed);
-            __threadfence();
-            parent_node.store(cuda_memory_order::memory_order_relaxed);
+            if (plan.sibling_at_left) {
+              current_node.borrow_left(sibling_node, parent_node, plan.left_location);
+              current_node.store(cuda_memory_order::memory_order_relaxed);
+              __threadfence();
+              sibling_node.store(cuda_memory_order::memory_order_relaxed);
+              __threadfence();
+              parent_node.store(cuda_memory_order::memory_order_relaxed);
+            }
+            else {
+              // borrow_right need additional node to ensure correct lock-free traversal
+              auto new_sibling_index = allocator.allocate(allocator_, 1, tile);
+              current_node.borrow_right(sibling_node,
+                                        parent_node,
+                                        plan.left_location,
+                                        new_sibling_index,
+                                        reinterpret_cast<elem_type*>(allocator.address(allocator_, new_sibling_index)));
+              sibling_node.store(cuda_memory_order::memory_order_relaxed);
+              __threadfence();
+              current_node.store(cuda_memory_order::memory_order_relaxed);
+              __threadfence();
+              parent_node.store(cuda_memory_order::memory_order_relaxed);
+            }
             parent_node.unlock();
             sibling_node.unlock();
           }
@@ -701,7 +735,8 @@ struct gpu_masstree {
         }
         else { // traverse
           parent_index = link_traversed ? current_root_index : current_node_index;
-          current_node_index = current_node.find_next(key_slice);
+          current_node_index = current_node.find_next_and_sibling(
+              key_slice, sibling_index, sibling_at_left);
         }
       }
     }
