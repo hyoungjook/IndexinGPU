@@ -512,6 +512,7 @@ struct masstree_node {
       lane_elem_ = shifted_elem;
       key_end_bit_ = shifted_key_end_bit;
     }
+    sibling_node.num_keys_ -= num_shift;
     shifted_elem = tile_.shfl_down(sibling_node.lane_elem_, sibling_node.num_keys_);
     shifted_key_end_bit = is_border_ ? tile_.shfl_down(sibling_node.key_end_bit_, sibling_node.num_keys_) : false;
     if ((tile_.thread_rank() < num_shift) ||
@@ -521,13 +522,13 @@ struct masstree_node {
     }
     write_metadata_to_registers();
     // remove last num_shift entries from the sibling
-    sibling_node.num_keys_ -= num_shift;
     key_type pivot_key = sibling_node.get_key_from_location(sibling_node.num_keys_ - 1);
     if (is_border_) {
       if (tile_.thread_rank() == border_high_key_lane_) {
         sibling_node.lane_elem_ = pivot_key;
       }
     }
+    sibling_node.write_metadata_to_registers();
     return pivot_key;
   }
 
