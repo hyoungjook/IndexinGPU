@@ -592,7 +592,7 @@ struct masstree_node {
     }
     // copy sibling to new_sibling
     new_sibling_node = masstree_node(new_sibling_node.node_ptr_,
-                                     new_sibling_node.node_index_,
+                                     new_sibling_index,
                                      new_sibling_node.tile_,
                                      sibling_node.lane_elem_,
                                      sibling_node.num_keys_,
