@@ -524,7 +524,7 @@ struct masstree_node {
     uint32_t num_shift = (sibling_node.num_keys_ - num_keys_) / 2;
     if (is_border_) {
       if (!sibling_node.get_key_end_bit_from_location(sibling_node.num_keys_ - num_shift - 1)) {
-        num_shift--;
+        num_shift++;
       }
     }
     // copy last num_shift entries of the sibling into current
@@ -557,6 +557,11 @@ struct masstree_node {
     if (tile_.thread_rank() == get_key_lane_from_location(left_location)) {
       parent_node.lane_elem_ = pivot_key;
     }
+    //assert(!(
+    //  is_border_ &&
+    //  (sibling_node.get_key_from_location(sibling_node.num_keys_ - 1) == get_key_from_location(0)) &&
+    //  (sibling_node.get_key_end_bit_from_location(sibling_node.num_keys_ - 1) == false)
+    //));
   }
 
   DEVICE_QUALIFIER void borrow_right(masstree_node& sibling_node,
@@ -622,6 +627,11 @@ struct masstree_node {
     else if (tile_.thread_rank() == get_value_lane_from_location(left_location + 1)) {
       parent_node.lane_elem_ = new_sibling_index;
     }
+    //assert(!(
+    //  is_border_ &&
+    //  (get_key_from_location(num_keys_ - 1) == new_sibling_node.get_key_from_location(0)) &&
+    //  (get_key_end_bit_from_location(num_keys_ - 1) == false)
+    //));
   }
 
   DEVICE_QUALIFIER void do_erase(int key_lane, int value_lane) {

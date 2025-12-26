@@ -420,6 +420,59 @@ struct gpu_masstree {
     return false;
   }
 
+  struct dynamic_stack {
+    static constexpr uint32_t elems_per_node_ = 2 * branching_factor - 1;
+    struct stack_node {
+      size_type elems_[elems_per_node_];
+      size_type next_node_index_;
+    };
+    static constexpr size_type invalid_index = std::numeric_limits<size_type>::max();
+    template <typename DeviceAllocator, typename tile_type>
+    DEVICE_QUALIFIER void push(const size_type& value, DeviceAllocator& allocator, allocator_type& allocator_, const tile_type& tile) {
+      stack_node* node_ptr;
+      if (head_node_top_ == (elems_per_node_ - 1) || head_node_index_ == invalid_index) {
+        auto new_head_node_index = allocator.allocate(allocator_, 1, tile);
+        node_ptr = reinterpret_cast<stack_node*>(allocator.address(allocator_, new_head_node_index));
+        node_ptr->next_node_index_ = head_node_index_;
+        head_node_index_ = new_head_node_index;
+        head_node_top_ = -1;
+      }
+      else {
+        node_ptr = reinterpret_cast<stack_node*>(allocator.address(allocator_, head_node_index_));
+      }
+      head_node_top_++;
+      node_ptr->elems_[head_node_top_] = value;
+    }
+    template <typename DeviceAllocator>
+    DEVICE_QUALIFIER size_type pop(DeviceAllocator& allocator, allocator_type& allocator_) {
+      assert(head_node_index_ != invalid_index);
+      if (head_node_top_ < 0) {
+        auto node_ptr = reinterpret_cast<stack_node*>(allocator.address(allocator_, head_node_index_));
+        auto new_head_node_index = node_ptr->next_node_index_;
+        allocator.deallocate(allocator_, head_node_index_, 1);
+        head_node_index_ = new_head_node_index;
+        head_node_top_ = elems_per_node_ - 1;
+      }
+      assert(head_node_index_ != invalid_index);
+      assert(head_node_top_ >= 0);
+      auto node_ptr = reinterpret_cast<stack_node*>(allocator.address(allocator_, head_node_index_));
+      size_type value = node_ptr->elems_[head_node_top_];
+      head_node_top_--;
+      return value;
+    }
+    template <typename DeviceAllocator>
+    DEVICE_QUALIFIER void destroy(DeviceAllocator& allocator, allocator_type& allocator_) {
+      while (head_node_index_ != invalid_index) {
+        auto node_ptr = reinterpret_cast<stack_node*>(allocator.address(allocator_, head_node_index_));
+        auto next_node_index = node_ptr->next_node_index_;
+        allocator.deallocate(allocator_, head_node_index_, 1);
+        head_node_index_ = next_node_index;
+      }
+    }
+    int head_node_top_ = -1;
+    size_type head_node_index_ = invalid_index;
+  };
+
   template <bool do_merge, bool do_remove_empty_root, typename tile_type, typename DeviceAllocator>
   DEVICE_QUALIFIER bool cooperative_erase(const key_slice_type* key,
                                           const size_type key_length,
@@ -427,10 +480,15 @@ struct gpu_masstree {
                                           DeviceAllocator& allocator,
                                           bool concurrent = false) {
     using node_type = masstree_node<tile_type>;
+    [[maybe_unused]] dynamic_stack per_layer_root_indexes; // used for remove_empty_root
     // read-only traverse before the last slice
     size_type current_node_index = *d_root_index_;
     for (size_type slice = 0; slice < key_length - 1; slice++) {
       const key_slice_type key_slice = key[slice];
+      if constexpr (do_remove_empty_root) {
+        // record root indexes along the trace for later empty-root collection
+        per_layer_root_indexes.push(current_node_index, allocator, allocator_, tile);
+      }
       while (true) {
         node_type current_node = node_type(
             reinterpret_cast<elem_type*>(allocator.address(allocator_, current_node_index)),
@@ -751,12 +809,14 @@ struct gpu_masstree {
           }
           current_node.unlock();
           if constexpr (do_remove_empty_root) {
-            if (current_node_index == current_root_index && current_node.num_keys() == 0) {
-              for (size_type layer = key_length - 1; layer >= 1; layer--) {
-                bool prev_layer_also_empty = cooperative_remove_empty_root(key, layer, tile, allocator);
-                if (!prev_layer_also_empty) { break; }
-              }
+            // collect empty roots
+            bool cascade_empty_roots = (current_node_index == current_root_index && current_node.num_keys() == 0);
+            for (int layer = static_cast<int>(key_length) - 2; layer >= 0; layer--) {
+              if (!cascade_empty_roots) break;
+              current_root_index = per_layer_root_indexes.pop(allocator, allocator_);
+              cascade_empty_roots = cooperative_remove_empty_root(key[layer], current_root_index, tile, allocator);
             }
+            per_layer_root_indexes.destroy(allocator, allocator_);
           }
           return success;
         }
@@ -772,326 +832,307 @@ struct gpu_masstree {
   }
 
   template <typename tile_type, typename DeviceAllocator>
-  DEVICE_QUALIFIER bool cooperative_remove_empty_root(const key_slice_type* key,
-                                                      const size_type layer,
+  DEVICE_QUALIFIER bool cooperative_remove_empty_root(const key_slice_type& key_slice,
+                                                      const size_type& current_root_index,
                                                       const tile_type& tile,
                                                       DeviceAllocator& allocator) {
+    // traverse one layer, find next layer root, erase it if it's empty
     using node_type = masstree_node<tile_type>;
-    // read-only traverse until (layer-2)
-    size_type current_node_index = *d_root_index_;
-    for (size_type slice = 0; slice < layer - 1; slice++) {
-      const key_slice_type key_slice = key[slice];
-      while (true) {
-        node_type current_node = node_type(
-            reinterpret_cast<elem_type*>(allocator.address(allocator_, current_node_index)),
-            current_node_index,
-            tile);
-        current_node.load(cuda_memory_order::memory_order_relaxed);
-        traverse_side_links(current_node, current_node_index, key_slice, tile, allocator);
-        if (current_node.is_border()) {
-          const bool found = current_node.get_key_value_from_node(key_slice, current_node_index, false);
-          if (!found) return false; // not exists
-          else break; // value in current_node_index. continue to next layer.
-        }
-        else {
-          current_node_index = current_node.find_next(key_slice);
-        }
+    size_type current_node_index = current_root_index;
+    bool link_traversed = false;
+    size_type parent_index = current_root_index;
+    size_type sibling_index = current_root_index;
+    bool sibling_at_left = false;
+    while (true) {
+      node_type current_node = node_type(
+          reinterpret_cast<elem_type*>(allocator.address(allocator_, current_node_index)),
+          current_node_index,
+          tile);
+      current_node.load(cuda_memory_order::memory_order_relaxed);
+
+      // check the root node is not garbage
+      if (current_node_index == current_root_index && current_node.is_garbage()) {
+        return false;
       }
-    }
 
-    // ready to erase at (layer-1)
-    {
-      const key_slice_type key_slice = key[layer - 1];
-      size_type current_root_index = current_node_index;
-      bool link_traversed = false;
-      size_type parent_index = current_root_index;
-      size_type sibling_index = current_root_index;
-      bool sibling_at_left = false;
-      while (true) {
-        node_type current_node = node_type(
-            reinterpret_cast<elem_type*>(allocator.address(allocator_, current_node_index)),
-            current_node_index,
-            tile);
-        current_node.load(cuda_memory_order::memory_order_relaxed);
+      // if we restarted from root, we reset the traversal
+      link_traversed = current_node_index == current_root_index ? false : link_traversed;
 
-        // if we restarted from root, we reset the traversal
-        link_traversed = current_node_index == current_root_index ? false : link_traversed;
+      // Traversing side-links
+      link_traversed |= traverse_side_links(current_node, current_node_index, key_slice, tile, allocator);
 
-        // Traversing side-links
-        link_traversed |= traverse_side_links(current_node, current_node_index, key_slice, tile, allocator);
-
-        bool is_border = current_node.is_border();
-        if (is_border) {
-          if (current_node.try_lock()) {
-            current_node.load(cuda_memory_order::memory_order_relaxed);
-            bool parent_unknown =
-                current_node_index == parent_index && current_node_index != current_root_index;
-            bool traverse_required = current_node.traverse_required(key_slice);
-            // if the parent is unknown we will not proceed
-            if (parent_unknown && traverse_required) {
-              current_node.unlock();
-              current_node_index = current_root_index;
-              parent_index = current_root_index;
-              sibling_index = current_root_index;
-              continue;
-            }
-            is_border = current_node.is_border();
-            // if the node is not a leaf anymore, we don't need the lock
-            if (!is_border) { current_node.unlock(); }
-            // traversal while holding the lock
-            while (current_node.traverse_required(key_slice)) {
-              if (is_border) { current_node.unlock(); }
-              current_node_index = current_node.get_sibling_index();
-              current_node       = node_type(
-                  reinterpret_cast<elem_type*>(allocator.address(allocator_, current_node_index)),
-                  current_node_index,
-                  tile);
-              if (is_border) { current_node.lock(); }
-              current_node.load(cuda_memory_order::memory_order_relaxed);
-              is_border = current_node.is_border();
-              // if the node is not a leaf anymore, we don't need the lock
-              if (!is_border) { current_node.unlock(); }
-              link_traversed = true;
-            }
-          }
-          else {
-            current_node_index = parent_index;
-            sibling_index = current_root_index;
-            continue;
-          }
-        }
-
-        // make sure that if the node is underflow, we know the parent
-        // we only know the parent if we didn't do side-traversal
-        bool is_underflow = (current_node_index != current_root_index) && current_node.is_underflow();
-        if (is_underflow && link_traversed) {
-          if (is_border) {
+      bool is_border = current_node.is_border();
+      if (is_border) {
+        if (current_node.try_lock()) {
+          current_node.load(cuda_memory_order::memory_order_relaxed);
+          bool parent_unknown =
+              current_node_index == parent_index && current_node_index != current_root_index;
+          bool traverse_required = current_node.traverse_required(key_slice);
+          // if the parent is unknown we will not proceed
+          if (parent_unknown && traverse_required) {
             current_node.unlock();
             current_node_index = current_root_index;
             parent_index = current_root_index;
             sibling_index = current_root_index;
             continue;
           }
-        }
-
-        // if is underflow and not leaf, we need to acquire the lock
-        if (is_underflow && !is_border) {
-          if (current_node.try_lock()) {
+          is_border = current_node.is_border();
+          // if the node is not a leaf anymore, we don't need the lock
+          if (!is_border) { current_node.unlock(); }
+          // traversal while holding the lock
+          while (current_node.traverse_required(key_slice)) {
+            if (is_border) { current_node.unlock(); }
+            current_node_index = current_node.get_sibling_index();
+            current_node       = node_type(
+                reinterpret_cast<elem_type*>(allocator.address(allocator_, current_node_index)),
+                current_node_index,
+                tile);
+            if (is_border) { current_node.lock(); }
             current_node.load(cuda_memory_order::memory_order_relaxed);
-            is_underflow = current_node.is_underflow();
-            if (is_underflow) {
-              // if we traverse, parent will change so we will restart
-              if (current_node.traverse_required(key_slice)) {
-                current_node.unlock();
-                current_node_index = current_root_index;
-                parent_index = current_root_index;
-                sibling_index = current_root_index;
-                continue;
-              }
-            }
-            else {
-              current_node.unlock();
-              // Traversing side links
-              link_traversed |=
-                  traverse_side_links(current_node, current_node_index, key_slice, tile, allocator);
-            }
-          }
-          else {
-            current_node_index = parent_index;
-            sibling_index = current_root_index;
-            continue;
+            is_border = current_node.is_border();
+            // if the node is not a leaf anymore, we don't need the lock
+            if (!is_border) { current_node.unlock(); }
+            link_traversed = true;
           }
         }
+        else {
+          current_node_index = parent_index;
+          sibling_index = current_root_index;
+          continue;
+        }
+      }
 
-        is_underflow = (current_node_index != current_root_index) && current_node.is_underflow();
-        // if the node is underflow after we restarted we can't proceed
-        if (is_underflow && (current_node_index == parent_index)) {
+      // make sure that if the node is underflow, we know the parent
+      // we only know the parent if we didn't do side-traversal
+      bool is_underflow = (current_node_index != current_root_index) && current_node.is_underflow();
+      if (is_underflow && link_traversed) {
+        if (is_border) {
           current_node.unlock();
           current_node_index = current_root_index;
           parent_index = current_root_index;
           sibling_index = current_root_index;
           continue;
         }
+      }
 
-        // proactively merge/borrow underflow nodes
-        if (is_underflow) {
-          assert(sibling_index != current_root_index);
-          // first lock the sibling
-          auto sibling_node = node_type(
-              reinterpret_cast<elem_type*>(allocator.address(allocator_, sibling_index)), sibling_index, tile);
-          if (sibling_at_left) {
-            // if sibling is at left, use try_lock and retry to avoid deadlock
-            if (!sibling_node.try_lock()) {
+      // if is underflow and not leaf, we need to acquire the lock
+      if (is_underflow && !is_border) {
+        if (current_node.try_lock()) {
+          current_node.load(cuda_memory_order::memory_order_relaxed);
+          is_underflow = current_node.is_underflow();
+          if (is_underflow) {
+            // if we traverse, parent will change so we will restart
+            if (current_node.traverse_required(key_slice)) {
               current_node.unlock();
-              current_node_index = parent_index;
+              current_node_index = current_root_index;
+              parent_index = current_root_index;
               sibling_index = current_root_index;
               continue;
             }
           }
           else {
-            sibling_node.lock();
-          }
-          sibling_node.load(cuda_memory_order::memory_order_relaxed);
-          // check sibling validity
-          if (sibling_node.is_garbage() ||
-              (sibling_at_left ?
-               (sibling_node.get_sibling_index() != current_node_index) :
-               (current_node.get_sibling_index() != sibling_index))) {
             current_node.unlock();
-            sibling_node.unlock();
-            current_node_index = current_root_index;
-            parent_index = current_root_index;
+            // Traversing side links
+            link_traversed |=
+                traverse_side_links(current_node, current_node_index, key_slice, tile, allocator);
+          }
+        }
+        else {
+          current_node_index = parent_index;
+          sibling_index = current_root_index;
+          continue;
+        }
+      }
+
+      is_underflow = (current_node_index != current_root_index) && current_node.is_underflow();
+      // if the node is underflow after we restarted we can't proceed
+      if (is_underflow && (current_node_index == parent_index)) {
+        current_node.unlock();
+        current_node_index = current_root_index;
+        parent_index = current_root_index;
+        sibling_index = current_root_index;
+        continue;
+      }
+
+      // proactively merge/borrow underflow nodes
+      if (is_underflow) {
+        assert(sibling_index != current_root_index);
+        // first lock the sibling
+        auto sibling_node = node_type(
+            reinterpret_cast<elem_type*>(allocator.address(allocator_, sibling_index)), sibling_index, tile);
+        if (sibling_at_left) {
+          // if sibling is at left, use try_lock and retry to avoid deadlock
+          if (!sibling_node.try_lock()) {
+            current_node.unlock();
+            current_node_index = parent_index;
             sibling_index = current_root_index;
             continue;
           }
+        }
+        else {
+          sibling_node.lock();
+        }
+        sibling_node.load(cuda_memory_order::memory_order_relaxed);
+        // check sibling validity
+        if (sibling_node.is_garbage() ||
+            (sibling_at_left ?
+             (sibling_node.get_sibling_index() != current_node_index) :
+             (current_node.get_sibling_index() != sibling_index))) {
+          current_node.unlock();
+          sibling_node.unlock();
+          current_node_index = current_root_index;
+          parent_index = current_root_index;
+          sibling_index = current_root_index;
+          continue;
+        }
 
-          // lock the parent
-          auto parent_node = node_type(
-              reinterpret_cast<elem_type*>(allocator.address(allocator_, parent_index)), parent_index, tile);
-          parent_node.lock();
-          parent_node.load(cuda_memory_order::memory_order_relaxed);
+        // lock the parent
+        auto parent_node = node_type(
+            reinterpret_cast<elem_type*>(allocator.address(allocator_, parent_index)), parent_index, tile);
+        parent_node.lock();
+        parent_node.load(cuda_memory_order::memory_order_relaxed);
 
-          // make sure parent is not garbage and not underflow
-          if ((parent_node.is_garbage()) ||
-              (parent_node.is_underflow() && parent_index != current_root_index)) {
-            current_node.unlock();
-            sibling_node.unlock();
+        // make sure parent is not garbage and not underflow
+        if ((parent_node.is_garbage()) ||
+            (parent_node.is_underflow() && parent_index != current_root_index)) {
+          current_node.unlock();
+          sibling_node.unlock();
+          parent_node.unlock();
+          current_node_index = current_root_index;
+          parent_index = current_root_index;
+          sibling_index = current_root_index;
+          continue;
+        }
+        // make sure parent is correct parent for both children
+        auto plan = parent_node.get_merge_plan(current_node_index);
+        if ((plan.left_location < 0) ||
+            (plan.sibling_index != sibling_index)) {
+          current_node.unlock();
+          sibling_node.unlock();
+          parent_node.unlock();
+          current_node_index = current_root_index;
+          parent_index = current_root_index;
+          sibling_index = current_root_index;
+          continue;
+        }
+
+        // now all three nodes are locked
+        if (current_node.is_mergeable(sibling_node)) {
+          // merge
+          auto& left_sibling_node = plan.sibling_at_left ? sibling_node : current_node;
+          auto& right_sibling_node = plan.sibling_at_left ? current_node : sibling_node;
+          if (parent_index != current_root_index || parent_node.num_keys() > 2) {
+            auto left_sibling_index = plan.sibling_at_left ? plan.sibling_index : current_node_index;
+            left_sibling_node.merge(left_sibling_index, right_sibling_node, parent_node, plan.left_location);
+            left_sibling_node.store(cuda_memory_order::memory_order_relaxed);
+            __threadfence();
+            right_sibling_node.store(cuda_memory_order::memory_order_relaxed);
+            __threadfence();
+            parent_node.store(cuda_memory_order::memory_order_relaxed);
             parent_node.unlock();
-            current_node_index = current_root_index;
-            parent_index = current_root_index;
-            sibling_index = current_root_index;
-            continue;
-          }
-          // make sure parent is correct parent for both children
-          auto plan = parent_node.get_merge_plan(current_node_index);
-          if ((plan.left_location < 0) ||
-              (plan.sibling_index != sibling_index)) {
-            current_node.unlock();
-            sibling_node.unlock();
-            parent_node.unlock();
-            current_node_index = current_root_index;
-            parent_index = current_root_index;
-            sibling_index = current_root_index;
-            continue;
-          }
-
-          // now all three nodes are locked
-          if (current_node.is_mergeable(sibling_node)) {
-            // merge
-            auto& left_sibling_node = plan.sibling_at_left ? sibling_node : current_node;
-            auto& right_sibling_node = plan.sibling_at_left ? current_node : sibling_node;
-            if (parent_index != current_root_index || parent_node.num_keys() > 2) {
-              auto left_sibling_index = plan.sibling_at_left ? plan.sibling_index : current_node_index;
-              left_sibling_node.merge(left_sibling_index, right_sibling_node, parent_node, plan.left_location);
-              left_sibling_node.store(cuda_memory_order::memory_order_relaxed);
-              __threadfence();
-              right_sibling_node.store(cuda_memory_order::memory_order_relaxed);
-              __threadfence();
-              parent_node.store(cuda_memory_order::memory_order_relaxed);
-              parent_node.unlock();
-              right_sibling_node.unlock();
-              // TODO mark right_sibling_node as to-garbage-collect
-              if (plan.sibling_at_left) {
-                current_node_index = plan.sibling_index;
-                current_node = sibling_node;
-              }
-            }
-            else {
-              parent_node.merge_to_root(current_root_index, left_sibling_node, right_sibling_node);
-              parent_node.store(cuda_memory_order::memory_order_relaxed);
-              __threadfence();
-              left_sibling_node.store(cuda_memory_order::memory_order_relaxed);
-              __threadfence();
-              right_sibling_node.store(cuda_memory_order::memory_order_relaxed);
-              left_sibling_node.unlock();
-              right_sibling_node.unlock();
-              // two sibling nodes are not modified
-              // TODO mark left_sibling_node and right_sibling_node as to-garbage-collect
-              current_node_index = current_root_index;
-              current_node = parent_node;
+            right_sibling_node.unlock();
+            // TODO mark right_sibling_node as to-garbage-collect
+            if (plan.sibling_at_left) {
+              current_node_index = plan.sibling_index;
+              current_node = sibling_node;
             }
           }
           else {
-            // borrow
-            if (plan.sibling_at_left) {
-              current_node.borrow_left(sibling_node, parent_node, plan.left_location);
-              current_node.store(cuda_memory_order::memory_order_relaxed);
-              __threadfence();
-              sibling_node.store(cuda_memory_order::memory_order_relaxed);
-              __threadfence();
-              parent_node.store(cuda_memory_order::memory_order_relaxed);
-            }
-            else {
-              // borrow_right need additional node to ensure correct lock-free traversal
-              auto new_sibling_index = allocator.allocate(allocator_, 1, tile);
-              auto new_sibling_node = node_type(
-                  reinterpret_cast<elem_type*>(allocator.address(allocator_, new_sibling_index)),
-                  new_sibling_index,
-                  tile);
-              current_node.borrow_right(sibling_node,
-                                        parent_node,
-                                        plan.left_location,
-                                        current_node_index,
-                                        new_sibling_index,
-                                        new_sibling_node);
-              new_sibling_node.store(cuda_memory_order::memory_order_relaxed);
-              __threadfence();
-              current_node.store(cuda_memory_order::memory_order_relaxed);
-              __threadfence();
-              sibling_node.store(cuda_memory_order::memory_order_relaxed);
-              __threadfence();
-              parent_node.store(cuda_memory_order::memory_order_relaxed);
-              new_sibling_node.unlock();
-              // TODO mark sibling_node to be garbage collected
-            }
-            parent_node.unlock();
-            sibling_node.unlock();
+            parent_node.merge_to_root(current_root_index, left_sibling_node, right_sibling_node);
+            parent_node.store(cuda_memory_order::memory_order_relaxed);
+            __threadfence();
+            left_sibling_node.store(cuda_memory_order::memory_order_relaxed);
+            __threadfence();
+            right_sibling_node.store(cuda_memory_order::memory_order_relaxed);
+            left_sibling_node.unlock();
+            right_sibling_node.unlock();
+            // two sibling nodes are not modified
+            // TODO mark left_sibling_node and right_sibling_node as to-garbage-collect
+            current_node_index = current_root_index;
+            current_node = parent_node;
           }
-
-          is_border = current_node.is_border();
-          if (!is_border) { current_node.unlock(); }
         }
-
-        // traversal and erase
-        is_border = current_node.is_border();
-        if (is_border) {
-          // current_node is already locked
-          traverse_side_links_with_locks(current_node, current_node_index, key_slice, tile, allocator);
-          size_type next_layer_root_index;
-          const bool found = current_node.get_key_value_from_node(key_slice, next_layer_root_index, false);
-          if (!found) {
-            // already removed by other warp
-            current_node.unlock();
-            return false;
+        else {
+          // borrow
+          if (plan.sibling_at_left) {
+            current_node.borrow_left(sibling_node, parent_node, plan.left_location);
+            current_node.store(cuda_memory_order::memory_order_relaxed);
+            __threadfence();
+            sibling_node.store(cuda_memory_order::memory_order_relaxed);
+            __threadfence();
+            parent_node.store(cuda_memory_order::memory_order_relaxed);
           }
-          // check next layer root is still empty
-          auto next_layer_root_node = node_type(
-              reinterpret_cast<elem_type*>(allocator.address(allocator_, next_layer_root_index)), next_layer_root_index, tile);
-          next_layer_root_node.lock();
-          next_layer_root_node.load(cuda_memory_order::memory_order_relaxed);
-          if (!next_layer_root_node.is_garbage() && next_layer_root_node.num_keys() == 0) {
-            // still empty, remove them
-            current_node.erase(key_slice, false);
-            next_layer_root_node.make_garbage_node(false);
-            next_layer_root_node.store(cuda_memory_order::memory_order_relaxed);
+          else {
+            // borrow_right need additional node to ensure correct lock-free traversal
+            auto new_sibling_index = allocator.allocate(allocator_, 1, tile);
+            auto new_sibling_node = node_type(
+                reinterpret_cast<elem_type*>(allocator.address(allocator_, new_sibling_index)),
+                new_sibling_index,
+                tile);
+            current_node.borrow_right(sibling_node,
+                                      parent_node,
+                                      plan.left_location,
+                                      current_node_index,
+                                      new_sibling_index,
+                                      new_sibling_node);
+            new_sibling_node.store(cuda_memory_order::memory_order_relaxed);
             __threadfence();
             current_node.store(cuda_memory_order::memory_order_relaxed);
-            next_layer_root_node.unlock();
-            current_node.unlock();
-            return (current_node_index == current_root_index && current_node.num_keys() == 0);
+            __threadfence();
+            sibling_node.store(cuda_memory_order::memory_order_relaxed);
+            __threadfence();
+            parent_node.store(cuda_memory_order::memory_order_relaxed);
+            new_sibling_node.unlock();
+            // TODO mark sibling_node to be garbage collected
           }
-          else {
-            // other warp removed / inserted into the root
-            next_layer_root_node.unlock();
-            current_node.unlock();
-            return false;
-          }
+          parent_node.unlock();
+          sibling_node.unlock();
         }
-        else { // traverse
-          parent_index = link_traversed ? current_root_index : current_node_index;
-          current_node_index = current_node.find_next_and_sibling(
-              key_slice, sibling_index, sibling_at_left);
+      
+        is_border = current_node.is_border();
+        if (!is_border) { current_node.unlock(); }
+      }
+
+      // traversal and erase
+      is_border = current_node.is_border();
+      if (is_border) {
+        // current_node is already locked
+        traverse_side_links_with_locks(current_node, current_node_index, key_slice, tile, allocator);
+        size_type next_layer_root_index;
+        const bool found = current_node.get_key_value_from_node(key_slice, next_layer_root_index, false);
+        if (!found) {
+          // already removed by other warp
+          current_node.unlock();
+          return false;
         }
+        // check next layer root is still empty
+        auto next_layer_root_node = node_type(
+            reinterpret_cast<elem_type*>(allocator.address(allocator_, next_layer_root_index)), next_layer_root_index, tile);
+        next_layer_root_node.lock();
+        next_layer_root_node.load(cuda_memory_order::memory_order_relaxed);
+        if (!next_layer_root_node.is_garbage() && next_layer_root_node.num_keys() == 0) {
+          // still empty, remove them
+          next_layer_root_node.make_garbage_node(false);
+          current_node.erase(key_slice, false);
+          next_layer_root_node.store(cuda_memory_order::memory_order_relaxed);
+          __threadfence();
+          current_node.store(cuda_memory_order::memory_order_relaxed);
+          next_layer_root_node.unlock();
+          current_node.unlock();
+          // TODO mark next_layer_root_node to be GCed
+          return (current_node_index == current_root_index && current_node.num_keys() == 0);
+        }
+        else {
+          // other warp removed / inserted into the root
+          next_layer_root_node.unlock();
+          current_node.unlock();
+          return false;
+        }
+      }
+      else { // traverse
+        parent_index = link_traversed ? current_root_index : current_node_index;
+        current_node_index = current_node.find_next_and_sibling(
+            key_slice, sibling_index, sibling_at_left);
       }
     }
   }
