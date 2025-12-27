@@ -185,6 +185,7 @@ struct masstree_node {
     // the code will load() again
   }
   DEVICE_QUALIFIER void unlock() {
+    assert(is_locked_);
     __threadfence();
     if (tile_.thread_rank() == metadata_lane_) {
       atomicAnd(reinterpret_cast<elem_type*>(&node_ptr_[metadata_lane_]),
