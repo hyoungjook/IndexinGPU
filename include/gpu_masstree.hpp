@@ -415,8 +415,7 @@ struct gpu_masstree {
           auto split_result = current_node.split(sibling_index,
                                                  parent_index,
                                                  reinterpret_cast<elem_type*>(allocator.address(allocator_, sibling_index)),
-                                                 parent_node,
-                                                 true);
+                                                 parent_node);
           // write order: right -> left -> parent
           split_result.sibling.store(cuda_memory_order::memory_order_relaxed);
           __threadfence();
@@ -440,8 +439,7 @@ struct gpu_masstree {
           auto two_siblings = current_node.split_as_root(left_sibling_index,
                                                          right_sibling_index,
                                                          reinterpret_cast<elem_type*>(allocator.address(allocator_, left_sibling_index)),
-                                                         reinterpret_cast<elem_type*>(allocator.address(allocator_, right_sibling_index)),
-                                                         true);
+                                                         reinterpret_cast<elem_type*>(allocator.address(allocator_, right_sibling_index)));
           // write order: right -> left -> parent
           two_siblings.right.store(cuda_memory_order::memory_order_relaxed);
           __threadfence();
