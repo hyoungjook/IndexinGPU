@@ -1025,7 +1025,6 @@ __global__ void bulk_build_kernel(const key_type* keys,
 }
 
 template <typename key_slice_type, typename value_type, typename size_type, typename btree>
-__launch_bounds__(512)
 __global__ void masstree_insert_kernel(const key_slice_type* keys,
                                        const size_type max_key_length,
                                        const size_type* key_lengths,
@@ -1061,7 +1060,6 @@ __global__ void masstree_insert_kernel(const key_slice_type* keys,
 }
 
 template <typename key_slice_type, typename value_type, typename size_type, typename btree>
-__launch_bounds__(512)
 __global__ void masstree_find_kernel(const key_slice_type* keys,
                                      const size_type max_key_length,
                                      const size_type* key_lengths,

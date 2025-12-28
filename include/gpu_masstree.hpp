@@ -32,8 +32,7 @@
 #include <sstream>
 #include <type_traits>
 
-#include <device_bump_allocator.hpp>
-#include <slab_alloc.hpp>
+#include <simple_bump_alloc.hpp>
 
 namespace GpuBTree {
 
@@ -48,10 +47,13 @@ struct gpu_masstree {
 
   static constexpr value_type invalid_value = std::numeric_limits<value_type>::max();
 
-  using allocator_type = Allocator;
-  using device_allocator_context_type = device_allocator_context<allocator_type>;
+  using host_allocator_type = Allocator;
+  using device_allocator_instance_type = typename host_allocator_type::device_instance_type;
+  using device_allocator_context_type = device_allocator_context<host_allocator_type>;
 
-  gpu_masstree() : allocator_{} {
+  gpu_masstree() = delete;
+  gpu_masstree(const host_allocator_type& host_allocator)
+      : allocator_(host_allocator.get_device_instance()) {
     allocate();
   }
   
@@ -118,11 +120,11 @@ struct gpu_masstree {
   }
 
   // device-side APIs
-  template <typename tile_type, typename DeviceAllocator>
+  template <typename tile_type>
   DEVICE_QUALIFIER value_type cooperative_find(const key_slice_type* key,
                                                const size_type key_length,
                                                const tile_type& tile,
-                                               DeviceAllocator& allocator,
+                                               device_allocator_context_type& allocator,
                                                bool concurrent = false) {
     using node_type = masstree_node<tile_type>;
     size_type current_node_index = *d_root_index_;
@@ -140,12 +142,12 @@ struct gpu_masstree {
     return current_node_index;
   }
 
-  template <typename tile_type, typename DeviceAllocator>
+  template <typename tile_type>
   DEVICE_QUALIFIER bool cooperative_insert(const key_slice_type* key,
                                            const size_type key_length,
                                            const value_type& value,
                                            const tile_type& tile,
-                                           DeviceAllocator& allocator) {
+                                           device_allocator_context_type& allocator) {
     using node_type = masstree_node<tile_type>;
     size_type current_node_index = *d_root_index_;
     for (size_type slice = 0; slice < key_length; slice++) {
@@ -181,9 +183,9 @@ struct gpu_masstree {
         }
         else {
           // not found: allocate next root node and insert it
-          current_node_index = allocator.allocate(allocator_, 1, tile);
+          current_node_index = allocator.allocate(tile);
           auto next_root_node = masstree_node<tile_type>(
-            reinterpret_cast<elem_type*>(allocator.address(allocator_, current_node_index)),
+            reinterpret_cast<elem_type*>(allocator.address(current_node_index)),
             current_node_index,
             tile);
           next_root_node.initialize_root();
@@ -199,14 +201,14 @@ struct gpu_masstree {
     return true;
   }
 
-  template <bool do_merge, bool do_remove_empty_root, typename tile_type, typename DeviceAllocator>
+  template <bool do_merge, bool do_remove_empty_root, typename tile_type>
   DEVICE_QUALIFIER bool cooperative_erase(const key_slice_type* key,
                                           const size_type key_length,
                                           const tile_type& tile,
-                                          DeviceAllocator& allocator,
+                                          device_allocator_context_type& allocator,
                                           bool concurrent = false) {
     using node_type = masstree_node<tile_type>;
-    [[maybe_unused]] dynamic_stack<DeviceAllocator, tile_type> per_layer_root_indexes(allocator, allocator_, tile);
+    [[maybe_unused]] dynamic_stack<tile_type> per_layer_root_indexes(allocator, tile);
     // read-only traverse before the last slice
     size_type current_node_index = *d_root_index_;
     for (size_type slice = 0; slice < key_length - 1; slice++) {
@@ -254,7 +256,7 @@ struct gpu_masstree {
             // check next layer root node
             // current_node_index is next_layer_root_node_index
             auto next_layer_root_node = node_type(
-              reinterpret_cast<elem_type*>(allocator.address(allocator_, current_node_index)), current_node_index, tile);
+              reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile);
             next_layer_root_node.lock();
             next_layer_root_node.load(cuda_memory_order::memory_order_relaxed);
             if (!next_layer_root_node.is_garbage() && next_layer_root_node.num_keys() == 0) {
@@ -291,11 +293,11 @@ struct gpu_masstree {
   }
 
   // device-side helper functions
-  template <typename tile_type, typename DeviceAllocator>
+  template <typename tile_type>
   DEVICE_QUALIFIER masstree_node<tile_type> coop_traverse_until_border(const key_slice_type& key_slice,
                                                                        const size_type& current_root_index,
                                                                        const tile_type& tile,
-                                                                       DeviceAllocator& allocator,
+                                                                       device_allocator_context_type& allocator,
                                                                        bool lock_border_node,
                                                                        bool concurrent) {
     // starting from a local root node in a layer, return the border node and its index
@@ -303,7 +305,7 @@ struct gpu_masstree {
     size_type current_node_index = current_root_index;
     while (true) {
       node_type current_node = node_type(
-          reinterpret_cast<elem_type*>(allocator.address(allocator_, current_node_index)),
+          reinterpret_cast<elem_type*>(allocator.address(current_node_index)),
           current_node_index,
           tile);
       if (concurrent) {
@@ -331,12 +333,12 @@ struct gpu_masstree {
     assert(false);
   }
 
-  template <typename tile_type, typename DeviceAllocator, typename EarlyExitCheck>
+  template <typename tile_type, typename EarlyExitCheck>
   DEVICE_QUALIFIER masstree_node<tile_type> coop_traverse_until_border_split(const key_slice_type& key_slice,
                                                                              bool key_end,
                                                                              const size_type& current_root_index,
                                                                              const tile_type& tile,
-                                                                             DeviceAllocator& allocator,
+                                                                             device_allocator_context_type& allocator,
                                                                              EarlyExitCheck& early_exit_check) {
     // starting from a local root node in a layer, return the LOCKED border node and its index
     // proactively split full nodes while traversal. also the returned border node is not full.
@@ -346,7 +348,7 @@ struct gpu_masstree {
     size_type parent_index = current_root_index;
     while (true) {
       auto current_node = node_type(
-          reinterpret_cast<elem_type*>(allocator.address(allocator_, current_node_index)),
+          reinterpret_cast<elem_type*>(allocator.address(current_node_index)),
           current_node_index,
           tile);
       current_node.load(cuda_memory_order::memory_order_relaxed);
@@ -397,7 +399,7 @@ struct gpu_masstree {
       if (current_node.is_full()) {
         if (current_node_index != current_root_index) {
           auto parent_node = node_type(
-            reinterpret_cast<elem_type*>(allocator.address(allocator_, parent_index)), parent_index, tile);
+            reinterpret_cast<elem_type*>(allocator.address(parent_index)), parent_index, tile);
           parent_node.lock();
           parent_node.load(cuda_memory_order::memory_order_relaxed);
           // parent should be not full, not garbage, and correct parent
@@ -411,10 +413,10 @@ struct gpu_masstree {
             continue;
           }
           // do split
-          auto sibling_index = allocator.allocate(allocator_, 1, tile);
+          auto sibling_index = allocator.allocate(tile);
           auto split_result = current_node.split(sibling_index,
                                                  parent_index,
-                                                 reinterpret_cast<elem_type*>(allocator.address(allocator_, sibling_index)),
+                                                 reinterpret_cast<elem_type*>(allocator.address(sibling_index)),
                                                  parent_node);
           // write order: right -> left -> parent
           split_result.sibling.store(cuda_memory_order::memory_order_relaxed);
@@ -434,12 +436,12 @@ struct gpu_masstree {
           }
         }
         else { // (current_node_index == root_node_index)
-          auto left_sibling_index = allocator.allocate(allocator_, 1, tile);
-          auto right_sibling_index = allocator.allocate(allocator_, 1, tile);
+          auto left_sibling_index = allocator.allocate(tile);
+          auto right_sibling_index = allocator.allocate(tile);
           auto two_siblings = current_node.split_as_root(left_sibling_index,
                                                          right_sibling_index,
-                                                         reinterpret_cast<elem_type*>(allocator.address(allocator_, left_sibling_index)),
-                                                         reinterpret_cast<elem_type*>(allocator.address(allocator_, right_sibling_index)));
+                                                         reinterpret_cast<elem_type*>(allocator.address(left_sibling_index)),
+                                                         reinterpret_cast<elem_type*>(allocator.address(right_sibling_index)));
           // write order: right -> left -> parent
           two_siblings.right.store(cuda_memory_order::memory_order_relaxed);
           __threadfence();
@@ -477,12 +479,12 @@ struct gpu_masstree {
     assert(false);
   }
 
-  template <typename tile_type, typename DeviceAllocator>
+  template <typename tile_type>
   DEVICE_QUALIFIER masstree_node<tile_type> coop_traverse_until_border_merge(const key_slice_type& key_slice,
                                                                              const size_type& current_root_index,
                                                                              bool& output_node_is_root,
                                                                              const tile_type& tile,
-                                                                             DeviceAllocator& allocator) {
+                                                                             device_allocator_context_type& allocator) {
     using node_type = masstree_node<tile_type>;
     size_type current_node_index = current_root_index;
     size_type parent_index = current_root_index;
@@ -490,7 +492,7 @@ struct gpu_masstree {
     bool sibling_at_left = false;
     while (true) {
       node_type current_node = node_type(
-          reinterpret_cast<elem_type*>(allocator.address(allocator_, current_node_index)),
+          reinterpret_cast<elem_type*>(allocator.address(current_node_index)),
           current_node_index,
           tile);
       current_node.load(cuda_memory_order::memory_order_relaxed);
@@ -540,7 +542,7 @@ struct gpu_masstree {
       if (is_current_node_underflow) {
         // lock the sibling first
         auto sibling_node = node_type(
-            reinterpret_cast<elem_type*>(allocator.address(allocator_, sibling_index)), sibling_index, tile);
+            reinterpret_cast<elem_type*>(allocator.address(sibling_index)), sibling_index, tile);
         if (sibling_at_left) {
           // if sibling is at left, use try_lock and retry to avoid deadlock
           if (!sibling_node.try_lock()) {
@@ -568,7 +570,7 @@ struct gpu_masstree {
         }
         // lock the parent
         auto parent_node = node_type(
-            reinterpret_cast<elem_type*>(allocator.address(allocator_, parent_index)), parent_index, tile);
+            reinterpret_cast<elem_type*>(allocator.address(parent_index)), parent_index, tile);
         parent_node.lock();
         parent_node.load(cuda_memory_order::memory_order_relaxed);
         // make sure parent is not garbage and not underflow
@@ -642,9 +644,9 @@ struct gpu_masstree {
           }
           else {
             // borrow_right need additional node to ensure correct lock-free traversal
-            auto new_sibling_index = allocator.allocate(allocator_, 1, tile);
+            auto new_sibling_index = allocator.allocate(tile);
             auto new_sibling_node = node_type(
-                reinterpret_cast<elem_type*>(allocator.address(allocator_, new_sibling_index)),
+                reinterpret_cast<elem_type*>(allocator.address(new_sibling_index)),
                 new_sibling_index,
                 tile);
             current_node.borrow_right(sibling_node,
@@ -688,7 +690,7 @@ struct gpu_masstree {
     assert(false);
   }
 
-  template <typename DeviceAllocator, typename tile_type>
+  template <typename tile_type>
   struct dynamic_stack {
     static constexpr uint32_t elems_per_node_ = 2 * branching_factor - 1;
     struct stack_node {
@@ -696,19 +698,19 @@ struct gpu_masstree {
       size_type elems_[elems_per_node_];
     };
     static constexpr size_type invalid_index = std::numeric_limits<size_type>::max();
-    DEVICE_QUALIFIER dynamic_stack(DeviceAllocator& allocator_ctx, allocator_type& allocator, const tile_type& tile)
-        : allocator_ctx_(allocator_ctx), allocator_(allocator), tile_(tile) {}
+    DEVICE_QUALIFIER dynamic_stack(device_allocator_context_type& allocator, const tile_type& tile)
+        : allocator_(allocator), tile_(tile) {}
     DEVICE_QUALIFIER void push(const size_type& value) {
       stack_node* node_ptr;
       if (top_ == (elems_per_node_ - 1) || head_ == invalid_index) {
-        auto new_head = allocator_ctx_.allocate(allocator_, 1, tile_);
-        node_ptr = reinterpret_cast<stack_node*>(allocator_ctx_.address(allocator_, new_head));
+        auto new_head = allocator_.allocate(tile_);
+        node_ptr = reinterpret_cast<stack_node*>(allocator_.address(new_head));
         node_ptr->next_ = head_;
         head_ = new_head;
         top_ = -1;
       }
       else {
-        node_ptr = reinterpret_cast<stack_node*>(allocator_ctx_.address(allocator_, head_));
+        node_ptr = reinterpret_cast<stack_node*>(allocator_.address(head_));
       }
       top_++;
       node_ptr->elems_[top_] = value;
@@ -716,31 +718,30 @@ struct gpu_masstree {
     DEVICE_QUALIFIER size_type pop() {
       assert(head_ != invalid_index);
       if (top_ < 0) {
-        auto node_ptr = reinterpret_cast<stack_node*>(allocator_ctx_.address(allocator_, head_));
+        auto node_ptr = reinterpret_cast<stack_node*>(allocator_.address(head_));
         auto next = node_ptr->next_;
-        allocator_ctx_.deallocate(allocator_, head_, 1);
+        allocator_.deallocate(head_);
         head_ = next;
         top_ = elems_per_node_ - 1;
       }
       assert(head_ != invalid_index);
       assert(top_ >= 0);
-      auto node_ptr = reinterpret_cast<stack_node*>(allocator_ctx_.address(allocator_, head_));
+      auto node_ptr = reinterpret_cast<stack_node*>(allocator_.address(head_));
       size_type value = node_ptr->elems_[top_];
       top_--;
       return value;
     }
     DEVICE_QUALIFIER void destroy() {
       while (head_ != invalid_index) {
-        auto node_ptr = reinterpret_cast<stack_node*>(allocator_ctx_.address(allocator_, head_));
+        auto node_ptr = reinterpret_cast<stack_node*>(allocator_.address(head_));
         auto next = node_ptr->next_;
-        allocator_ctx_.deallocate(allocator_, head_, 1);
+        allocator_.deallocate(head_);
         head_ = next;
       }
     }
     int top_ = -1;
     size_type head_ = invalid_index;
-    DeviceAllocator& allocator_ctx_;
-    allocator_type& allocator_;
+    device_allocator_context_type& allocator_;
     const tile_type& tile_;
   };
 
@@ -759,7 +760,7 @@ struct gpu_masstree {
       if (lead_lane) printf("key[%u]: %u%s\n", slice, key_slice, last_slice ? " (last)" : "");
       while (true) {
         node_type current_node = node_type(
-            reinterpret_cast<elem_type*>(allocator.address(allocator_, current_node_index)),
+            reinterpret_cast<elem_type*>(allocator.address(current_node_index)),
             current_node_index,
             tile);
         current_node.load(cuda_memory_order::memory_order_seq_cst);
@@ -835,7 +836,7 @@ struct gpu_masstree {
       uint32_t current_node_index = stack.top();
       uint32_t num_traversed_children = stack.top_metadata();
       node_type current_node = node_type(
-          reinterpret_cast<elem_type*>(allocator.address(allocator_, current_node_index)),
+          reinterpret_cast<elem_type*>(allocator.address(current_node_index)),
           current_node_index,
           tile);
       current_node.load();
@@ -926,17 +927,17 @@ struct gpu_masstree {
 
   // Tries to traverse the side-links without locks
   // Return true if a side-link was traversed
-  template <typename tile_type, typename node_type, typename DeviceAllocator>
+  template <typename tile_type, typename node_type>
   DEVICE_QUALIFIER bool traverse_side_links(node_type& node,
                                             size_type& node_index,
                                             const key_slice_type& key_slice,
                                             const tile_type& tile,
-                                            DeviceAllocator& allocator) {
+                                            device_allocator_context_type& allocator) {
     bool traversed = false;
     while (node.traverse_required(key_slice)) {
       node_index = node.get_sibling_index();
       node =
-          node_type(reinterpret_cast<key_slice_type*>(allocator.address(allocator_, node_index)), node_index, tile);
+          node_type(reinterpret_cast<key_slice_type*>(allocator.address(node_index)), node_index, tile);
       node.load(cuda_memory_order::memory_order_relaxed);
       traversed |= true;
     }
@@ -945,17 +946,17 @@ struct gpu_masstree {
 
   // Tries to traverse the side-links with locks
   // Return true if a side-link was traversed
-  template <typename tile_type, typename node_type, typename DeviceAllocator>
+  template <typename tile_type, typename node_type>
   DEVICE_QUALIFIER bool traverse_side_links_with_locks(node_type& node,
                                                        size_type& node_index,
                                                        const key_slice_type& key_slice,
                                                        const tile_type& tile,
-                                                       DeviceAllocator& allocator) {
+                                                       device_allocator_context_type& allocator) {
     bool traversed = false;
     while (node.traverse_required(key_slice)) {
       node_index = node.get_sibling_index();
       node_type sibling_node =
-          node_type(reinterpret_cast<key_slice_type*>(allocator.address(allocator_, node_index)), node_index, tile);
+          node_type(reinterpret_cast<key_slice_type*>(allocator.address(node_index)), node_index, tile);
       sibling_node.lock();
       node.unlock();
       node = sibling_node;
@@ -965,14 +966,14 @@ struct gpu_masstree {
     return traversed;
   }
 
-  template <typename tile_type, typename DeviceAllocator>
-  DEVICE_QUALIFIER void allocate_root_node(const tile_type& tile, DeviceAllocator& allocator) {
-    auto root_index = allocator.allocate(allocator_, 1, tile);
+  template <typename tile_type>
+  DEVICE_QUALIFIER void allocate_root_node(const tile_type& tile, device_allocator_context_type& allocator) {
+    auto root_index = allocator.allocate(tile);
     *d_root_index_ = root_index;
     using node_type = masstree_node<tile_type>;
 
     auto root_node =
-        node_type(reinterpret_cast<elem_type*>(allocator.address(allocator_, root_index)),
+        node_type(reinterpret_cast<elem_type*>(allocator.address(root_index)),
                   root_index,
                   tile);
     root_node.initialize_root();
@@ -995,7 +996,7 @@ struct gpu_masstree {
 
   std::shared_ptr<size_type> root_index_;
   size_type* d_root_index_;
-  allocator_type allocator_;
+  device_allocator_instance_type allocator_;
 
   template <typename btree>
   friend __global__ void kernels::initialize_kernel(btree);

@@ -31,15 +31,23 @@ const auto invalid_value = std::numeric_limits<value_type>::max();
 template <typename BTreeMap>
 struct BTreeMapData {
   using btree_map = BTreeMap;
+  using host_allocator = typename BTreeMap::host_allocator_type;
 };
 
 template <class MapData>
 class BTreeMapTest : public testing::Test {
  protected:
-  BTreeMapTest() { btree_map_ = new typename map_data::btree_map(); }
-  ~BTreeMapTest() override { delete btree_map_; }
+  BTreeMapTest() {
+    host_allocator_ = new typename map_data::host_allocator();
+    btree_map_ = new typename map_data::btree_map(*host_allocator_);
+  }
+  ~BTreeMapTest() override {
+    delete btree_map_;
+    delete host_allocator_;
+  }
   using map_data = MapData;
   typename map_data::btree_map* btree_map_;
+  typename map_data::host_allocator* host_allocator_;
 };
 
 template <typename T>
@@ -124,13 +132,16 @@ using slab_allocator_type = device_allocator::SlabAllocLight<node_type,
                                                              SlabAllocParam::TileSize,
                                                              SlabAllocParam::SlabSize>;
 
+using simple_bump_alloc_type = simple_bump_allocator<128>;
+
 typedef testing::Types<
     //BTreeMapData<
     //    GpuBTree::
     //        gpu_masstree<bump_allocator_type>>,
-    BTreeMapData<
-        GpuBTree::
-            gpu_masstree<slab_allocator_type>>>
+    //BTreeMapData<
+    //    GpuBTree::
+    //        gpu_masstree<slab_allocator_type>>>
+    BTreeMapData<GpuBTree::gpu_masstree<simple_bump_alloc_type>>>
     Implementations;
 
 TYPED_TEST_SUITE(BTreeMapTest, Implementations);

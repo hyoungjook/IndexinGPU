@@ -43,6 +43,18 @@ struct bench_rates {
   float insertion_rate;
   float find_rate;
 };
+template <typename BTree, bool use_masstree>
+struct tree_init_helper {
+  struct masstree_helper {
+    typename BTree::host_allocator_type host_alloc;
+    BTree tree;
+    masstree_helper(): host_alloc(), tree(host_alloc) {}
+  };
+  struct blink_helper {
+    BTree tree;
+  };
+  using type = typename std::conditional<use_masstree, masstree_helper, blink_helper>::type;
+};
 template <typename BTree, bool use_masstree, bool fixlen_key>
 bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>& d_keys,
                                           thrust::device_vector<size_type>& d_lengths,
@@ -62,7 +74,8 @@ bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>&
   std::size_t valid_count = 0;
 
   for (std::size_t exp = 0; exp < num_experiments; exp++) {
-    BTree tree;
+    typename tree_init_helper<BTree, use_masstree>::type helper;
+    auto& tree = helper.tree;
     auto memory_usage = utils::compute_device_memory_usage();
     std::cout << "Using: " << double(memory_usage.used_bytes) / double(1 << 30) << " GiBs"
               << std::endl;
@@ -268,23 +281,23 @@ int main(int argc, char** argv) {
   static constexpr int branching_factor = 16;
   using node_type           = GpuBTree::node_type<key_slice_type, value_type, branching_factor>;
   using slab_allocator_type = device_allocator::SlabAllocLight<node_type, 4, 1024 * 8, 32, 128>;
-  using masstree_slab_type =
-      GpuBTree::gpu_masstree<slab_allocator_type>;
+  using simple_bump_alloc_type = simple_bump_allocator<128>;
+  using masstree_bump_type = GpuBTree::gpu_masstree<simple_bump_alloc_type>;
 
   using slab_allocator_type_blink = device_allocator::SlabAllocLight<node_type, 4, 1024 * 8, 16, 128>;
   using blink_tree_slab_type =
       GpuBTree::gpu_blink_tree<key_slice_type, value_type, branching_factor, slab_allocator_type_blink>;
 
   {
-    std::cout << "Benchmarking masstree_slab_type" << std::endl;
-    bench_masstree_insertion_find<masstree_slab_type, true, false>(
+    std::cout << "Benchmarking masstree_bump_type" << std::endl;
+    bench_masstree_insertion_find<masstree_bump_type, true, false>(
       d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
       num_keys, max_key_length, num_experiments, validate_result, validate_tree
     );
   }
   if (test_fixlen && dataset_file == "" && min_key_length == max_key_length) {
-    std::cout << "Benchmarking masstree_slab_type with fixlen keys" << std::endl;
-    bench_masstree_insertion_find<masstree_slab_type, true, true>(
+    std::cout << "Benchmarking masstree_bump_type with fixlen keys" << std::endl;
+    bench_masstree_insertion_find<masstree_bump_type, true, true>(
       d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
       num_keys, max_key_length, num_experiments, validate_result, validate_tree
     );
