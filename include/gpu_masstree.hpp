@@ -239,8 +239,22 @@ struct gpu_masstree {
     else { // (do_merge)
       // merge algorithm
       key_slice_type key_slice = key[key_length - 1];
+      struct merge_early_exit_check {
+        DEVICE_QUALIFIER bool operator()(const node_type& border_node,
+                                         const key_slice_type& key_slice,
+                                         bool key_end) const {
+          // if the border node doesn't have the key slice, no need to lock the node
+          return !border_node.key_is_in_node(key_slice, key_end);
+        }
+        DEVICE_QUALIFIER void early_exit() { early_exited_ = true; }
+        DEVICE_QUALIFIER void reset() { early_exited_ = false; }
+        bool early_exited_ = false;
+      } early_exit_check;
       bool border_node_is_root;
-      auto border_node = coop_traverse_until_border_merge(key_slice, current_node_index, border_node_is_root, tile, allocator);
+      auto border_node = coop_traverse_until_border_merge(key_slice, true, current_node_index, border_node_is_root, tile, allocator, early_exit_check);
+      if (early_exit_check.early_exited_) {
+        return false; // key not exists
+      }
       assert(border_node.is_locked());
       const bool success = border_node.erase(key_slice, true);
       if (success) {
@@ -253,7 +267,11 @@ struct gpu_masstree {
         while (layer >= 0 && border_node_is_root && border_node.num_keys() == 0) {
           key_slice = key[layer];
           current_node_index = per_layer_root_indexes.pop();
-          border_node = coop_traverse_until_border_merge(key_slice, current_node_index, border_node_is_root, tile, allocator);
+          early_exit_check.reset();
+          border_node = coop_traverse_until_border_merge(key_slice, false, current_node_index, border_node_is_root, tile, allocator, early_exit_check);
+          if (early_exit_check.early_exited_) {
+            break; // other warp removed the key
+          }
           if (border_node.get_key_value_from_node(key_slice, current_node_index, false)) {
             // check next layer root node
             // current_node_index is next_layer_root_node_index
@@ -481,12 +499,17 @@ struct gpu_masstree {
     assert(false);
   }
 
-  template <typename tile_type>
+  template <typename tile_type, typename EarlyExitCheck>
   DEVICE_QUALIFIER masstree_node<tile_type> coop_traverse_until_border_merge(const key_slice_type& key_slice,
+                                                                             bool key_end,
                                                                              const size_type& current_root_index,
                                                                              bool& output_node_is_root,
                                                                              const tile_type& tile,
-                                                                             device_allocator_context_type& allocator) {
+                                                                             device_allocator_context_type& allocator,
+                                                                             EarlyExitCheck& early_exit_check) {
+    // starting from a local root node in a layer, return the LOCKED border node and its index
+    // proactively merge/borrow underflow nodes while traversal. also the returned border node is not underflow.
+    // if early exit condition is met, returned node is not locked by this warp (might locked by another)
     using node_type = masstree_node<tile_type>;
     size_type current_node_index = current_root_index;
     size_type parent_index = current_root_index;
@@ -499,6 +522,12 @@ struct gpu_masstree {
           tile);
       current_node.load(cuda_memory_order::memory_order_relaxed);
       bool link_traversed = traverse_side_links(current_node, current_node_index, key_slice, tile, allocator);
+
+      // early exit condition
+      if (current_node.is_border() && early_exit_check(current_node, key_slice, key_end)) {
+        early_exit_check.early_exit();
+        return current_node;
+      }
 
       // lock the node & traverse again, if it's underflow or border
       // if it's underflow, the parent and sibling should be known
