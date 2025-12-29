@@ -1,5 +1,6 @@
 ﻿/*
  *   Copyright 2022 The Regents of the University of California, Davis
+ *   Copyright 2025 Hyoungjoo Kim, Carnegie Mellon University
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -1098,8 +1099,6 @@ __global__ void masstree_find_kernel(const key_slice_type* keys,
 }
 
 template <bool do_merge, bool do_remove_empty_root, typename key_slice_type, typename size_type, typename btree>
-// NOTE limiting register usage for do_remove_empty_root results in infinite loop
-//__launch_bounds__(512) 
 __global__ void masstree_erase_kernel(const key_slice_type* keys,
                                      const size_type max_key_length,
                                      const size_type* key_lengths,
