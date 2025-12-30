@@ -33,6 +33,7 @@
 #include <sstream>
 #include <type_traits>
 
+#include <dynamic_stack.hpp>
 #include <simple_bump_alloc.hpp>
 #include <simple_slab_alloc.hpp>
 
@@ -251,7 +252,8 @@ struct gpu_masstree {
                                           device_allocator_context_type& allocator,
                                           bool concurrent = false) {
     using node_type = masstree_node<tile_type>;
-    [[maybe_unused]] dynamic_stack<tile_type> per_layer_root_indexes(allocator, tile);
+    using dynamic_stack_type = utils::dynamic_stack<tile_type, device_allocator_context_type>;
+    [[maybe_unused]] dynamic_stack_type per_layer_root_indexes(allocator, tile);
     // read-only traverse before the last slice
     size_type current_node_index = *d_root_index_;
     for (size_type slice = 0; slice < key_length - 1; slice++) {
@@ -758,61 +760,6 @@ struct gpu_masstree {
     }
     assert(false);
   }
-
-  template <typename tile_type>
-  struct dynamic_stack {
-    static constexpr uint32_t elems_per_node_ = 2 * branching_factor - 1;
-    struct stack_node {
-      size_type next_;
-      size_type elems_[elems_per_node_];
-    };
-    static constexpr size_type invalid_index = std::numeric_limits<size_type>::max();
-    DEVICE_QUALIFIER dynamic_stack(device_allocator_context_type& allocator, const tile_type& tile)
-        : allocator_(allocator), tile_(tile) {}
-    DEVICE_QUALIFIER void push(const size_type& value) {
-      stack_node* node_ptr;
-      if (top_ == (elems_per_node_ - 1) || head_ == invalid_index) {
-        auto new_head = allocator_.allocate(tile_);
-        node_ptr = reinterpret_cast<stack_node*>(allocator_.address(new_head));
-        node_ptr->next_ = head_;
-        head_ = new_head;
-        top_ = -1;
-      }
-      else {
-        node_ptr = reinterpret_cast<stack_node*>(allocator_.address(head_));
-      }
-      top_++;
-      node_ptr->elems_[top_] = value;
-    }
-    DEVICE_QUALIFIER size_type pop() {
-      assert(head_ != invalid_index);
-      if (top_ < 0) {
-        auto node_ptr = reinterpret_cast<stack_node*>(allocator_.address(head_));
-        auto next = node_ptr->next_;
-        allocator_.deallocate(head_);
-        head_ = next;
-        top_ = elems_per_node_ - 1;
-      }
-      assert(head_ != invalid_index);
-      assert(top_ >= 0);
-      auto node_ptr = reinterpret_cast<stack_node*>(allocator_.address(head_));
-      size_type value = node_ptr->elems_[top_];
-      top_--;
-      return value;
-    }
-    DEVICE_QUALIFIER void destroy() {
-      while (head_ != invalid_index) {
-        auto node_ptr = reinterpret_cast<stack_node*>(allocator_.address(head_));
-        auto next = node_ptr->next_;
-        allocator_.deallocate(head_);
-        head_ = next;
-      }
-    }
-    int top_ = -1;
-    size_type head_ = invalid_index;
-    device_allocator_context_type& allocator_;
-    const tile_type& tile_;
-  };
 
   // device-side debug functions
   template <typename tile_type>
