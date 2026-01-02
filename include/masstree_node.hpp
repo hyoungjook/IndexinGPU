@@ -248,24 +248,20 @@ struct masstree_node {
 
   DEVICE_QUALIFIER int get_split_left_width() const {
     // normally, location is left_half_width_
-    // but we should put same-key non-last-slice and first last-slice in the same node
-    // to avoid comparing keys, we just shift if last elem of the left half is non-last-slice
-    bool shift_required = false;
-    if (is_border()) {
-      bool key_end_of_default_pivot = get_key_end_bit_from_location(half_node_width_ - 1);
-      shift_required = !key_end_of_default_pivot; // shift if it's non-last-slice
-    }
+    // but a key-end entry and a next-layer entry with the same key should be in the same node
+    // to avoid comparing keys, we just shift if last elem of the left half is key-end
+    bool shift_required = is_border() && get_key_end_bit_from_location(half_node_width_ - 1);
     return shift_required ? (half_node_width_ - 1) : half_node_width_;
   }
 
   DEVICE_QUALIFIER masstree_node do_split(const value_type right_sibling_index,
                                           elem_type* right_sibling_ptr,
                                           const int left_width) {
-    // same-key non-last-slice entry and first last-slice entry (if both exist) go to the same node
+    // same-key key-end entry and next-layer entry (if both exist) go to the same node
     //assert(!(
-    //  is_border_ &&
+    //  is_border() &&
     //  (get_key_from_location(left_width - 1) == get_key_from_location(left_width)) &&
-    //  (get_key_end_bit_from_location(left_width - 1) == false)
+    //  (get_key_end_bit_from_location(left_width - 1) == true)
     //));
     assert(is_full());
     // prepare the upper half in right sibling
@@ -392,21 +388,32 @@ struct masstree_node {
 
   DEVICE_QUALIFIER void insert(const key_type& key,
                                const value_type& value,
-                               bool last_slice_and_leaf) {
+                               bool key_end) {
     assert(!is_full());
     const bool key_is_larger = is_valid_key_lane() && (key > lane_elem_);
     uint32_t key_is_larger_bitmap = tile_.ballot(key_is_larger);
     auto key_location = utils::bits::bfind(key_is_larger_bitmap) + 1;
-    // if duplicates, this is the location of the first duplicate.
-    if (last_slice_and_leaf &&
-        (key_location < num_keys()) &&
-        (!get_key_end_bit_from_location(key_location)) &&
-        (get_key_from_location(key_location) == key)) {
-      // if inserting a last-slice entry but there's a same-key non-last slice,
-      // we should insert after the non-last slice.
+    assert(key_location <= num_keys());
+    // if key already exists, this is the location of it.
+    if (is_border() && !key_end &&
+        (key_location < num_keys()) && (get_key_from_location(key_location) == key) &&
+        get_key_end_bit_from_location(key_location)) {
+      // the next-layer entry should go after the same-key key-end entry.
       key_location++;
     }
-    do_insert(key, value, last_slice_and_leaf, key_location);
+    do_insert(key, value, key_end, key_location);
+  }
+
+  DEVICE_QUALIFIER void update(const key_type& key,
+                               const value_type& value) {
+    // already checked that (key, key_end=true) exists
+    assert(is_border());
+    uint32_t key_exists = match_key_in_node(key, true);
+    assert(key_exists != 0);
+    uint32_t key_location = __ffs(key_exists) - 1;
+    if (tile_.thread_rank() == get_value_lane_from_location(key_location)) {
+      lane_elem_ = value;
+    }
   }
 
   struct merge_plan {
@@ -511,10 +518,8 @@ struct masstree_node {
                                     int left_location) {
     // compute num shift; adjust similar to get_split_left_width()
     uint32_t num_shift = (sibling_node.num_keys() - num_keys()) / 2;
-    if (is_border()) {
-      if (!sibling_node.get_key_end_bit_from_location(sibling_node.num_keys() - num_shift - 1)) {
-        num_shift++;
-      }
+    if (is_border() && sibling_node.get_key_end_bit_from_location(sibling_node.num_keys() - num_shift - 1)) {
+      num_shift++;
     }
     // copy last num_shift entries of the sibling into current
     elem_type shifted_elem = tile_.shfl_up(lane_elem_, num_shift);
@@ -547,9 +552,9 @@ struct masstree_node {
       parent_node.lane_elem_ = pivot_key;
     }
     //assert(!(
-    //  is_border_ &&
+    //  is_border() &&
     //  (sibling_node.get_key_from_location(sibling_node.num_keys_ - 1) == get_key_from_location(0)) &&
-    //  (sibling_node.get_key_end_bit_from_location(sibling_node.num_keys_ - 1) == false)
+    //  (sibling_node.get_key_end_bit_from_location(sibling_node.num_keys_ - 1) == true)
     //));
   }
 
@@ -561,10 +566,8 @@ struct masstree_node {
                                      masstree_node& new_sibling_node) {
     // compute num shift; adjust similar to get_split_left_width()
     uint32_t num_shift = (sibling_node.num_keys() - num_keys()) / 2;
-    if (is_border()) {
-      if (!sibling_node.get_key_end_bit_from_location(num_shift - 1)) {
-        num_shift--;
-      }
+    if (is_border() && sibling_node.get_key_end_bit_from_location(num_shift - 1)) {
+      num_shift--;
     }
     // copy first num_shift entries of the sibling into current
     elem_type shifted_elem = tile_.shfl_up(sibling_node.lane_elem_, num_keys());
@@ -613,9 +616,9 @@ struct masstree_node {
       parent_node.lane_elem_ = new_sibling_index;
     }
     //assert(!(
-    //  is_border_ &&
+    //  is_border() &&
     //  (get_key_from_location(num_keys_ - 1) == new_sibling_node.get_key_from_location(0)) &&
-    //  (get_key_end_bit_from_location(num_keys_ - 1) == false)
+    //  (get_key_end_bit_from_location(num_keys_ - 1) == true)
     //));
   }
 

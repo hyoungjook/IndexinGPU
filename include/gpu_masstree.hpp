@@ -168,7 +168,8 @@ struct gpu_masstree {
                                            const size_type key_length,
                                            const value_type& value,
                                            const tile_type& tile,
-                                           device_allocator_context_type& allocator) {
+                                           device_allocator_context_type& allocator,
+                                           bool update_if_exists = false) {
     using node_type = masstree_node<tile_type>;
     size_type current_node_index = *d_root_index_;
     size_type prev_root_index = invalid_value;
@@ -190,7 +191,7 @@ struct gpu_masstree {
       auto border_node = coop_traverse_until_border_split(key_slice, key_end, current_node_index, tile, allocator, early_exit_check);
       if (early_exit_check.early_exited_) {
         // find next layer root and continue now
-        //prev_root_index = current_node_index;
+        prev_root_index = current_node_index;
         border_node.get_key_value_from_node(key_slice, current_node_index, key_end);
         slice++;
         continue;
@@ -214,19 +215,32 @@ struct gpu_masstree {
         continue;
       }
       prev_root_index = current_node_index;
-      slice++;
-      value_type value_to_insert;
-      if (key_end) {
-        value_to_insert = value;
-      }
-      else { // find the next layer root
-        if (border_node.get_key_value_from_node(key_slice, current_node_index, false)) {
-          // already exists, continue to next layer
+      if (border_node.get_key_value_from_node(key_slice, current_node_index, key_end)) {
+        // key exists, the value is stored in current_node_index
+        if (key_end) {
+          // if (update_if_exists), we update the value and return true
+          // if (fail_if_exists), we just return false
+          if (update_if_exists) {
+            border_node.update(key_slice, value);
+          }
           border_node.unlock();
-          continue;
+          return update_if_exists;
         }
         else {
-          // not found: allocate next root node and insert it
+          // continue to next layer
+          border_node.unlock();
+          slice++;
+          continue;
+        }
+      }
+      else {
+        // key not exists
+        if (key_end) {
+          // insert value to the node
+          current_node_index = value;
+        }
+        else {
+          // allocate next layer root node and insert its index
           current_node_index = allocator.allocate(tile);
           auto next_root_node = masstree_node<tile_type>(
             reinterpret_cast<elem_type*>(allocator.address(current_node_index)),
@@ -235,12 +249,12 @@ struct gpu_masstree {
           next_root_node.initialize_root();
           next_root_node.store(cuda_memory_order::memory_order_relaxed);
           __threadfence();
-          value_to_insert = current_node_index;
         }
+        border_node.insert(key_slice, current_node_index, key_end);
       }
-      border_node.insert(key_slice, value_to_insert, key_end);
       border_node.store(cuda_memory_order::memory_order_relaxed);
       border_node.unlock();
+      slice++;
     }
     return true;
   }
@@ -910,10 +924,7 @@ struct gpu_masstree {
           if (i > 0) {
             assert(before_key <= key);
             if (before_key == key) {
-              assert(
-                (before_key_end_bit == false && key_end_bit == true) ||
-                (before_key_end_bit == true && key_end_bit == true)
-              );
+              assert((before_key_end_bit == true && key_end_bit == false));
             }
           }
           before_key = key;
