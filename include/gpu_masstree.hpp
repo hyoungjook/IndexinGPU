@@ -225,23 +225,23 @@ struct gpu_masstree {
         if (border_node.is_garbage()) { scan_op = -1; }
         else {
           // scan a node and store outputs
-          int count = border_node.scan(lower_key_slice,
-                                       lower_key_lv,
-                                       ignore_upper_key,
-                                       upper_key_slice,
-                                       upper_key_lv,
-                                       out_max_count,
-                                       scan_op,
-                                       out_value,
-                                       out_keys,
-                                       layer,
-                                       out_key_max_length);
+          auto count = border_node.scan(lower_key_slice,
+                                        lower_key_lv,
+                                        ignore_upper_key,
+                                        upper_key_slice,
+                                        upper_key_lv,
+                                        out_max_count,
+                                        scan_op,
+                                        out_value,
+                                        out_keys,
+                                        layer,
+                                        out_key_max_length);
           assert(count <= out_max_count);
           out_count += count;
           out_max_count -= count;
           if (out_value) { out_value += count; }
           if (out_keys) {
-            // TODO fill key slices for s < layer
+            key_slice_stack.fill_output_keys_from_key_slice_stack(out_keys, out_key_max_length, layer, count);
             out_keys += (out_key_max_length * count);
           }
           if (out_key_lengths) {

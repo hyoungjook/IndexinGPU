@@ -514,11 +514,11 @@ void test_range(btree* tree, uint32_t min_key_length_bytes, uint32_t max_key_len
       auto expected_length = rinput.out_key_lengths[i * max_count_per_query + v];
       auto found_length = result_key_lengths[i * max_count_per_query + v];
       ASSERT_EQ(found_length, expected_length);
-      //for (uint32_t s = 0; s < expected_length; s++) {
-      //  auto expected_key_slice = rinput.out_keys[i * max_count_per_query * max_key_length + v * max_key_length + s];
-      //  auto found_key_slice = result_keys[i * max_count_per_query * max_key_length + v * max_key_length + s];
-      //  ASSERT_EQ(found_key_slice, expected_key_slice);
-      //}
+      for (uint32_t s = 0; s < expected_length; s++) {
+        auto expected_key_slice = rinput.out_keys[i * max_count_per_query * max_key_length + v * max_key_length + s];
+        auto found_key_slice = result_keys[i * max_count_per_query * max_key_length + v * max_key_length + s];
+        ASSERT_EQ(found_key_slice, expected_key_slice);
+      }
     }
   }
   result_counts.free();

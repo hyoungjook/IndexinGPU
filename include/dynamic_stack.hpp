@@ -109,6 +109,36 @@ private:
   element_type lane_elem_ = invalid_index;
   DeviceAllocator& allocator_;
   const tile_type& tile_;
+
+public:
+  DEVICE_QUALIFIER void fill_output_keys_from_key_slice_stack(element_type* out_keys,
+                                                              uint32_t out_key_max_length,
+                                                              uint32_t layer,
+                                                              uint32_t count) const {
+    // used for gpu_masstree::cooperative_range()
+    if (top_ < 0 || count == 0) { return; }
+    element_type lane_elem = lane_elem_;
+    int top = top_;
+    while (true) {
+      // store stack_register[0, top] -> out_keys[layer-top-1, layer-1]
+      assert(layer >= top + 1);
+      layer -= (top + 1);
+      for (uint32_t i = 0; i < count; i++) {
+        if (tile_.thread_rank() <= top) {
+          out_keys[i * out_key_max_length + layer + tile_.thread_rank()] = lane_elem;
+        }
+      }
+      // fetch node into register
+      auto head = tile_.shfl(lane_elem, loc_of_next_in_node_);
+      if (head == invalid_index) {
+        assert(layer == 0);
+        break;
+      }
+      auto node_ptr = reinterpret_cast<stack_node*>(allocator_.address(head));
+      lane_elem = node_ptr->elems_[tile_.thread_rank()];
+      top = node_capacity_ - 1;
+    }
+  }
 };
 
 } // namespace utils

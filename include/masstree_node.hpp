@@ -252,17 +252,17 @@ struct masstree_node {
   DEVICE_QUALIFIER bool cmp_key_lv(const key_type& k1, bool lov1, const key_type& k2, bool lov2) const {
     return (k1 < k2) || ((k1 == k2) && (static_cast<int>(lov1) <= static_cast<int>(lov2)));
   }
-  DEVICE_QUALIFIER int scan(const key_type& lower_key,
-                            const bool lower_link_or_value,
-                            const bool ignore_upper_bound,
-                            const key_type& upper_key,
-                            const bool upper_link_or_value,
-                            const size_type out_max_count,
-                            int& link_entry_location,
-                            value_type* out_value,
-                            key_type* out_keys,
-                            const size_type& layer,
-                            const size_type& out_key_max_length) const {
+  DEVICE_QUALIFIER uint32_t scan(const key_type& lower_key,
+                                 const bool lower_link_or_value,
+                                 const bool ignore_upper_bound,
+                                 const key_type& upper_key,
+                                 const bool upper_link_or_value,
+                                 const size_type out_max_count,
+                                 int& link_entry_location,
+                                 value_type* out_value,
+                                 key_type* out_keys,
+                                 const size_type& layer,
+                                 const size_type& out_key_max_length) const {
     // return values in range, until we meet the link entry
     assert(is_border());
     const bool in_range = is_valid_key_lane() &&
