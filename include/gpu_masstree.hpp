@@ -212,10 +212,15 @@ struct gpu_masstree {
     size_type layer = 0, out_count = 0;
     key_slice_type lower_key_slice = lower_key[0];
     bool lower_key_lv = (lower_key_length > 1);
-    key_slice_type upper_key_slice = use_upper_key ? upper_key[0] : 0;
-    bool upper_key_lv = (upper_key_length > 1);
+    [[maybe_unused]] key_slice_type upper_key_slice;
+    [[maybe_unused]] bool upper_key_lv;
+    [[maybe_unused]] bool ignore_upper_key;
+    if constexpr (use_upper_key) {
+      upper_key_slice = upper_key[0];
+      upper_key_lv = (upper_key_length > 1);
+      ignore_upper_key = false;
+    }
     bool passed_lower_key = false;
-    bool ignore_upper_key = !use_upper_key;
     dynamic_stack_type_x2 key_slice_and_node_index_stack(allocator, tile);
     [[maybe_unused]] dynamic_stack_type_x1 ignore_uk_stack(allocator, tile);
     while (true) {
@@ -231,17 +236,16 @@ struct gpu_masstree {
         if (border_node.is_garbage()) { scan_op = -1; }
         else {
           // scan a node and store outputs
-          auto count = border_node.scan(lower_key_slice,
-                                        lower_key_lv,
-                                        ignore_upper_key,
-                                        upper_key_slice,
-                                        upper_key_lv,
-                                        out_max_count,
-                                        scan_op,
-                                        out_value,
-                                        out_keys,
-                                        layer,
-                                        out_key_max_length);
+          uint32_t count;
+          if constexpr (use_upper_key) {
+            count = border_node.scan(lower_key_slice, lower_key_lv,
+                                     ignore_upper_key, upper_key_slice, upper_key_lv,
+                                     out_max_count, scan_op, out_value, out_keys, layer, out_key_max_length);
+          }
+          else {
+            count = border_node.scan(lower_key_slice, lower_key_lv,
+                                     out_max_count, scan_op, out_value, out_keys, layer, out_key_max_length);
+          }
           assert(count <= out_max_count);
           out_count += count;
           out_max_count -= count;
@@ -260,7 +264,7 @@ struct gpu_masstree {
             // if it's end of this layer, go to prev layer
             if (!border_node.has_sibling()) { scan_op = (layer == 0) ? -3 : -2; }
             // if reached upper key, end scanning
-            else if (upper_key_slice <= border_node.get_high_key()) { scan_op = -3; }
+            else if (use_upper_key && upper_key_slice <= border_node.get_high_key()) { scan_op = -3; }
             // else: continue side traversal
             else { assert(scan_op == -1); }
           }
