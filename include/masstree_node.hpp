@@ -32,6 +32,8 @@ struct masstree_node {
   using size_type = uint32_t;
   static constexpr int node_width = 16;
   static constexpr key_type max_key = std::numeric_limits<key_type>::max();
+  static constexpr bool BORDER_ENTRY_LINK = true;
+  static constexpr bool BORDER_ENTRY_VALUE = false;
   DEVICE_QUALIFIER masstree_node(elem_type* ptr, const size_type index, const tile_type& tile)
       : node_ptr_(ptr), tile_(tile)
       #ifdef NODE_DEBUG
@@ -45,7 +47,7 @@ struct masstree_node {
                                  const tile_type& tile,
                                  const elem_type elem,
                                  uint32_t metadata,
-                                 bool key_end_bit)
+                                 bool link_or_value)
       : node_ptr_(ptr)
       #ifdef NODE_DEBUG
       , node_index_(index)
@@ -53,7 +55,7 @@ struct masstree_node {
       , lane_elem_(elem)
       , tile_(tile)
       , metadata_(metadata)
-      , key_end_bit_(key_end_bit) {}
+      , link_or_value_(link_or_value) {}
 
   DEVICE_QUALIFIER void initialize_root() {
     lane_elem_ = 0;
@@ -64,7 +66,7 @@ struct masstree_node {
       (0u & sibling_bit_mask_) |  // has_sibling = false;
       (0u & garbage_bit_mask_)    // is_garbage = false;
     );
-    key_end_bit_ = 0;
+    link_or_value_ = 0;
     write_metadata_to_registers();
   }
 
@@ -79,8 +81,8 @@ struct masstree_node {
   DEVICE_QUALIFIER void read_metadata_from_registers() {
     metadata_ = tile_.shfl(lane_elem_, metadata_lane_);
     if (is_border()) {
-      uint32_t key_end_bits = tile_.shfl(lane_elem_, key_end_bits_lane_);
-      key_end_bit_ = (key_end_bits & (1u << tile_.thread_rank())) != 0;
+      uint32_t lov_bits = tile_.shfl(lane_elem_, link_or_value_bits_lane_);
+      link_or_value_ = (lov_bits & (1u << tile_.thread_rank())) != 0;
     }
   }
   DEVICE_QUALIFIER void write_metadata_to_registers() {
@@ -88,9 +90,9 @@ struct masstree_node {
       lane_elem_ = metadata_;
     }
     if (is_border()) {
-      uint32_t key_end_bits = tile_.ballot(key_end_bit_);
-      if (tile_.thread_rank() == key_end_bits_lane_) {
-        lane_elem_ = key_end_bits;
+      uint32_t lov_bits = tile_.ballot(link_or_value_);
+      if (tile_.thread_rank() == link_or_value_bits_lane_) {
+        lane_elem_ = lov_bits;
       }
     }
   }
@@ -110,8 +112,8 @@ struct masstree_node {
   DEVICE_QUALIFIER value_type get_value_from_location(const int location) const {
     return tile_.shfl(lane_elem_, get_value_lane_from_location(location));
   }
-  DEVICE_QUALIFIER bool get_key_end_bit_from_location(const int location) const {
-    return tile_.shfl(key_end_bit_, get_key_lane_from_location(location));
+  DEVICE_QUALIFIER bool is_location_link_or_value(const int location) const {
+    return tile_.shfl(link_or_value_, get_key_lane_from_location(location));
   }
   DEVICE_QUALIFIER bool is_valid_key_lane() const {
     return tile_.thread_rank() < num_keys();
@@ -219,15 +221,15 @@ struct masstree_node {
     return tile_.shfl(lane_elem_, get_value_lane_from_location(next_location));
   }
 
-  DEVICE_QUALIFIER uint32_t match_key_in_node(const key_type& key, bool key_end) const {
+  DEVICE_QUALIFIER uint32_t match_key_in_node(const key_type& key, bool link_or_value) const {
     assert(is_border());
     return tile_.ballot(is_valid_key_lane() &&
                         lane_elem_ == key &&
-                        key_end_bit_ == key_end);
+                        link_or_value_ == link_or_value);
   }
-  DEVICE_QUALIFIER bool key_is_in_node(const key_type& key, bool key_end) const {
+  DEVICE_QUALIFIER bool key_is_in_node(const key_type& key, bool link_or_value) const {
     assert(is_border());
-    auto key_exist = match_key_in_node(key, key_end);
+    auto key_exist = match_key_in_node(key, link_or_value);
     return (key_exist != 0);
   }
   DEVICE_QUALIFIER uint32_t match_ptr_in_node(const value_type& ptr) const {
@@ -238,39 +240,116 @@ struct masstree_node {
     auto ptr_exist = match_ptr_in_node(ptr);
     return (ptr_exist != 0);
   }
-  DEVICE_QUALIFIER bool get_key_value_from_node(const key_type& key, value_type& value, bool key_end) const {
+  DEVICE_QUALIFIER bool get_key_value_from_node(const key_type& key, value_type& value, bool link_or_value) const {
     assert(is_border());
-    auto key_exists = match_key_in_node(key, key_end);
+    auto key_exists = match_key_in_node(key, link_or_value);
     if (key_exists == 0) return false;
     value = get_value_from_location(__ffs(key_exists) - 1);
     return true;
   }
 
+  // lexicographic comparisons for key entries
+  DEVICE_QUALIFIER bool cmp_key_lv(const key_type& k1, bool lov1, const key_type& k2, bool lov2) const {
+    return (k1 < k2) || ((k1 == k2) && (static_cast<int>(lov1) <= static_cast<int>(lov2)));
+  }
+  DEVICE_QUALIFIER uint32_t do_scan(bool per_lane_in_range,
+                                    const size_type out_max_count,
+                                    int& link_entry_location,
+                                    value_type* out_value,
+                                    key_type* out_keys,
+                                    const size_type& layer,
+                                    const size_type& out_key_max_length) const {
+    const uint32_t in_range_ballot = tile_.ballot(per_lane_in_range);
+    if (in_range_ballot == 0) {
+      link_entry_location = -1;
+      return 0;
+    }
+    const int first_location = __ffs(in_range_ballot) - 1;
+    int last_location = utils::bits::bfind(in_range_ballot) + 1;
+    const bool in_range_and_link = per_lane_in_range && (link_or_value_ == BORDER_ENTRY_LINK);
+    const uint32_t in_range_and_link_ballot = tile_.ballot(in_range_and_link);
+    link_entry_location = -1;
+    if (in_range_and_link_ballot != 0) {
+      link_entry_location = __ffs(in_range_and_link_ballot) - 1;
+      last_location = link_entry_location;
+    }
+    // results up to out_max_count
+    int count = last_location - first_location;
+    if (count > out_max_count) {
+      last_location = first_location + out_max_count;
+      count = out_max_count;
+      link_entry_location = -1;
+    }
+    // store results
+    if (count > 0) {
+      if (out_value != nullptr &&
+          get_value_lane_from_location(first_location) <= tile_.thread_rank() &&
+          tile_.thread_rank() < get_value_lane_from_location(last_location)) {
+        out_value[tile_.thread_rank() - get_value_lane_from_location(first_location)] = lane_elem_;
+      }
+      if (out_keys != nullptr &&
+          get_key_lane_from_location(first_location) <= tile_.thread_rank() &&
+          tile_.thread_rank() < get_key_lane_from_location(last_location)) {
+        out_keys[(tile_.thread_rank() - get_key_lane_from_location(first_location)) * out_key_max_length + layer] = lane_elem_;
+      }
+    }
+    // return value: location of the link entry. If no link entry in range, return -1.
+    return count;
+  }
+  DEVICE_QUALIFIER uint32_t scan(const key_type& lower_key,
+                                 const bool lower_link_or_value,
+                                 const size_type out_max_count,
+                                 int& link_entry_location,
+                                 value_type* out_value,
+                                 key_type* out_keys,
+                                 const size_type& layer,
+                                 const size_type& out_key_max_length) const {
+    // return values in range, until we meet the link entry
+    assert(is_border());
+    const bool in_range = is_valid_key_lane() &&
+        cmp_key_lv(lower_key, lower_link_or_value, lane_elem_, link_or_value_);
+    return do_scan(in_range, out_max_count, link_entry_location, out_value, out_keys, layer, out_key_max_length);
+  }
+  DEVICE_QUALIFIER uint32_t scan(const key_type& lower_key,
+                                 const bool lower_link_or_value,
+                                 const bool ignore_upper_bound,
+                                 const key_type& upper_key,
+                                 const bool upper_link_or_value,
+                                 const size_type out_max_count,
+                                 int& link_entry_location,
+                                 value_type* out_value,
+                                 key_type* out_keys,
+                                 const size_type& layer,
+                                 const size_type& out_key_max_length) const {
+    // return values in range, until we meet the link entry
+    assert(is_border());
+    const bool in_range = is_valid_key_lane() &&
+        cmp_key_lv(lower_key, lower_link_or_value, lane_elem_, link_or_value_) &&
+        (ignore_upper_bound || cmp_key_lv(lane_elem_, link_or_value_, upper_key, upper_link_or_value));
+    return do_scan(in_range, out_max_count, link_entry_location, out_value, out_keys, layer, out_key_max_length);
+  }
+
   DEVICE_QUALIFIER int get_split_left_width() const {
     // normally, location is left_half_width_
-    // but we should put same-key non-last-slice and first last-slice in the same node
-    // to avoid comparing keys, we just shift if last elem of the left half is non-last-slice
-    bool shift_required = false;
-    if (is_border()) {
-      bool key_end_of_default_pivot = get_key_end_bit_from_location(half_node_width_ - 1);
-      shift_required = !key_end_of_default_pivot; // shift if it's non-last-slice
-    }
+    // but a value entry and a link entry with the same key should be in the same node
+    // to avoid comparing keys, we just shift if last elem of the left half is value entry
+    bool shift_required = is_border() && (is_location_link_or_value(half_node_width_ - 1) == BORDER_ENTRY_VALUE);
     return shift_required ? (half_node_width_ - 1) : half_node_width_;
   }
 
   DEVICE_QUALIFIER masstree_node do_split(const value_type right_sibling_index,
                                           elem_type* right_sibling_ptr,
                                           const int left_width) {
-    // same-key non-last-slice entry and first last-slice entry (if both exist) go to the same node
+    // same-key link and value entries (if both exist) must be in the same node
     //assert(!(
-    //  is_border_ &&
+    //  is_border() &&
     //  (get_key_from_location(left_width - 1) == get_key_from_location(left_width)) &&
-    //  (get_key_end_bit_from_location(left_width - 1) == false)
+    //  (is_location_link_or_value(left_width - 1) == BORDER_ENTRY_VALUE)
     //));
     assert(is_full());
     // prepare the upper half in right sibling
     elem_type right_sibling_elem = tile_.shfl_down(lane_elem_, left_width);
-    bool right_sibling_key_end_bit = is_border() ? tile_.shfl_down(key_end_bit_, left_width) : false;
+    bool right_sibling_link_or_value = is_border() ? tile_.shfl_down(link_or_value_, left_width) : false;
     // reconnect right sibling pointers
     if (tile_.thread_rank() == sibling_ptr_lane_) {
       // right's right sibling = this node's previous right sibling
@@ -297,7 +376,7 @@ struct masstree_node {
     // create right sibling node
     masstree_node right_sibling_node =
         masstree_node(right_sibling_ptr, right_sibling_index, tile_, right_sibling_elem,
-                      right_metadata, right_sibling_key_end_bit);
+                      right_metadata, right_sibling_link_or_value);
     // flush metadata
     write_metadata_to_registers();
     right_sibling_node.write_metadata_to_registers();
@@ -334,7 +413,7 @@ struct masstree_node {
                                                   elem_type* right_sibling_ptr) {
     // Copy the current node into a child
     auto left_child =
-        masstree_node(left_sibling_ptr, left_sibling_index, tile_, lane_elem_, metadata_, key_end_bit_);
+        masstree_node(left_sibling_ptr, left_sibling_index, tile_, lane_elem_, metadata_, link_or_value_);
     // if the root was a border node, now it should be interior
     metadata_ &= ~border_bit_mask_; // is_border = false;
     // Make new root
@@ -361,22 +440,22 @@ struct masstree_node {
     return {left_child, right_child};
   }
 
-  DEVICE_QUALIFIER void do_insert(const key_type& key, const value_type& value, bool key_end, const size_type& key_location) {
+  DEVICE_QUALIFIER void do_insert(const key_type& key, const value_type& value, bool link_or_value, const size_type& key_location) {
     // shuffle the keys and do the insertion
     assert(!is_full());
     metadata_++;  // equiv. to num_keys++;
     const int key_lane = get_key_lane_from_location(key_location);
     const int value_lane = get_value_lane_from_location(key_location + (is_border() ? 0 : 1));
     auto up_elem = tile_.shfl_up(lane_elem_, 1);
-    bool up_key_end_bit = tile_.shfl_up(key_end_bit_, 1);
+    bool up_link_or_value = tile_.shfl_up(link_or_value_, 1);
     if (is_valid_key_lane()) {
       if (tile_.thread_rank() == key_lane) {
         lane_elem_ = key;
-        key_end_bit_ = key_end;
+        link_or_value_ = link_or_value;
       }
       else if (tile_.thread_rank() > key_lane) {
         lane_elem_ = up_elem;
-        key_end_bit_ = up_key_end_bit;
+        link_or_value_ = up_link_or_value;
       }
     }
     else if (is_valid_value_lane()) {
@@ -392,21 +471,32 @@ struct masstree_node {
 
   DEVICE_QUALIFIER void insert(const key_type& key,
                                const value_type& value,
-                               bool last_slice_and_leaf) {
+                               bool link_or_value) {
     assert(!is_full());
     const bool key_is_larger = is_valid_key_lane() && (key > lane_elem_);
     uint32_t key_is_larger_bitmap = tile_.ballot(key_is_larger);
     auto key_location = utils::bits::bfind(key_is_larger_bitmap) + 1;
-    // if duplicates, this is the location of the first duplicate.
-    if (last_slice_and_leaf &&
-        (key_location < num_keys()) &&
-        (!get_key_end_bit_from_location(key_location)) &&
-        (get_key_from_location(key_location) == key)) {
-      // if inserting a last-slice entry but there's a same-key non-last slice,
-      // we should insert after the non-last slice.
+    assert(key_location <= num_keys());
+    // if key already exists, this is the location of it.
+    if (is_border() && link_or_value &&
+        (key_location < num_keys()) && (get_key_from_location(key_location) == key) &&
+        !is_location_link_or_value(key_location)) {
+      // the link entry should go after the same-key value entry.
       key_location++;
     }
-    do_insert(key, value, last_slice_and_leaf, key_location);
+    do_insert(key, value, link_or_value, key_location);
+  }
+
+  DEVICE_QUALIFIER void update(const key_type& key,
+                               const value_type& value) {
+    // already checked that (key, link_or_value=VALUE) exists
+    assert(is_border());
+    uint32_t key_exists = match_key_in_node(key, BORDER_ENTRY_VALUE);
+    assert(key_exists != 0);
+    uint32_t key_location = __ffs(key_exists) - 1;
+    if (tile_.thread_rank() == get_value_lane_from_location(key_location)) {
+      lane_elem_ = value;
+    }
   }
 
   struct merge_plan {
@@ -453,12 +543,12 @@ struct masstree_node {
     // this node is the left sibling
     // copy elements from right sibling node
     elem_type shifted_elem = tile_.shfl_up(right_sibling_node.lane_elem_, num_keys());
-    bool shifted_key_end_bit = is_border() ? tile_.shfl_up(right_sibling_node.key_end_bit_, num_keys()) : false;
+    bool shifted_link_or_value = is_border() ? tile_.shfl_up(right_sibling_node.link_or_value_, num_keys()) : false;
     auto new_num_keys = num_keys() + right_sibling_node.num_keys();
     if ((num_keys() <= tile_.thread_rank() && tile_.thread_rank() < new_num_keys) ||
         (node_width + num_keys() <= tile_.thread_rank() && tile_.thread_rank() < node_width + new_num_keys)) {
       lane_elem_ = shifted_elem;
-      key_end_bit_ = shifted_key_end_bit;
+      link_or_value_ = shifted_link_or_value;
     }
     set_num_keys(new_num_keys);
     // copy right child's sibling info and high key
@@ -484,15 +574,15 @@ struct masstree_node {
     assert(num_keys() == 2);
     // copy the children into current node
     lane_elem_ = left_child_node.lane_elem_;
-    key_end_bit_ = left_child_node.key_end_bit_;
+    link_or_value_ = left_child_node.link_or_value_;
     set_num_keys(left_child_node.num_keys() + right_child_node.num_keys());
     metadata_ = (metadata_ & ~border_bit_mask_) ^ (left_child_node.metadata_ & border_bit_mask_); // is_border = left.is_border;
     auto right_elem = tile_.shfl_up(right_child_node.lane_elem_, left_child_node.num_keys());
-    bool right_key_end_bit = is_border() ? tile_.shfl_up(right_child_node.key_end_bit_, left_child_node.num_keys()) : false;
+    bool right_link_or_value = is_border() ? tile_.shfl_up(right_child_node.link_or_value_, left_child_node.num_keys()) : false;
     if ((left_child_node.num_keys() <= tile_.thread_rank() && tile_.thread_rank() < num_keys()) ||
         (node_width + left_child_node.num_keys() <= tile_.thread_rank() && tile_.thread_rank() < node_width + num_keys())) {
       lane_elem_ = right_elem;
-      key_end_bit_ = right_key_end_bit;
+      link_or_value_ = right_link_or_value;
     }
     // copy right child's sibling info and high key
     metadata_ = (metadata_ & ~sibling_bit_mask_) ^ (right_child_node.metadata_ & sibling_bit_mask_);  // has_sibling = right.has_sibling;
@@ -511,27 +601,25 @@ struct masstree_node {
                                     int left_location) {
     // compute num shift; adjust similar to get_split_left_width()
     uint32_t num_shift = (sibling_node.num_keys() - num_keys()) / 2;
-    if (is_border()) {
-      if (!sibling_node.get_key_end_bit_from_location(sibling_node.num_keys() - num_shift - 1)) {
-        num_shift++;
-      }
+    if (is_border() && (sibling_node.is_location_link_or_value(sibling_node.num_keys() - num_shift - 1) == BORDER_ENTRY_VALUE)) {
+      num_shift++;
     }
     // copy last num_shift entries of the sibling into current
     elem_type shifted_elem = tile_.shfl_up(lane_elem_, num_shift);
-    bool shifted_key_end_bit = is_border() ? tile_.shfl_up(key_end_bit_, num_shift) : false;
+    bool shifted_link_or_value = is_border() ? tile_.shfl_up(link_or_value_, num_shift) : false;
     metadata_ += num_shift; // equiv. to num_keys += num_shift;
     if ((tile_.thread_rank() < num_keys()) ||
         (node_width <= tile_.thread_rank() && tile_.thread_rank() < node_width + num_keys())) {
       lane_elem_ = shifted_elem;
-      key_end_bit_ = shifted_key_end_bit;
+      link_or_value_ = shifted_link_or_value;
     }
     sibling_node.metadata_ -= num_shift;  // equiv. to num_keys -= num_shift;
     shifted_elem = tile_.shfl_down(sibling_node.lane_elem_, sibling_node.num_keys());
-    shifted_key_end_bit = is_border() ? tile_.shfl_down(sibling_node.key_end_bit_, sibling_node.num_keys()) : false;
+    shifted_link_or_value = is_border() ? tile_.shfl_down(sibling_node.link_or_value_, sibling_node.num_keys()) : false;
     if ((tile_.thread_rank() < num_shift) ||
         (node_width <= tile_.thread_rank() && tile_.thread_rank() < node_width + num_shift)) {
       lane_elem_ = shifted_elem;
-      key_end_bit_ = shifted_key_end_bit;
+      link_or_value_ = shifted_link_or_value;
     }
     write_metadata_to_registers();
     // remove last num_shift entries from the sibling
@@ -547,9 +635,9 @@ struct masstree_node {
       parent_node.lane_elem_ = pivot_key;
     }
     //assert(!(
-    //  is_border_ &&
+    //  is_border() &&
     //  (sibling_node.get_key_from_location(sibling_node.num_keys_ - 1) == get_key_from_location(0)) &&
-    //  (sibling_node.get_key_end_bit_from_location(sibling_node.num_keys_ - 1) == false)
+    //  (sibling_node.is_location_link_or_value(sibling_node.num_keys_ - 1) == BORDER_ENTRY_VALUE)
     //));
   }
 
@@ -561,18 +649,16 @@ struct masstree_node {
                                      masstree_node& new_sibling_node) {
     // compute num shift; adjust similar to get_split_left_width()
     uint32_t num_shift = (sibling_node.num_keys() - num_keys()) / 2;
-    if (is_border()) {
-      if (!sibling_node.get_key_end_bit_from_location(num_shift - 1)) {
-        num_shift--;
-      }
+    if (is_border() && (sibling_node.is_location_link_or_value(num_shift - 1) == BORDER_ENTRY_VALUE)) {
+      num_shift--;
     }
     // copy first num_shift entries of the sibling into current
     elem_type shifted_elem = tile_.shfl_up(sibling_node.lane_elem_, num_keys());
-    bool shifted_key_end_bit = is_border() ? tile_.shfl_up(sibling_node.key_end_bit_, num_keys()) : false;
+    bool shifted_link_or_value = is_border() ? tile_.shfl_up(sibling_node.link_or_value_, num_keys()) : false;
     if ((num_keys() <= tile_.thread_rank() && tile_.thread_rank() < num_keys() + num_shift) ||
         (node_width + num_keys() <= tile_.thread_rank() && tile_.thread_rank() < node_width + num_keys() + num_shift)) {
       lane_elem_ = shifted_elem;
-      key_end_bit_ = shifted_key_end_bit;
+      link_or_value_ = shifted_link_or_value;
     }
     metadata_ += num_shift; // equiv. to num_keys += num_shift;
     key_type pivot_key = get_key_from_location(num_keys() - 1);
@@ -592,15 +678,15 @@ struct masstree_node {
                                      new_sibling_node.tile_,
                                      sibling_node.lane_elem_,
                                      sibling_node.metadata_,
-                                     sibling_node.key_end_bit_);
+                                     sibling_node.link_or_value_);
     // remove first num_shift entries from the new_sibling
     shifted_elem = tile_.shfl_down(new_sibling_node.lane_elem_, num_shift);
-    shifted_key_end_bit = is_border() ? tile_.shfl_down(new_sibling_node.key_end_bit_, num_shift) : false;
+    shifted_link_or_value = is_border() ? tile_.shfl_down(new_sibling_node.link_or_value_, num_shift) : false;
     new_sibling_node.metadata_ -= num_shift;  // equiv. to new_sibling_node.num_keys -= num_shift;
     if ((tile_.thread_rank() < new_sibling_node.num_keys()) ||
         (node_width <= tile_.thread_rank() && tile_.thread_rank() < node_width + new_sibling_node.num_keys())) {
       new_sibling_node.lane_elem_ = shifted_elem;
-      new_sibling_node.key_end_bit_ = shifted_key_end_bit;
+      new_sibling_node.link_or_value_ = shifted_link_or_value;
     }
     new_sibling_node.write_metadata_to_registers();
     // make old sibling empty
@@ -613,9 +699,9 @@ struct masstree_node {
       parent_node.lane_elem_ = new_sibling_index;
     }
     //assert(!(
-    //  is_border_ &&
+    //  is_border() &&
     //  (get_key_from_location(num_keys_ - 1) == new_sibling_node.get_key_from_location(0)) &&
-    //  (get_key_end_bit_from_location(num_keys_ - 1) == false)
+    //  (is_location_link_or_value(num_keys_ - 1) == BORDER_ENTRY_VALUE)
     //));
   }
 
@@ -623,11 +709,11 @@ struct masstree_node {
     assert(num_keys() > 0);
     metadata_--;  // equiv. to num_keys--;
     auto down_elem = tile_.shfl_down(lane_elem_, 1);
-    bool down_key_end_bit = tile_.shfl_down(key_end_bit_, 1);
+    bool down_link_or_value = tile_.shfl_down(link_or_value_, 1);
     if (is_valid_key_lane()) {
       if (tile_.thread_rank() >= key_lane) {
         lane_elem_ = down_elem;
-        key_end_bit_ = down_key_end_bit;
+        link_or_value_ = down_link_or_value;
       }
     }
     else if (is_valid_value_lane()) {
@@ -638,10 +724,9 @@ struct masstree_node {
     write_metadata_to_registers();
   }
 
-  DEVICE_QUALIFIER bool erase(const key_type& key, bool key_end) {
-    // erase entry (key, key_end=true)
+  DEVICE_QUALIFIER bool erase(const key_type& key, bool link_or_value) {
     assert(is_border());
-    uint32_t key_exists = match_key_in_node(key, key_end);
+    uint32_t key_exists = match_key_in_node(key, link_or_value);
     if (key_exists == 0) return false;
     uint32_t key_location = __ffs(key_exists) - 1;
     do_erase(get_key_lane_from_location(key_location),
@@ -657,7 +742,7 @@ struct masstree_node {
     #endif
     lane_elem_ = other.lane_elem_;
     metadata_ = other.metadata_;
-    key_end_bit_ = other.key_end_bit_;
+    link_or_value_ = other.link_or_value_;
     return *this;
   }
 
@@ -681,8 +766,8 @@ struct masstree_node {
     for (size_type i = 0; i < num_keys(); ++i) {
       elem_type key = tile_.shfl(lane_elem_, get_key_lane_from_location(i));
       elem_type value = tile_.shfl(lane_elem_, get_value_lane_from_location(i));
-      bool key_end_bit = tile_.shfl(key_end_bit_, get_key_lane_from_location(i));
-      if (lead_lane) printf("(%u %u %s) ", key, value, key_end_bit ? "$" : ":");
+      bool link_or_value = tile_.shfl(link_or_value_, get_key_lane_from_location(i));
+      if (lead_lane) printf("(%u %u %s) ", key, value, link_or_value == BORDER_ENTRY_VALUE ? "$" : ":");
     }
     if (lead_lane) printf("%s %s ", is_locked() ? "locked" : "unlocked", is_border() ? "border" : "interior");
     elem_type sibling_key = get_high_key();
@@ -715,8 +800,8 @@ struct masstree_node {
 
   // for border nodes,
   //    key14 is high key, used for B-link traversal
-  //    ptr14 is key_end_bits; bits13-0 corresponds to key13-0
-  //      bit=0 (pointer of root node to next masstree layer), bit=1 (pointer of leaf value)
+  //    ptr14 is link_or_value_bits; bits13-0 corresponds to key13-0
+  //      bit=1 (link to next layer root node), bit=0 (value)
 
   // metadata is 32bits.
   //    (MSB)
@@ -729,7 +814,7 @@ struct masstree_node {
   static constexpr uint32_t metadata_lane_ = node_width - 1;
   static constexpr uint32_t sibling_ptr_lane_ = node_width * 2 - 1;
   static constexpr uint32_t border_high_key_lane_ = node_width - 2;
-  static constexpr uint32_t key_end_bits_lane_ = node_width * 2 - 2;
+  static constexpr uint32_t link_or_value_bits_lane_ = node_width * 2 - 2;
   
   static constexpr uint32_t num_keys_offset_ = 0;
   static constexpr uint32_t num_keys_bits_ = 4;
@@ -751,7 +836,8 @@ struct masstree_node {
   static_assert(num_keys_offset_ == 0); // this allows (metadata +/- N) equivalent to (num_keys +/- N) within range
 
   uint32_t metadata_;
-  bool key_end_bit_; // per-lane value. only threads0-13's values are meaningful
+  bool link_or_value_; // per-lane. only valid-key-lanes' are meaningful
+  
 };
 
 template <int MAX_STACK_SIZE, typename Func, typename BTree>
