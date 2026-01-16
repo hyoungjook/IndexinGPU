@@ -1188,7 +1188,7 @@ __global__ void masstree_test_insert_erase_kernel(const key_slice_type* insert_k
   }
 }
 
-template <typename key_slice_type, typename value_type, typename size_type, typename btree>
+template <bool use_upper_key, typename key_slice_type, typename value_type, typename size_type, typename btree>
 __global__ void masstree_range_kernel(const key_slice_type* lower_keys,
                                       const size_type* lower_key_lengths,
                                       const size_type max_key_length,
@@ -1237,18 +1237,18 @@ __global__ void masstree_range_kernel(const key_slice_type* lower_keys,
     auto cur_value = values ? tile.shfl(value, cur_rank) : nullptr;
     auto cur_out_key = out_keys ? tile.shfl(out_key, cur_rank) : nullptr;
     auto cur_out_key_length = out_key_lengths ? tile.shfl(out_key_length, cur_rank) : nullptr;
-    auto cur_count = tree.cooperative_range(cur_lower_key,
-                                            cur_lower_key_length,
-                                            tile,
-                                            allocator,
-                                            cur_upper_key,
-                                            cur_upper_key_length,
-                                            max_count_per_query,
-                                            cur_value,
-                                            cur_out_key,
-                                            cur_out_key_length,
-                                            max_key_length,
-                                            concurrent);
+    auto cur_count = tree.cooperative_range<use_upper_key>(cur_lower_key,
+                                                           cur_lower_key_length,
+                                                           tile,
+                                                           allocator,
+                                                           cur_upper_key,
+                                                           cur_upper_key_length,
+                                                           max_count_per_query,
+                                                           cur_value,
+                                                           cur_out_key,
+                                                           cur_out_key_length,
+                                                           max_key_length,
+                                                           concurrent);
     if (cur_rank == tile.thread_rank()) {
       count = cur_count;
       to_query = false;
