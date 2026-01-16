@@ -222,7 +222,7 @@ struct gpu_masstree {
     }
     bool passed_lower_key = false;
     dynamic_stack_type_x2 key_slice_and_node_index_stack(allocator, tile);
-    [[maybe_unused]] dynamic_stack_type_x1 ignore_uk_stack(allocator, tile);
+    [[maybe_unused]] dynamic_stack_type_x1 ignore_upper_key_stack(allocator, tile);
     while (true) {
       // traverse the btree: current_node_index can be root node or border node
       auto border_node = coop_traverse_until_border(lower_key_slice, current_node_index, tile, allocator, false, concurrent, &current_node_index);
@@ -294,7 +294,7 @@ struct gpu_masstree {
         lower_key_lv = !(passed_lower_key || layer == lower_key_length - 1);
         // handle upper key
         if constexpr (use_upper_key) {
-          ignore_uk_stack.push(static_cast<size_type>(ignore_upper_key));
+          ignore_upper_key_stack.push(static_cast<size_type>(ignore_upper_key));
           // check if ignore the upper key
           ignore_upper_key = ignore_upper_key ||
               (checkpoint_key_slice < upper_key_slice || layer == upper_key_length);
@@ -308,13 +308,13 @@ struct gpu_masstree {
         while (true) {
           if (layer == 0) {
             key_slice_and_node_index_stack.destroy();
-            if constexpr (use_upper_key) { ignore_uk_stack.destroy(); }
+            if constexpr (use_upper_key) { ignore_upper_key_stack.destroy(); }
             return out_count;
           }
           layer--;
           key_slice_and_node_index_stack.pop(lower_key_slice, current_node_index);
           if constexpr (use_upper_key) {
-            ignore_uk_stack.pop(ignore_upper_key);
+            ignore_upper_key_stack.pop(ignore_upper_key);
             assert(ignore_upper_key || layer < upper_key_length);
             if (!ignore_upper_key && lower_key_slice >= upper_key[layer]) { continue; }
           }
@@ -332,7 +332,7 @@ struct gpu_masstree {
       else {
         assert(scan_op == -3);  // end scanning
         key_slice_and_node_index_stack.destroy();
-        if constexpr (use_upper_key) { ignore_uk_stack.destroy(); }
+        if constexpr (use_upper_key) { ignore_upper_key_stack.destroy(); }
         return out_count;
       }
     }
