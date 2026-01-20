@@ -37,7 +37,7 @@
 #include <simple_bump_alloc.hpp>
 #include <simple_slab_alloc.hpp>
 #include <simple_dummy_reclaim.hpp>
-#include <simple_debr_reclaim.hpp>
+#include <simple_debra_reclaim.hpp>
 
 namespace GpuMasstree {
 

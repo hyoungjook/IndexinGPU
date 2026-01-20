@@ -27,7 +27,7 @@
 // refactoring of memory_reclaimer.hpp
 
 template <uint32_t buffer_size_per_block = 4096>
-struct simple_debr_reclaimer {
+struct simple_debra_reclaimer {
   using size_type = uint32_t;
   using pointer_type = size_type;
   struct device_instance_type {
@@ -36,7 +36,7 @@ struct simple_debr_reclaimer {
     size_type max_num_blocks_;
     size_type buffer_size_;
   };
-  simple_debr_reclaimer() {
+  simple_debra_reclaimer() {
     max_num_blocks_ = compute_max_num_blocks();
     buffer_size_ = max_num_blocks_ * (buffer_size_per_block / sizeof(size_type));
     cuda_try(cudaMalloc(&announce_, sizeof(size_type) * (max_num_blocks_ + buffer_size_)));
@@ -44,12 +44,12 @@ struct simple_debr_reclaimer {
     cuda_try(cudaMemset(current_epoch_, 0x00, sizeof(size_type)));
     thrust::fill(thrust::device, announce_, announce_ + max_num_blocks_, 0x1);
   }
-  ~simple_debr_reclaimer() {
+  ~simple_debra_reclaimer() {
     cuda_try(cudaFree(announce_));
     cuda_try(cudaFree(current_epoch_));
   }
-  simple_debr_reclaimer(const simple_debr_reclaimer& other) = delete;
-  simple_debr_reclaimer& operator=(const simple_debr_reclaimer& other) = delete;
+  simple_debra_reclaimer(const simple_debra_reclaimer& other) = delete;
+  simple_debra_reclaimer& operator=(const simple_debra_reclaimer& other) = delete;
 
   device_instance_type get_device_instance() const {
     return device_instance_type{announce_, current_epoch_, max_num_blocks_, buffer_size_};
@@ -73,8 +73,8 @@ private:
 };
 
 template <uint32_t buffer_size_per_block>
-struct device_reclaimer_context<simple_debr_reclaimer<buffer_size_per_block>> {
-  using host_reclaim_type = simple_debr_reclaimer<buffer_size_per_block>;
+struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
+  using host_reclaim_type = simple_debra_reclaimer<buffer_size_per_block>;
   using device_instance_type = typename host_reclaim_type::device_instance_type;
   using size_type = typename host_reclaim_type::size_type;
   using pointer_type = typename host_reclaim_type::pointer_type;

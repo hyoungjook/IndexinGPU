@@ -20,7 +20,7 @@
 #include <cooperative_groups.h>
 #include <macros.hpp>
 #include <simple_dummy_reclaim.hpp>
-#include <simple_debr_reclaim.hpp>
+#include <simple_debra_reclaim.hpp>
 
 namespace GpuMasstree {
 namespace kernels {

@@ -241,7 +241,9 @@ int main(int argc, char** argv) {
   using simple_bump_alloc_type = simple_bump_allocator<128>;
   using simple_slab_alloc_type = simple_slab_allocator<128>;
   using simple_dummy_reclaim_type = simple_dummy_reclaimer;
+  using simple_debra_reclaim_type = simple_debra_reclaimer<4096>;
   using masstree_slab_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_dummy_reclaim_type>;
+  using masstree_slab_reclaim_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type>;
 
   using slab_allocator_type_blink = device_allocator::SlabAllocLight<node_type, 4, 1024 * 8, 16, 128>;
   using blink_tree_slab_type =
@@ -250,6 +252,11 @@ int main(int argc, char** argv) {
   {
     std::cout << "Benchmarking masstree_slab_type" << std::endl;
     bench_masstree_range_query<masstree_slab_type, true, false>(
+      d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
+      num_keys, max_key_length, max_counts_per_query, num_experiments
+    );
+    std::cout << "Benchmarking masstree_slab_reclaim_type" << std::endl;
+    bench_masstree_range_query<masstree_slab_reclaim_type, true, false>(
       d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
       num_keys, max_key_length, max_counts_per_query, num_experiments
     );
