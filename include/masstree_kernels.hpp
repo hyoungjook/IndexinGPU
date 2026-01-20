@@ -221,7 +221,7 @@ struct range_device_func {
     }
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const {
-    d_counts[thread_id] = regs.count;
+    if (d_counts) { d_counts[thread_id] = regs.count; }
   }
 };
 
