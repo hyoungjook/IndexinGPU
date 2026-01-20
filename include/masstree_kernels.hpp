@@ -225,61 +225,58 @@ struct range_device_func {
   }
 };
 
-template <bool do_merge, bool do_remove_empty_root, typename key_slice_type, typename value_type, typename size_type, typename masstree>
-__global__ void test_insert_erase_kernel(const key_slice_type* insert_keys,
-                                         const size_type* insert_key_lengths,
-                                         const value_type* insert_values,
-                                         const size_type insert_keys_count,
-                                         const key_slice_type* erase_keys,
-                                         const size_type* erase_key_lengths,
-                                         const size_type erase_keys_count,
-                                         const size_type max_key_length,
-                                         masstree tree) {
-  auto thread_id = threadIdx.x + blockIdx.x * blockDim.x;
+template <typename device_func0, typename device_func1, typename masstree>
+__global__ void batch_concurrent_two_funcs_kernel(masstree tree,
+                                                  const device_func0 func0,
+                                                  uint32_t num_requests0,
+                                                  const device_func1 func1,
+                                                  uint32_t num_requests1) {
   auto block = cg::this_thread_block();
   auto tile = cg::tiled_partition<masstree::cg_tile_size>(block);
-  auto tile_id = thread_id / masstree::cg_tile_size;
-  // if tile_id is even -> do insert. if tile_id is odd -> do erase.
-  const bool is_insert = (tile_id % 2 == 0);
-  // op_thread_id is id of threads within each op (insert/erase).
-  auto op_thread_id = (tile_id / 2) * masstree::cg_tile_size + tile.thread_rank();
-  if ((op_thread_id - tile.thread_rank()) >= (is_insert ? insert_keys_count : erase_keys_count)) { return; }
-  const key_slice_type* key = nullptr;
-  size_type key_length = 0;
-  value_type value = masstree::invalid_value;
-  bool to_do = false;
-  if (is_insert) {
-    if (op_thread_id < insert_keys_count) {
-      key = &insert_keys[max_key_length * op_thread_id];
-      key_length = insert_key_lengths ? insert_key_lengths[op_thread_id] : max_key_length;
-      value = insert_values[op_thread_id];
-      to_do = true;
-    }
-  }
-  else {
-    if (op_thread_id < erase_keys_count) {
-      key = &erase_keys[max_key_length * op_thread_id];
-      key_length = erase_key_lengths ? erase_key_lengths[op_thread_id] : max_key_length;
-      to_do = true;
-    }
-  }
+
   using allocator_type = typename masstree::device_allocator_context_type;
   allocator_type allocator{tree.allocator_, tile};
-  auto work_queue = tile.ballot(to_do);
-  while (work_queue) {
-    auto cur_rank = __ffs(work_queue) - 1;
-    auto cur_key = tile.shfl(key, cur_rank);
-    auto cur_key_length = tile.shfl(key_length, cur_rank);
-    auto cur_value = tile.shfl(value, cur_rank);
-    if (is_insert) {
-      tree.cooperative_insert(cur_key, cur_key_length, cur_value, tile, allocator);
+
+  // even'th tile -> do func0, odd'th tile -> do func1
+  // assume num_requests0 ~= num_requests1
+  uint32_t block_size = blockDim.x;
+  uint32_t num_request_tiles = (max(num_requests0, num_requests1) + masstree::cg_tile_size - 1) / masstree::cg_tile_size * 2;
+  uint32_t num_request_blocks = (num_request_tiles * masstree::cg_tile_size + block_size - 1) / block_size;
+  uint32_t num_worker_blocks = gridDim.x;
+  for (uint32_t thread_id = threadIdx.x + blockIdx.x * blockDim.x;
+       thread_id < (num_request_blocks * block_size);
+       thread_id += (num_worker_blocks * block_size)) {
+    uint32_t tile_id = thread_id / masstree::cg_tile_size;
+    uint32_t request_id = (tile_id % 2);
+    uint32_t thread_id_within_request = (tile_id / 2) * masstree::cg_tile_size + tile.thread_rank();
+    if (request_id == 0) {
+      bool task_exists = (thread_id_within_request < num_requests0);
+      typename device_func0::dev_regs regs;
+      if (task_exists) { regs = func0.load(thread_id_within_request, tile); }
+      auto work_queue = tile.ballot(task_exists);
+      while (work_queue) {
+        int cur_rank = __ffs(work_queue) - 1;
+        func0.exec(tree, regs, tile, allocator, cur_rank);
+        if (tile.thread_rank() == cur_rank) { task_exists = false; }
+        work_queue = tile.ballot(task_exists);
+      }
+      if (thread_id_within_request < num_requests0) { func0.store(regs, thread_id_within_request); }
     }
-    else {
-      tree.cooperative_erase<do_merge, do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, true);
+    else { // request_id == 1
+      bool task_exists = (thread_id_within_request < num_requests1);
+      typename device_func1::dev_regs regs;
+      if (task_exists) { regs = func1.load(thread_id_within_request, tile); }
+      auto work_queue = tile.ballot(task_exists);
+      while (work_queue) {
+        int cur_rank = __ffs(work_queue) - 1;
+        func1.exec(tree, regs, tile, allocator, cur_rank);
+        if (tile.thread_rank() == cur_rank) { task_exists = false; }
+        work_queue = tile.ballot(task_exists);
+      }
+      if (thread_id_within_request < num_requests1) { func1.store(regs, thread_id_within_request); }
     }
-    if (tile.thread_rank() == cur_rank) { to_do = false; }
-    work_queue = tile.ballot(to_do);
   }
+
 }
 
 } // namespace kernels
