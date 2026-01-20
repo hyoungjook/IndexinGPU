@@ -253,13 +253,13 @@ using simple_slab_alloc_type = simple_slab_allocator<128>;
 
 typedef testing::Types<
     //BTreeMapData<
-    //    GpuBTree::
+    //    GpuMasstree::
     //        gpu_masstree<bump_allocator_type>>,
     //BTreeMapData<
-    //    GpuBTree::
+    //    GpuMasstree::
     //        gpu_masstree<slab_allocator_type>>>
-    //BTreeMapData<GpuBTree::gpu_masstree<simple_bump_alloc_type>>,
-    BTreeMapData<GpuBTree::gpu_masstree<simple_slab_alloc_type>>>
+    //BTreeMapData<GpuMasstree::gpu_masstree<simple_bump_alloc_type>>,
+    BTreeMapData<GpuMasstree::gpu_masstree<simple_slab_alloc_type>>>
     Implementations;
 
 TYPED_TEST_SUITE(BTreeMapTest, Implementations);

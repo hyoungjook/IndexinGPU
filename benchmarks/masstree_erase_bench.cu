@@ -233,7 +233,7 @@ int main(int argc, char** argv) {
   using slab_allocator_type = device_allocator::SlabAllocLight<node_type, 4, 1024 * 8, 32, 128>;
   using simple_bump_alloc_type = simple_bump_allocator<128>;
   using simple_slab_alloc_type = simple_slab_allocator<128>;
-  using masstree_slab_type = GpuBTree::gpu_masstree<simple_slab_alloc_type>;
+  using masstree_slab_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type>;
 
   using slab_allocator_type_blink = device_allocator::SlabAllocLight<node_type, 4, 1024 * 8, 16, 128>;
   using blink_tree_slab_type =
