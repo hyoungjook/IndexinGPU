@@ -73,6 +73,7 @@ __global__ void batch_kernel(masstree tree,
     if constexpr (do_reclaim) { reclaimer.end_critical_section_block(block_wide_tile); }
     if (thread_id < num_requests) { func.store(regs, thread_id); }
   }
+  if constexpr (do_reclaim) { reclaimer.drain_all(block_wide_tile, tile, allocator); }
 }
 
 template <bool do_reclaim, typename device_func0, typename device_func1, typename masstree>
@@ -113,7 +114,7 @@ __global__ void batch_concurrent_two_funcs_kernel(masstree tree,
       auto work_queue = tile.ballot(task_exists);
       while (work_queue) {
         int cur_rank = __ffs(work_queue) - 1;
-        if constexpr (do_reclaim) { reclaimer.begin_critical_section_tile(block_wide_tile, tile); }
+        if constexpr (do_reclaim) { reclaimer.begin_critical_section_tile(block_wide_tile, tile, allocator); }
         func0.exec(tree, regs, tile, allocator, reclaimer, cur_rank);
         if constexpr (do_reclaim) { reclaimer.end_critical_section_tile(block_wide_tile, tile); }
         if (tile.thread_rank() == cur_rank) { task_exists = false; }
@@ -130,7 +131,7 @@ __global__ void batch_concurrent_two_funcs_kernel(masstree tree,
       auto work_queue = tile.ballot(task_exists);
       while (work_queue) {
         int cur_rank = __ffs(work_queue) - 1;
-        if constexpr (do_reclaim) { reclaimer.begin_critical_section_tile(block_wide_tile, tile); }
+        if constexpr (do_reclaim) { reclaimer.begin_critical_section_tile(block_wide_tile, tile, allocator); }
         func1.exec(tree, regs, tile, allocator, reclaimer, cur_rank);
         if constexpr (do_reclaim) { reclaimer.end_critical_section_tile(block_wide_tile, tile); }
         if (tile.thread_rank() == cur_rank) { task_exists = false; }
@@ -140,6 +141,7 @@ __global__ void batch_concurrent_two_funcs_kernel(masstree tree,
       if (thread_id_within_request < num_requests1) { func1.store(regs, thread_id_within_request); }
     }
   }
+  if constexpr (do_reclaim) { reclaimer.drain_all(block_wide_tile, tile, allocator); }
 }
 
 template <typename key_slice_type, typename size_type, typename value_type>

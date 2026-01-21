@@ -64,4 +64,7 @@ struct device_reclaimer_context<simple_dummy_reclaimer> {
 
   template <typename block_type, typename tile_type>
   DEVICE_QUALIFIER void end_critical_section_tile(const block_type& block, const tile_type& tile) noexcept {}
+
+  template <typename block_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void drain_all(const block_type& block, const tile_type& tile, allocator_type& allocator) noexcept {}
 };
