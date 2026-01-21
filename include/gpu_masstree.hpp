@@ -21,7 +21,7 @@
 #include <cooperative_groups.h>
 #include <cuda_runtime.h>
 #include <stdio.h>
-#include <btree_kernels.hpp>
+#include <masstree_kernels.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
@@ -36,10 +36,14 @@
 #include <dynamic_stack.hpp>
 #include <simple_bump_alloc.hpp>
 #include <simple_slab_alloc.hpp>
+#include <simple_dummy_reclaim.hpp>
+#include <simple_debra_reclaim.hpp>
+#include <simple_hidebra_reclaim.hpp>
 
-namespace GpuBTree {
+namespace GpuMasstree {
 
-template <typename Allocator>
+template <typename Allocator,
+          typename Reclaimer>
 struct gpu_masstree {
   using size_type = uint32_t;
   using elem_type = uint32_t;
@@ -47,6 +51,7 @@ struct gpu_masstree {
   using value_type = elem_type;
   static auto constexpr branching_factor = 16;
   static auto constexpr cg_tile_size = 2 * branching_factor;
+  using masstree_type = gpu_masstree<Allocator, Reclaimer>;
 
   static constexpr value_type invalid_value = std::numeric_limits<value_type>::max();
 
@@ -54,17 +59,28 @@ struct gpu_masstree {
   using device_allocator_instance_type = typename host_allocator_type::device_instance_type;
   using device_allocator_context_type = device_allocator_context<host_allocator_type>;
 
+  using host_reclaimer_type = Reclaimer;
+  using device_reclaimer_instance_type = typename host_reclaimer_type::device_instance_type;
+  using device_reclaimer_context_type = device_reclaimer_context<host_reclaimer_type>;
+
   gpu_masstree() = delete;
-  gpu_masstree(const host_allocator_type& host_allocator)
-      : allocator_(host_allocator.get_device_instance()) {
+  gpu_masstree(const host_allocator_type& host_allocator,
+               const host_reclaimer_type& host_reclaimer)
+      : allocator_(host_allocator.get_device_instance())
+      , reclaimer_(host_reclaimer.get_device_instance()) {
     allocate();
   }
-  
+
+  gpu_masstree& operator=(const gpu_masstree& other) = delete;
   gpu_masstree(const gpu_masstree& other)
       : d_root_index_(other.d_root_index_)
-      , allocator_(other.allocator_) {}
+      , is_owner_(false)
+      , allocator_(other.allocator_)
+      , reclaimer_(other.reclaimer_) {}
 
-  ~gpu_masstree() {}
+  ~gpu_masstree() {
+    deallocate();
+  }
 
   // host-side APIs
   // if key_lengths == NULL, we use max_key_length as a fixed length
@@ -75,9 +91,53 @@ struct gpu_masstree {
             const size_type num_keys,
             cudaStream_t stream = 0,
             bool concurrent = false) {
-    const uint32_t block_size = 512;
-    const uint32_t num_blocks = (num_keys + block_size - 1) / block_size;
-    kernels::masstree_find_kernel<<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, values, num_keys, *this, concurrent);
+    kernels::find_device_func<key_slice_type, size_type, value_type> func{
+      .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths,
+      .d_values = values, .concurrent = concurrent};
+    launch_batch_kernel(func, num_keys, stream);
+  }
+
+  void insert(const key_slice_type* keys,
+              const size_type max_key_length,
+              const size_type* key_lengths,
+              const value_type* values,
+              const size_type num_keys,
+              cudaStream_t stream = 0,
+              bool update_if_exists = false) {
+    kernels::insert_device_func<key_slice_type, size_type, value_type> func{
+      .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths,
+      .d_values = values, .update_if_exists = update_if_exists};
+    launch_batch_kernel(func, num_keys, stream);
+  }
+
+  void erase(const key_slice_type* keys,
+             const size_type max_key_length,
+             const size_type* key_lengths,
+             const size_type num_keys,
+             cudaStream_t stream = 0,
+             bool do_remove_empty_root = true,
+             bool do_merge = true,
+             bool concurrent = true) {
+    if (do_remove_empty_root) {
+      kernels::erase_device_func<true, true, key_slice_type, size_type, value_type> func{
+        .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths,
+        .concurrent = concurrent};
+      launch_batch_kernel(func, num_keys, stream);
+    }
+    else {
+      if (do_merge) {
+        kernels::erase_device_func<true, false, key_slice_type, size_type, value_type> func{
+          .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths,
+          .concurrent = concurrent};
+        launch_batch_kernel(func, num_keys, stream);
+      }
+      else {
+        kernels::erase_device_func<false, false, key_slice_type, size_type, value_type> func{
+          .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths,
+          .concurrent = concurrent};
+        launch_batch_kernel(func, num_keys, stream);
+      }
+    }
   }
 
   void range(const key_slice_type* lower_keys,
@@ -93,48 +153,23 @@ struct gpu_masstree {
              size_type* out_key_lengths = nullptr,
              cudaStream_t stream = 0,
              bool concurrent = false) {
-    const uint32_t block_size = 512;
-    const uint32_t num_blocks = (num_queries + block_size - 1) / block_size;
     if (upper_keys) {
-      kernels::masstree_range_kernel<true><<<num_blocks, block_size, 0, stream>>>(lower_keys, lower_key_lengths, max_key_length, max_count_per_query, num_queries, upper_keys, upper_key_lengths, counts, values, out_keys, out_key_lengths, *this, concurrent);
+      kernels::range_device_func<true, key_slice_type, size_type, value_type> func{
+        .d_lower_keys = lower_keys, .d_lower_key_lengths = lower_key_lengths,
+        .max_key_length = max_key_length, .max_count_per_query = max_count_per_query,
+        .d_upper_keys = upper_keys, .d_upper_key_lengths = upper_key_lengths,
+        .d_counts = counts, .d_values = values, .d_out_keys = out_keys, .d_out_key_lengths = out_key_lengths,
+        .concurrent = concurrent};
+      launch_batch_kernel(func, num_queries, stream);
     }
     else {
-      kernels::masstree_range_kernel<false><<<num_blocks, block_size, 0, stream>>>(lower_keys, lower_key_lengths, max_key_length, max_count_per_query, num_queries, upper_keys, upper_key_lengths, counts, values, out_keys, out_key_lengths, *this, concurrent);
-    }
-  }
-
-  void insert(const key_slice_type* keys,
-              const size_type max_key_length,
-              const size_type* key_lengths,
-              const value_type* values,
-              const size_type num_keys,
-              cudaStream_t stream = 0,
-              bool update_if_exists = false) {
-    const uint32_t block_size = 512;
-    const uint32_t num_blocks = (num_keys + block_size - 1) / block_size;
-    kernels::masstree_insert_kernel<<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, values, num_keys, *this, update_if_exists);
-  }
-
-  void erase(const key_slice_type* keys,
-             const size_type max_key_length,
-             const size_type* key_lengths,
-             const size_type num_keys,
-             cudaStream_t stream = 0,
-             bool do_remove_empty_root = true,
-             bool do_merge = true,
-             bool concurrent = true) {
-    const uint32_t block_size = 512;
-    const uint32_t num_blocks = (num_keys + block_size - 1) / block_size;
-    if (do_remove_empty_root) {
-      kernels::masstree_erase_kernel<true, true><<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, num_keys, *this, true);
-    }
-    else {
-      if (do_merge) {
-        kernels::masstree_erase_kernel<true, false><<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, num_keys, *this, true);
-      }
-      else {
-        kernels::masstree_erase_kernel<false, false><<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, num_keys, *this, concurrent);
-      }
+      kernels::range_device_func<false, key_slice_type, size_type, value_type> func{
+        .d_lower_keys = lower_keys, .d_lower_key_lengths = lower_key_lengths,
+        .max_key_length = max_key_length, .max_count_per_query = max_count_per_query,
+        .d_upper_keys = upper_keys, .d_upper_key_lengths = upper_key_lengths,
+        .d_counts = counts, .d_values = values, .d_out_keys = out_keys, .d_out_key_lengths = out_key_lengths,
+        .concurrent = concurrent};
+      launch_batch_kernel(func, num_queries, stream);
     }
   }
 
@@ -147,19 +182,30 @@ struct gpu_masstree {
                                     const size_type erase_num_keys,
                                     const size_type max_key_length,
                                     cudaStream_t stream = 0,
-                                    bool do_remove_empty_root = true,
-                                    bool do_merge = true) {
-    const uint32_t block_size = 512;
-    const uint32_t num_blocks = (insert_num_keys + erase_num_keys + block_size - 1) / block_size;
-    if (do_remove_empty_root) {
-      kernels::masstree_test_insert_erase_kernel<true, true><<<num_blocks, block_size, 0, stream>>>(insert_keys, insert_key_lengths, insert_values, insert_num_keys, erase_keys, erase_key_lengths, erase_num_keys, max_key_length, *this);
+                                    bool insert_update_if_exists = false,
+                                    bool erase_do_remove_empty_root = true,
+                                    bool erase_do_merge = true) {
+    kernels::insert_device_func<key_slice_type, size_type, value_type> insert_func{
+      .d_keys = insert_keys, .max_key_length = max_key_length, .d_key_lengths = insert_key_lengths,
+      .d_values = insert_values, .update_if_exists = insert_update_if_exists};
+    if (erase_do_remove_empty_root) {
+      kernels::erase_device_func<true, true, key_slice_type, size_type, value_type> erase_func{
+        .d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths,
+        .concurrent = true};
+      launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
     }
     else {
-      if (do_merge) {
-        kernels::masstree_test_insert_erase_kernel<true, false><<<num_blocks, block_size, 0, stream>>>(insert_keys, insert_key_lengths, insert_values, insert_num_keys, erase_keys, erase_key_lengths, erase_num_keys, max_key_length, *this);
+      if (erase_do_merge) {
+        kernels::erase_device_func<true, false, key_slice_type, size_type, value_type> erase_func{
+          .d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths,
+          .concurrent = true};
+        launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
       }
       else {
-        kernels::masstree_test_insert_erase_kernel<false, false><<<num_blocks, block_size, 0, stream>>>(insert_keys, insert_key_lengths, insert_values, insert_num_keys, erase_keys, erase_key_lengths, erase_num_keys, max_key_length, *this);
+        kernels::erase_device_func<false, false, key_slice_type, size_type, value_type> erase_func{
+          .d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths,
+          .concurrent = true};
+        launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
       }
     }
   }
@@ -441,6 +487,7 @@ struct gpu_masstree {
                                           const size_type key_length,
                                           const tile_type& tile,
                                           device_allocator_context_type& allocator,
+                                          device_reclaimer_context_type& reclaimer,
                                           bool concurrent = false) {
     using node_type = masstree_node<tile_type>;
     using dynamic_stack_type = utils::dynamic_stack_u32<1, tile_type, device_allocator_context_type>;
@@ -485,7 +532,7 @@ struct gpu_masstree {
         bool early_exited_ = false;
       } early_exit_check;
       bool border_node_is_root;
-      auto border_node = coop_traverse_until_border_merge(key_slice, node_type::BORDER_ENTRY_VALUE, current_node_index, border_node_is_root, tile, allocator, early_exit_check);
+      auto border_node = coop_traverse_until_border_merge(key_slice, node_type::BORDER_ENTRY_VALUE, current_node_index, border_node_is_root, tile, allocator, reclaimer, early_exit_check);
       if (early_exit_check.early_exited_) {
         return false; // key not exists
       }
@@ -502,7 +549,7 @@ struct gpu_masstree {
           key_slice = key[layer];
           per_layer_root_indexes.pop(current_node_index);
           early_exit_check.reset();
-          border_node = coop_traverse_until_border_merge(key_slice, node_type::BORDER_ENTRY_LINK, current_node_index, border_node_is_root, tile, allocator, early_exit_check);
+          border_node = coop_traverse_until_border_merge(key_slice, node_type::BORDER_ENTRY_LINK, current_node_index, border_node_is_root, tile, allocator, reclaimer, early_exit_check);
           if (early_exit_check.early_exited_) {
             break; // other warp removed the key
           }
@@ -522,7 +569,7 @@ struct gpu_masstree {
               border_node.store(cuda_memory_order::memory_order_relaxed);
               next_layer_root_node.unlock();
               border_node.unlock();
-              // TODO mark next_layer_root_node to be GCed
+              reclaimer.retire(current_node_index, tile);
             }
             else {
               // other warp changed the root
@@ -741,6 +788,7 @@ struct gpu_masstree {
                                                                              bool& output_node_is_root,
                                                                              const tile_type& tile,
                                                                              device_allocator_context_type& allocator,
+                                                                             device_reclaimer_context_type& reclaimer,
                                                                              EarlyExitCheck& early_exit_check) {
     // starting from a local root node in a layer, return the LOCKED border node and its index
     // proactively merge/borrow underflow nodes while traversal. also the returned border node is not underflow.
@@ -877,7 +925,8 @@ struct gpu_masstree {
             parent_node.store(cuda_memory_order::memory_order_relaxed);
             parent_node.unlock();
             right_sibling_node.unlock();
-            // TODO mark right_sibling_node as to-garbage-collect
+            auto right_sibling_index = plan.sibling_at_left ? current_node_index : plan.sibling_index;
+            reclaimer.retire(right_sibling_index, tile);
             if (plan.sibling_at_left) {
               current_node_index = plan.sibling_index;
               current_node = sibling_node;
@@ -892,8 +941,8 @@ struct gpu_masstree {
             right_sibling_node.store(cuda_memory_order::memory_order_relaxed);
             left_sibling_node.unlock();
             right_sibling_node.unlock();
-            // two sibling nodes are not modified
-            // TODO mark left_sibling_node and right_sibling_node as to-garbage-collect
+            reclaimer.retire(current_node_index, tile);
+            reclaimer.retire(plan.sibling_index, tile);
             current_node_index = current_root_index;
             current_node = parent_node;
           }
@@ -929,7 +978,7 @@ struct gpu_masstree {
             __threadfence();
             parent_node.store(cuda_memory_order::memory_order_relaxed);
             new_sibling_node.unlock();
-            // TODO mark sibling_node to be garbage collected
+            reclaimer.retire(sibling_index, tile);
           }
           parent_node.unlock();
           sibling_node.unlock();
@@ -1190,10 +1239,16 @@ struct gpu_masstree {
   }
 
   void allocate() {
-    d_root_index_ = cuda_allocator<size_type>().allocate(1);
+    is_owner_ = true;
+    cuda_try(cudaMalloc(&d_root_index_, sizeof(size_type)));
     cuda_try(cudaMemset(d_root_index_, 0x00, sizeof(size_type)));
-    root_index_ = std::shared_ptr<size_type>(d_root_index_, cuda_deleter<size_type>());
     initialize();
+  }
+
+  void deallocate() {
+    if (is_owner_) {
+      cuda_try(cudaFree(d_root_index_));
+    }
   }
 
   void initialize() {
@@ -1203,64 +1258,64 @@ struct gpu_masstree {
     cuda_try(cudaDeviceSynchronize());
   }
 
-  std::shared_ptr<size_type> root_index_;
+  template <typename device_func>
+  void launch_batch_kernel(const device_func& func, uint32_t num_requests, cudaStream_t stream) {
+    static constexpr bool do_reclaim = device_func::reclaim_required;
+    int block_size = host_reclaimer_type::block_size_;
+    std::size_t shmem_size = sizeof(uint32_t) * device_reclaimer_context_type::required_shmem_size();
+    int num_blocks_per_sm;
+    cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+      &num_blocks_per_sm,
+      kernels::batch_kernel<do_reclaim, device_func, masstree_type>,
+      block_size,
+      shmem_size);
+    cudaDeviceProp device_prop;
+    cudaGetDeviceProperties(&device_prop, 0);
+    uint32_t num_blocks = num_blocks_per_sm * device_prop.multiProcessorCount;
+
+    kernels::batch_kernel<do_reclaim><<<num_blocks, block_size, shmem_size, stream>>>(
+        *this, func, num_requests);
+  }
+
+  template <typename device_func0, typename device_func1>
+  void launch_batch_concurrent_two_funcs_kernel(const device_func0& func0, uint32_t num_requests0, const device_func1& func1, uint32_t num_requests1, cudaStream_t stream) {
+    static constexpr bool do_reclaim = device_func0::reclaim_required || device_func1::reclaim_required;
+    int block_size = host_reclaimer_type::block_size_;
+    std::size_t shmem_size = sizeof(uint32_t) * device_reclaimer_context_type::required_shmem_size();
+    int num_blocks_per_sm;
+    cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+      &num_blocks_per_sm,
+      kernels::batch_concurrent_two_funcs_kernel<do_reclaim, device_func0, device_func1, masstree_type>,
+      block_size,
+      shmem_size);
+    cudaDeviceProp device_prop;
+    cudaGetDeviceProperties(&device_prop, 0);
+    uint32_t num_blocks = num_blocks_per_sm * device_prop.multiProcessorCount;
+    
+    kernels::batch_concurrent_two_funcs_kernel<do_reclaim><<<num_blocks, block_size, shmem_size, stream>>>(
+        *this, func0, num_requests0, func1, num_requests1);
+  }
+
   size_type* d_root_index_;
+  bool is_owner_;
   device_allocator_instance_type allocator_;
+  device_reclaimer_instance_type reclaimer_;
 
-  template <typename btree>
-  friend __global__ void kernels::initialize_kernel(btree);
+  template <typename masstree>
+  friend __global__ void kernels::initialize_kernel(masstree);
 
-  template <typename key_slice_type, typename value_type, typename size_type, typename btree>
-  friend __global__ void kernels::masstree_insert_kernel(const key_slice_type* keys,
-                                                         const size_type max_key_length,
-                                                         const size_type* key_lengths,
-                                                         const value_type* values,
-                                                         const size_type keys_count,
-                                                         btree tree,
-                                                         bool update_if_exists);
+  template <bool do_reclaim, typename device_func, typename masstree>
+  friend __global__ void kernels::batch_kernel(masstree tree,
+                                               const device_func func,
+                                               uint32_t num_requests);
 
-  template <typename key_slice_type, typename value_type, typename size_type, typename btree>
-  friend __global__ void kernels::masstree_find_kernel(const key_slice_type* keys,
-                                                       const size_type max_key_length,
-                                                       const size_type* key_lengths,
-                                                       value_type* values,
-                                                       const size_type keys_count,
-                                                       btree tree,
-                                                       bool concurrent);
+  template <bool do_reclaim, typename device_func0, typename device_func1, typename masstree>
+  friend __global__ void kernels::batch_concurrent_two_funcs_kernel(masstree tree,
+                                                                    const device_func0 func0,
+                                                                    uint32_t num_requests0,
+                                                                    const device_func1 func1,
+                                                                    uint32_t num_requests1);
 
-  template <bool do_merge, bool do_remove_empty_root, typename key_slice_type, typename size_type, typename btree>
-  friend __global__ void kernels::masstree_erase_kernel(const key_slice_type* keys,
-                                                        const size_type max_key_length,
-                                                        const size_type* key_lengths,
-                                                        const size_type keys_count,
-                                                        btree tree,
-                                                        bool concurrent);
-
-  template <bool do_merge, bool do_remove_empty_root, typename key_slice_type, typename value_type, typename size_type, typename btree>
-  friend __global__ void kernels::masstree_test_insert_erase_kernel(const key_slice_type* insert_keys,
-                                                                    const size_type* insert_key_lengths,
-                                                                    const value_type* insert_values,
-                                                                    const size_type insert_keys_count,
-                                                                    const key_slice_type* erase_keys,
-                                                                    const size_type* erase_key_lengths,
-                                                                    const size_type erase_keys_count,
-                                                                    const size_type max_key_length,
-                                                                    btree tree);
-
-  template <bool use_upper_key, typename key_slice_type, typename value_type, typename size_type, typename btree>
-  friend __global__ void kernels::masstree_range_kernel(const key_slice_type* lower_keys,
-                                                        const size_type* lower_key_lengths,
-                                                        const size_type max_key_length,
-                                                        const size_type max_count_per_query,
-                                                        const size_type num_queries,
-                                                        const key_slice_type* upper_keys,
-                                                        const size_type* upper_key_lengths,
-                                                        size_type* counts,
-                                                        value_type* values,
-                                                        key_slice_type* out_keys,
-                                                        size_type* out_key_lengths,
-                                                        btree tree,
-                                                        bool concurrent);
 }; // struct gpu_masstree
 
-} // namespace GPUBTree
+} // namespace GPUMasstree
