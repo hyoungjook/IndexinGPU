@@ -24,7 +24,7 @@
 
 // refactoring of memory_reclaimer.hpp
 #ifndef NDEBUG
-#define RECLAIMER_DEBUG
+//#define RECLAIMER_DEBUG
 #endif
 
 template <uint32_t buffer_size_per_block = 16384>
@@ -65,13 +65,13 @@ struct simple_hidebra_reclaimer {
   }
   ~simple_hidebra_reclaimer() {
     #ifdef RECLAIMER_DEBUG
-    /*debug_stats h_stats;
+    debug_stats h_stats;
     cuda_try(cudaMemcpy(&h_stats, stats_, sizeof(debug_stats), cudaMemcpyDeviceToHost));
     h_stats.print();
     cuda_try(cudaFree(stats_));
     size_type h_final_epoch;
     cuda_try(cudaMemcpy(&h_final_epoch, current_epoch_, sizeof(size_type), cudaMemcpyDeviceToHost));
-    printf(" final_epoch(%u)\n", h_final_epoch);*/
+    printf(" final_epoch(%u)\n", h_final_epoch);
     #endif
     cuda_try(cudaFree(announce_));
     cuda_try(cudaFree(current_epoch_));
@@ -249,17 +249,11 @@ struct device_reclaimer_context<simple_hidebra_reclaimer<buffer_size_per_block>>
       }
       if (tile.all(bag_empty)) { return; }
 
-      // wait until we can reclaim
-      size_type cur_epoch;
-      while (true) {
-        // read current epoch
-        cur_epoch = cuda_memory<size_type>::load(reclaimer_.current_epoch_, cuda_memory_order::memory_order_relaxed);
-        // update global memory announce array, until we succeed
-        if (try_update_global_announce(tile, cur_epoch, 0, 0)) { break; }
+      // try announcing
+      auto cur_epoch = cuda_memory<size_type>::load(reclaimer_.current_epoch_, cuda_memory_order::memory_order_relaxed);
+      if (try_update_global_announce(tile, cur_epoch, 0, 0)) {
+        reclaim_and_switch_limbo_bag(tile, allocator);
       }
-
-      // do the job
-      reclaim_and_switch_limbo_bag(tile, allocator);
       scan_announce_and_advance_epoch(tile, cur_epoch);
     }
   }
