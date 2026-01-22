@@ -118,7 +118,6 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
     return (shmem_size_per_bag_ * num_bags_)    // limbo_bags
            + num_bags_                          // count_per_bag
            + 1                                  // cur_bag
-           + 1                                  // epoch_advanced
            ;
   }
 
@@ -174,19 +173,19 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
 
     // read current epoch
     auto cur_epoch = cuda_memory<size_type>::load(reclaimer_.current_epoch_, cuda_memory_order::memory_order_relaxed);
-    size_type old_epoch;
+    bool epoch_advanced;
     // atomically set critical bit and set epoch num
     if (block.thread_rank() == 0) {
-      old_epoch = atomicExch(reclaimer_.announce_ + blockIdx.x, cur_epoch | critical_bit_mask_);
+      auto old_epoch = atomicExch(reclaimer_.announce_ + blockIdx.x, cur_epoch | critical_bit_mask_);
       assert((old_epoch & critical_bit_mask_) == 0);
       if (old_epoch != cur_epoch) {
-        epoch_advanced() = true;
+        epoch_advanced = true;
       }
     }
-    block.sync();
+    epoch_advanced = block.shfl(epoch_advanced, 0);
 
     // if advancing epoch, 
-    if (epoch_advanced()) {
+    if (epoch_advanced) {
       // reclaim current limbo bag and change cur_bag
       uint32_t cur_bag = current_bag();
       cur_bag = (cur_bag + 1) % num_bags_;
@@ -218,7 +217,6 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
       if (block.thread_rank() == 0) {
         count_per_bag()[cur_bag] = 0;
         current_bag() = cur_bag;
-        epoch_advanced() = false;
       }
       block.sync();
     }
@@ -355,7 +353,6 @@ private:
   DEVICE_QUALIFIER pointer_type* limbo_bags() const { return shmem_buffer_; }
   DEVICE_QUALIFIER size_type* count_per_bag() const { return shmem_buffer_ + (shmem_size_per_bag_ * num_bags_); }
   DEVICE_QUALIFIER size_type& current_bag() const { return shmem_buffer_[(shmem_size_per_bag_ * num_bags_) + num_bags_]; }
-  DEVICE_QUALIFIER size_type& epoch_advanced() const { return shmem_buffer_[(shmem_size_per_bag_ * num_bags_) + num_bags_ + 1]; }
 
   const device_instance_type& reclaimer_;
   size_type* shmem_buffer_;
