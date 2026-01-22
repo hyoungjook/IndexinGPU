@@ -489,15 +489,17 @@ struct gpu_masstree {
                                           device_reclaimer_context_type& reclaimer,
                                           bool concurrent = false) {
     using node_type = masstree_node<tile_type>;
-    using dynamic_stack_type = utils::dynamic_stack_u32<1, tile_type, device_allocator_context_type>;
-    [[maybe_unused]] dynamic_stack_type per_layer_root_indexes(allocator, tile);
+    using dynamic_stack_type = utils::dynamic_stack_u32<2, tile_type, device_allocator_context_type>;
+    [[maybe_unused]] dynamic_stack_type per_layer_indexes(allocator, tile); // (root_index, border_index)
     // read-only traverse before the last slice
     size_type current_node_index = *d_root_index_;
     for (size_type slice = 0; slice < key_length - 1; slice++) {
-      if constexpr (do_remove_empty_root) { per_layer_root_indexes.push(current_node_index); }
       const key_slice_type key_slice = key[slice];
+      [[maybe_unused]] size_type border_node_index;
       auto border_node = coop_traverse_until_border(key_slice, current_node_index, tile, allocator, false,
-                                                    do_merge || do_remove_empty_root || concurrent);
+                                                    do_merge || do_remove_empty_root || concurrent,
+                                                    do_remove_empty_root ? &border_node_index: nullptr);
+      if constexpr (do_remove_empty_root) { per_layer_indexes.push(current_node_index, border_node_index); }
       const bool found = border_node.get_key_value_from_node(key_slice, current_node_index, node_type::BORDER_ENTRY_LINK);
       if (!found) {
         // key not exists, exit early
@@ -530,8 +532,7 @@ struct gpu_masstree {
         DEVICE_QUALIFIER void reset() { early_exited_ = false; }
         bool early_exited_ = false;
       } early_exit_check;
-      bool border_node_is_root;
-      auto border_node = coop_traverse_until_border_merge(key_slice, node_type::BORDER_ENTRY_VALUE, current_node_index, border_node_is_root, tile, allocator, reclaimer, early_exit_check);
+      auto border_node = coop_traverse_until_border_merge(key_slice, node_type::BORDER_ENTRY_VALUE, current_node_index, tile, allocator, reclaimer, early_exit_check);
       if (early_exit_check.early_exited_) {
         return false; // key not exists
       }
@@ -544,13 +545,19 @@ struct gpu_masstree {
       if constexpr (do_remove_empty_root) {
         // collect empty roots
         int layer = static_cast<int>(key_length) - 2;
-        while (layer >= 0 && border_node_is_root && border_node.num_keys() == 0) {
+        while (layer >= 0 && border_node.is_root() && border_node.num_keys() == 0) {
           key_slice = key[layer];
-          per_layer_root_indexes.pop(current_node_index);
-          early_exit_check.reset();
-          border_node = coop_traverse_until_border_merge(key_slice, node_type::BORDER_ENTRY_LINK, current_node_index, border_node_is_root, tile, allocator, reclaimer, early_exit_check);
-          if (early_exit_check.early_exited_) {
-            break; // other warp removed the key
+          size_type layer_root_index;
+          per_layer_indexes.pop(layer_root_index, current_node_index);
+          border_node = coop_traverse_until_border(key_slice, current_node_index, tile, allocator, true, true);
+          if (border_node.key_is_in_node(key_slice, node_type::BORDER_ENTRY_LINK) && border_node.is_underflow()) {
+            // cannot allow underflow. retry from root with proactive merging
+            border_node.unlock();
+            early_exit_check.reset();
+            border_node = coop_traverse_until_border_merge(key_slice, node_type::BORDER_ENTRY_LINK, layer_root_index, tile, allocator, reclaimer, early_exit_check);
+            if (early_exit_check.early_exited_) {
+              break;
+            }
           }
           if (border_node.get_key_value_from_node(key_slice, current_node_index, node_type::BORDER_ENTRY_LINK)) {
             // check next layer root node
@@ -584,7 +591,7 @@ struct gpu_masstree {
           }
           layer--;
         }
-        per_layer_root_indexes.destroy();
+        per_layer_indexes.destroy();
       }
       return success;
     }
@@ -700,6 +707,7 @@ struct gpu_masstree {
       // if the node is full, split. it's already locked if it's full.
       if (current_node.is_full()) {
         if (current_node_index != current_root_index) {
+          assert(!current_node.is_root());
           auto parent_node = node_type(
             reinterpret_cast<elem_type*>(allocator.address(parent_index)), parent_index, tile);
           parent_node.lock();
@@ -738,6 +746,7 @@ struct gpu_masstree {
           }
         }
         else { // (current_node_index == root_node_index)
+          assert(current_node.is_root());
           auto left_sibling_index = allocator.allocate(tile);
           auto right_sibling_index = allocator.allocate(tile);
           auto two_siblings = current_node.split_as_root(left_sibling_index,
@@ -784,7 +793,6 @@ struct gpu_masstree {
   DEVICE_QUALIFIER masstree_node<tile_type> coop_traverse_until_border_merge(const key_slice_type& key_slice,
                                                                              bool link_or_value,
                                                                              const size_type& current_root_index,
-                                                                             bool& output_node_is_root,
                                                                              const tile_type& tile,
                                                                              device_allocator_context_type& allocator,
                                                                              device_reclaimer_context_type& reclaimer,
@@ -813,14 +821,13 @@ struct gpu_masstree {
 
       // lock the node & traverse again, if it's underflow or border
       // if it's underflow, the parent and sibling should be known
-      #define is_current_node_underflow (current_node.is_underflow() && current_node_index != current_root_index)
-      if (is_current_node_underflow || current_node.is_border()) {
+      if (current_node.is_underflow() || current_node.is_border()) {
         if (current_node.try_lock()) {
           current_node.load(cuda_memory_order::memory_order_relaxed);
-          if (!is_current_node_underflow) {
+          if (!current_node.is_underflow()) {
             link_traversed |= traverse_side_links_with_locks(current_node, current_node_index, key_slice, tile, allocator);
           }
-          if (is_current_node_underflow) {
+          if (current_node.is_underflow()) {
             // if parent is unknown, restart from root
             if (current_node_index != current_root_index &&
                 (current_node_index == parent_index || sibling_index == current_root_index ||
@@ -845,14 +852,14 @@ struct gpu_masstree {
           continue;
         }
       }
-      assert((is_current_node_underflow || current_node.is_border()) ? 
+      assert((current_node.is_underflow() || current_node.is_border()) ? 
              (current_node.is_locked() && !current_node.traverse_required(key_slice)) : true);
-      assert(is_current_node_underflow ?
+      assert(current_node.is_underflow() ?
              (current_node_index == current_root_index || (current_node_index != parent_index && sibling_index != current_root_index && !link_traversed)) : true);
 
 
       // proactively merge/borrow underflow nodes
-      if (is_current_node_underflow) {
+      if (current_node.is_underflow()) {
         // lock the sibling first
         auto sibling_node = node_type(
             reinterpret_cast<elem_type*>(allocator.address(sibling_index)), sibling_index, tile);
@@ -887,8 +894,7 @@ struct gpu_masstree {
         parent_node.lock();
         parent_node.load(cuda_memory_order::memory_order_relaxed);
         // make sure parent is not garbage and not underflow
-        if ((parent_node.is_garbage()) ||
-            (parent_node.is_underflow() && parent_index != current_root_index)) {
+        if (parent_node.is_garbage() || parent_node.is_underflow()) {
           current_node.unlock();
           sibling_node.unlock();
           parent_node.unlock();
@@ -985,12 +991,11 @@ struct gpu_masstree {
         // now, current_node is not underflow. if it's not border, unlock.
         if (!current_node.is_border()) { current_node.unlock(); }
       }
-      assert(!is_current_node_underflow);
+      assert(!current_node.is_underflow());
 
       // now, the node is not underflow; if border it's locked, otherwise not locked.
       // traversal or erase
       if (current_node.is_border()) {
-        output_node_is_root = (current_node_index == current_root_index);
         return current_node;
       }
       else { // traverse
@@ -998,7 +1003,6 @@ struct gpu_masstree {
         current_node_index = current_node.find_next_and_sibling(
             key_slice, sibling_index, sibling_at_left);
       }
-      #undef is_current_node_underflow
     }
     assert(false);
   }
