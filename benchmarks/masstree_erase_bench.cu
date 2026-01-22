@@ -112,7 +112,7 @@ bench_rates bench_masstree_insertion_erase(thrust::device_vector<key_slice_type>
   average_insertion_seconds /= float(num_experiments);
   average_erase_seconds /= float(num_experiments);
   float insertion_rate = float(d_lengths.size()) / 1e6 / average_insertion_seconds;
-  float erase_rate      = float(d_query_lengths.size()) / 1e6 / average_erase_seconds;
+  float erase_rate      = float(d_query_lengths.size()) * erase_ratio / 1e6 / average_erase_seconds;
   std::cout << "insertion_rate: " << insertion_rate << '\n';
   std::cout << "erase_rate: " << erase_rate << std::endl;
   return {insertion_rate, erase_rate};
