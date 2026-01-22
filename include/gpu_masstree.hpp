@@ -38,7 +38,6 @@
 #include <simple_slab_alloc.hpp>
 #include <simple_dummy_reclaim.hpp>
 #include <simple_debra_reclaim.hpp>
-#include <simple_hidebra_reclaim.hpp>
 
 namespace GpuMasstree {
 

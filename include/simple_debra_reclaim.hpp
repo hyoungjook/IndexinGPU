@@ -167,7 +167,7 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
   }
 
   template <typename block_type, typename allocator_type>
-  DEVICE_QUALIFIER void begin_critical_section_block(const block_type& block, allocator_type& allocator) {
+  DEVICE_QUALIFIER void begin_critical_section(const block_type& block, allocator_type& allocator) {
     block.sync();
     __threadfence();
 
@@ -179,7 +179,7 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
   }
 
   template <typename block_type>
-  DEVICE_QUALIFIER void end_critical_section_block(const block_type& block) {
+  DEVICE_QUALIFIER void end_critical_section(const block_type& block) {
     // unset critical bit in global memory announce array
     block.sync();
     if (block.thread_rank() == 0) {
@@ -188,12 +188,6 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
     block.sync();
     __threadfence();
   }
-
-  template <typename block_type, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void begin_critical_section_tile(const block_type& block, const tile_type& tile, allocator_type& allocator) noexcept {}
-
-  template <typename block_type, typename tile_type>
-  DEVICE_QUALIFIER void end_critical_section_tile(const block_type& block, const tile_type& tile) noexcept {}
 
   template <typename block_type, typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void drain_all(const block_type& block, const tile_type& tile, allocator_type& allocator) {
