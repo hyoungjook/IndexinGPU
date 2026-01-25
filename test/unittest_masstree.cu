@@ -15,7 +15,7 @@
  *   limitations under the License.
  */
 
-#include <gpu_btree.h>
+#include <gpu_masstree.h>
 #include <gtest/gtest.h>
 #include <cmd.hpp>
 #include <cstdint>

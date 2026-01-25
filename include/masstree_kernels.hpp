@@ -167,12 +167,12 @@ struct insert_device_func {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_value = tile.shfl(regs.value, cur_rank);
-    tree.cooperative_insert(cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, update_if_exists);
+    tree.template cooperative_insert<>(cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, update_if_exists);
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
 
-template <typename key_slice_type, typename size_type, typename value_type>
+template <bool concurrent, typename key_slice_type, typename size_type, typename value_type>
 struct find_device_func {
   static constexpr bool reclaim_required = false;
   // kernel args
@@ -180,7 +180,6 @@ struct find_device_func {
   size_type max_key_length;
   const size_type* d_key_lengths;
   value_type* d_values;
-  bool concurrent;
   // device-side registers
   struct dev_regs {
     const key_slice_type* key;
@@ -199,7 +198,7 @@ struct find_device_func {
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    auto cur_value = tree.cooperative_find(cur_key, cur_key_length, tile, allocator, concurrent);
+    auto cur_value = tree.template cooperative_find<concurrent>(cur_key, cur_key_length, tile, allocator);
     if (tile.thread_rank() == cur_rank) {
       regs.value = cur_value;
     }
@@ -209,14 +208,13 @@ struct find_device_func {
   }
 };
 
-template <bool do_merge, bool do_remove_empty_root, typename key_slice_type, typename size_type, typename value_type>
+template <bool concurrent, bool do_merge, bool do_remove_empty_root, typename key_slice_type, typename size_type, typename value_type>
 struct erase_device_func {
   static constexpr bool reclaim_required = true;
   // kernel args
   const key_slice_type* d_keys;
   size_type max_key_length;
   const size_type* d_key_lengths;
-  bool concurrent;
   // device-side registers
   struct dev_regs {
     const key_slice_type* key;
@@ -234,12 +232,12 @@ struct erase_device_func {
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    tree.cooperative_erase<do_merge, do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, reclaimer, concurrent);
+    tree.template cooperative_erase<concurrent, do_merge, do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, reclaimer);
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
 
-template <bool use_upper_key, typename key_slice_type, typename size_type, typename value_type>
+template <bool use_upper_key, bool concurrent, typename key_slice_type, typename size_type, typename value_type>
 struct range_device_func {
   static constexpr bool reclaim_required = false;
   // kernel args
@@ -253,7 +251,6 @@ struct range_device_func {
   value_type* d_values;
   key_slice_type* d_out_keys;
   size_type* d_out_key_lengths;
-  bool concurrent;
   // device-side registers
   struct dev_regs {
     const key_slice_type* lower_key;
@@ -287,9 +284,9 @@ struct range_device_func {
     auto cur_value = tile.shfl(regs.value, cur_rank);
     auto cur_out_key = tile.shfl(regs.out_key, cur_rank);
     auto cur_out_key_length = tile.shfl(regs.out_key_length, cur_rank);
-    auto cur_count = tree.cooperative_range<use_upper_key>(
+    auto cur_count = tree.template cooperative_range<use_upper_key, concurrent>(
       cur_lower_key, cur_lower_key_length, tile, allocator, cur_upper_key, cur_upper_key_length,
-      max_count_per_query, cur_value, cur_out_key, cur_out_key_length, max_key_length, concurrent);
+      max_count_per_query, cur_value, cur_out_key, cur_out_key_length, max_key_length);
     if (tile.thread_rank() == cur_rank) {
       regs.count = cur_count;
     }

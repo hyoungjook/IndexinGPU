@@ -74,12 +74,14 @@ struct masstree_node {
     write_metadata_to_registers();
   }
 
-  DEVICE_QUALIFIER void load(cuda_memory_order order = cuda_memory_order::memory_order_weak) {
-    lane_elem_ = cuda_memory<elem_type>::load(node_ptr_ + tile_.thread_rank(), order);
+  template <cuda_memory_order order>
+  DEVICE_QUALIFIER void load() {
+    lane_elem_ = cuda_memory<elem_type, order>::load(node_ptr_ + tile_.thread_rank());
     read_metadata_from_registers();
   }
-  DEVICE_QUALIFIER void store(cuda_memory_order order = cuda_memory_order::memory_order_weak) {
-    cuda_memory<elem_type>::store(node_ptr_ + tile_.thread_rank(), lane_elem_, order);
+  template <cuda_memory_order order>
+  DEVICE_QUALIFIER void store() {
+    cuda_memory<elem_type, order>::store(node_ptr_ + tile_.thread_rank(), lane_elem_);
   }
 
   DEVICE_QUALIFIER void read_metadata_from_registers() {
@@ -283,14 +285,13 @@ struct masstree_node {
   DEVICE_QUALIFIER bool cmp_key(const key_type& k1, bool morekey1, const key_type& k2, bool morekey2) const {
     return (k1 < k2) || ((k1 == k2) && (static_cast<int>(morekey1) <= static_cast<int>(morekey2)));
   }
-  template <typename allocator_type>
+  template <cuda_memory_order order, typename allocator_type>
   DEVICE_QUALIFIER uint32_t do_scan(bool per_lane_in_range,
                                     const size_type out_max_count,
                                     int& link_entry_location,
                                     allocator_type& allocator,
                                     value_type* out_value,
                                     key_type* out_keys,
-                                    bool concurrent,
                                     const size_type& layer,
                                     const size_type& out_key_max_length) const {
     const uint32_t in_range_ballot = tile_.ballot(per_lane_in_range);
@@ -326,7 +327,7 @@ struct masstree_node {
           get_value_lane_from_location(first_location) <= tile_.thread_rank() &&
           tile_.thread_rank() < get_value_lane_from_location(last_location)) {
         out_value[tile_.thread_rank() - get_value_lane_from_location(first_location)] =
-          (keystate_ != KEYSTATE_SUFFIX) ? lane_elem_ : masstree_suffix_node<tile_type, allocator_type>::fetch_value_only(lane_elem_, allocator, concurrent);
+          (keystate_ != KEYSTATE_SUFFIX) ? lane_elem_ : masstree_suffix_node<tile_type, allocator_type>::fetch_value_only<order>(lane_elem_, allocator);
       }
       if (out_keys != nullptr &&
           get_key_lane_from_location(first_location) <= tile_.thread_rank() &&
@@ -338,6 +339,7 @@ struct masstree_node {
     // return value: location of the link entry. If no link entry in range, return -1.
     return count;
   }
+  template <cuda_memory_order order>
   DEVICE_QUALIFIER uint32_t scan(const key_type& lower_key,
                                  const bool lower_key_more,
                                  const size_type out_max_count,
@@ -350,8 +352,9 @@ struct masstree_node {
     assert(is_border());
     const bool in_range = is_valid_key_lane() &&
         cmp_key(lower_key, lower_key_more, lane_elem_, keystate_has_more_key(keystate_));
-    return do_scan(in_range, out_max_count, link_entry_location, out_value, out_keys, layer, out_key_max_length);
+    return do_scan<order>(in_range, out_max_count, link_entry_location, out_value, out_keys, layer, out_key_max_length);
   }
+  template <cuda_memory_order order>
   DEVICE_QUALIFIER uint32_t scan(const key_type& lower_key,
                                  const bool lower_key_more,
                                  const bool ignore_upper_bound,
@@ -368,7 +371,7 @@ struct masstree_node {
     const bool in_range = is_valid_key_lane() &&
         cmp_key(lower_key, lower_key_more, lane_elem_, keystate_has_more_key(keystate_)) &&
         (ignore_upper_bound || cmp_key(lane_elem_, keystate_has_more_key(keystate_), upper_key, upper_key_more));
-    return do_scan(in_range, out_max_count, link_entry_location, out_value, out_keys, layer, out_key_max_length);
+    return do_scan<order>(in_range, out_max_count, link_entry_location, out_value, out_keys, layer, out_key_max_length);
   }
 
   DEVICE_QUALIFIER int get_split_left_width() const {

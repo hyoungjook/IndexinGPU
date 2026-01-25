@@ -19,176 +19,91 @@
 #include <type_traits>
 
 enum class cuda_memory_order {
-  memory_order_weak,
-  memory_order_relaxed,
-  memory_order_consume,
-  memory_order_acquire,
-  memory_order_release,
-  memory_order_acq_rel,
-  memory_order_seq_cst
-
-};
-template <typename T>
-struct cuda_memory_64 {
-  static_assert(sizeof(T) == sizeof(uint64_t));
-  using unsigned_type = uint64_t;
-
-  __device__ static inline T load(T* ptr,
-                                  cuda_memory_order order = cuda_memory_order::memory_order_weak) {
-    unsigned_type old;
-    switch (order) {
-      case cuda_memory_order::memory_order_weak:
-        asm volatile("ld.weak.global.b64 %0,[%1];"
-                     : "=l"(old)
-                     : "l"(reinterpret_cast<unsigned_type*>(ptr))
-                     : "memory");
-        break;
-      case cuda_memory_order::memory_order_relaxed:
-        asm volatile("ld.relaxed.gpu.b64 %0,[%1];"
-                     : "=l"(old)
-                     : "l"(reinterpret_cast<unsigned_type*>(ptr))
-                     : "memory");
-        break;
-      case cuda_memory_order::memory_order_consume:
-        asm volatile("ld.acquire.gpu.b64 %0,[%1];"
-                     : "=l"(old)
-                     : "l"(reinterpret_cast<unsigned_type*>(ptr))
-                     : "memory");
-        break;
-      case cuda_memory_order::memory_order_acquire:
-        asm volatile("ld.acquire.gpu.b64 %0,[%1];"
-                     : "=l"(old)
-                     : "l"(reinterpret_cast<unsigned_type*>(ptr))
-                     : "memory");
-        break;
-      case cuda_memory_order::memory_order_release: cuda_assert(false); break;
-      case cuda_memory_order::memory_order_acq_rel: cuda_assert(false); break;
-      case cuda_memory_order::memory_order_seq_cst:
-        asm volatile("fence.sc.gpu;" ::: "memory");
-        asm volatile("ld.acquire.gpu.b64 %0,[%1];"
-                     : "=l"(old)
-                     : "l"(reinterpret_cast<unsigned_type*>(ptr))
-                     : "memory");
-        break;
-      default: cuda_assert(false); break;
-    }
-
-    return *reinterpret_cast<T*>(&old);
-  }
-  __device__ static inline void
-  store(T* ptr, T value, cuda_memory_order order = cuda_memory_order::memory_order_weak) {
-    switch (order) {
-      case cuda_memory_order::memory_order_weak:
-        asm volatile("st.weak.global.b64 [%0], %1;" ::"l"(reinterpret_cast<unsigned_type*>(ptr)),
-                     "l"(*reinterpret_cast<unsigned_type*>(&value))
-                     : "memory");
-        break;
-      case cuda_memory_order::memory_order_relaxed:
-        asm volatile("st.relaxed.gpu.b64 [%0], %1;" ::"l"(reinterpret_cast<unsigned_type*>(ptr)),
-                     "l"(*reinterpret_cast<unsigned_type*>(&value))
-                     : "memory");
-        break;
-      case cuda_memory_order::memory_order_consume: cuda_assert(false); break;
-      case cuda_memory_order::memory_order_acquire: cuda_assert(false); break;
-      case cuda_memory_order::memory_order_release:
-        asm volatile("st.release.gpu.b64 [%0], %1;" ::"l"(reinterpret_cast<unsigned_type*>(ptr)),
-                     "l"(*reinterpret_cast<unsigned_type*>(&value))
-                     : "memory");
-        break;
-      case cuda_memory_order::memory_order_acq_rel: cuda_assert(false); break;
-      case cuda_memory_order::memory_order_seq_cst:
-        asm volatile("fence.sc.gpu;" ::: "memory");
-        asm volatile("st.relaxed.gpu.b64 [%0], %1;" ::"l"(reinterpret_cast<unsigned_type*>(ptr)),
-                     "l"(*reinterpret_cast<unsigned_type*>(&value))
-                     : "memory");
-        break;
-      default: cuda_assert(false); break;
-    }
-  }
+  weak,
+  relaxed
 };
 
+template <typename T, cuda_memory_order order>
+struct cuda_memory_32 {};
 template <typename T>
-struct cuda_memory_32 {
+struct cuda_memory_32<T, cuda_memory_order::weak> {
   static_assert(sizeof(T) == sizeof(uint32_t));
   using unsigned_type = uint32_t;
-
-  __device__ static inline T load(T* ptr,
-                                  cuda_memory_order order = cuda_memory_order::memory_order_weak) {
+  __device__ static inline T load(T* ptr) {
     unsigned_type old;
-    switch (order) {
-      case cuda_memory_order::memory_order_weak:
-        asm volatile("ld.weak.global.b32 %0,[%1];"
-                     : "=r"(old)
-                     : "l"(reinterpret_cast<unsigned_type*>(ptr))
-                     : "memory");
-        break;
-      case cuda_memory_order::memory_order_relaxed:
-        asm volatile("ld.relaxed.gpu.b32 %0,[%1];"
-                     : "=r"(old)
-                     : "l"(reinterpret_cast<unsigned_type*>(ptr))
-                     : "memory");
-        break;
-      case cuda_memory_order::memory_order_consume:
-        asm volatile("ld.acquire.gpu.b32 %0,[%1];"
-                     : "=r"(old)
-                     : "l"(reinterpret_cast<unsigned_type*>(ptr))
-                     : "memory");
-        break;
-      case cuda_memory_order::memory_order_acquire:
-        asm volatile("ld.acquire.gpu.b32 %0,[%1];"
-                     : "=r"(old)
-                     : "l"(reinterpret_cast<unsigned_type*>(ptr))
-                     : "memory");
-        break;
-      case cuda_memory_order::memory_order_release: cuda_assert(false); break;
-      case cuda_memory_order::memory_order_acq_rel: cuda_assert(false); break;
-      case cuda_memory_order::memory_order_seq_cst:
-        asm volatile("fence.sc.gpu;" ::: "memory");
-        asm volatile("ld.acquire.gpu.b32 %0,[%1];"
-                     : "=r"(old)
-                     : "l"(reinterpret_cast<unsigned_type*>(ptr))
-                     : "memory");
-        break;
-      default: cuda_assert(false); break;
-    }
-
-    return *reinterpret_cast<T*>(&old);
+    asm volatile("ld.weak.global.b32 %0,[%1];"
+                 : "=r"(old)
+                 : "l"(reinterpret_cast<unsigned_type*>(ptr))
+                 : "memory");
+    return old;
   }
-  __device__ static inline void
-  store(T* ptr, T value, cuda_memory_order order = cuda_memory_order::memory_order_weak) {
-    switch (order) {
-      case cuda_memory_order::memory_order_weak:
-        asm volatile("st.weak.global.b32 [%0], %1;" ::"l"(reinterpret_cast<unsigned_type*>(ptr)),
-                     "r"(*reinterpret_cast<unsigned_type*>(&value))
-                     : "memory");
-        break;
-      case cuda_memory_order::memory_order_relaxed:
-        asm volatile("st.relaxed.gpu.b32 [%0], %1;" ::"l"(reinterpret_cast<unsigned_type*>(ptr)),
-                     "r"(*reinterpret_cast<unsigned_type*>(&value))
-                     : "memory");
-        break;
-      case cuda_memory_order::memory_order_consume: cuda_assert(false); break;
-      case cuda_memory_order::memory_order_acquire: cuda_assert(false); break;
-      case cuda_memory_order::memory_order_release:
-        asm volatile("st.release.gpu.b32 [%0], %1;" ::"l"(reinterpret_cast<unsigned_type*>(ptr)),
-                     "r"(*reinterpret_cast<unsigned_type*>(&value))
-                     : "memory");
-        break;
-      case cuda_memory_order::memory_order_acq_rel: cuda_assert(false); break;
-      case cuda_memory_order::memory_order_seq_cst:
-        asm volatile("fence.sc.gpu;" ::: "memory");
-        asm volatile("st.relaxed.gpu.b32 [%0], %1;" ::"l"(reinterpret_cast<unsigned_type*>(ptr)),
-                     "r"(*reinterpret_cast<unsigned_type*>(&value))
-                     : "memory");
-        break;
-      default: cuda_assert(false); break;
-    }
+  __device__ static inline void store(T* ptr, T value) {
+    asm volatile("st.weak.global.b32 [%0], %1;" ::"l"(reinterpret_cast<unsigned_type*>(ptr)),
+                 "r"(*reinterpret_cast<unsigned_type*>(&value))
+                 : "memory");
+  }
+};
+template <typename T>
+struct cuda_memory_32<T, cuda_memory_order::relaxed> {
+  static_assert(sizeof(T) == sizeof(uint32_t));
+  using unsigned_type = uint32_t;
+  __device__ static inline T load(T* ptr) {
+    unsigned_type old;
+    asm volatile("ld.relaxed.gpu.b32 %0,[%1];"
+                 : "=r"(old)
+                 : "l"(reinterpret_cast<unsigned_type*>(ptr))
+                 : "memory");
+    return old;
+  }
+  __device__ static inline void store(T* ptr, T value) {
+    asm volatile("st.relaxed.gpu.b32 [%0], %1;" ::"l"(reinterpret_cast<unsigned_type*>(ptr)),
+                 "r"(*reinterpret_cast<unsigned_type*>(&value))
+                 : "memory");
   }
 };
 
-template <typename T = uint32_t>
+template <typename T, cuda_memory_order order>
+struct cuda_memory_64 {};
+template <typename T>
+struct cuda_memory_64<T, cuda_memory_order::weak> {
+  static_assert(sizeof(T) == sizeof(uint64_t));
+  using unsigned_type = uint64_t;
+  __device__ static inline T load(T* ptr) {
+    unsigned_type old;
+    asm volatile("ld.weak.global.b64 %0,[%1];"
+                 : "=r"(old)
+                 : "l"(reinterpret_cast<unsigned_type*>(ptr))
+                 : "memory");
+    return old;
+  }
+  __device__ static inline void store(T* ptr, T value) {
+    asm volatile("st.weak.global.b64 [%0], %1;" ::"l"(reinterpret_cast<unsigned_type*>(ptr)),
+                 "r"(*reinterpret_cast<unsigned_type*>(&value))
+                 : "memory");
+  }
+};
+template <typename T>
+struct cuda_memory_64<T, cuda_memory_order::relaxed> {
+  static_assert(sizeof(T) == sizeof(uint64_t));
+  using unsigned_type = uint64_t;
+  __device__ static inline T load(T* ptr) {
+    unsigned_type old;
+    asm volatile("ld.relaxed.gpu.b64 %0,[%1];"
+                 : "=r"(old)
+                 : "l"(reinterpret_cast<unsigned_type*>(ptr))
+                 : "memory");
+    return old;
+  }
+  __device__ static inline void store(T* ptr, T value) {
+    asm volatile("st.relaxed.gpu.b64 [%0], %1;" ::"l"(reinterpret_cast<unsigned_type*>(ptr)),
+                 "r"(*reinterpret_cast<unsigned_type*>(&value))
+                 : "memory");
+  }
+};
+
+template <typename T, cuda_memory_order order = cuda_memory_order::weak>
 struct cuda_memory
-    : public std::conditional<sizeof(T) == 4, cuda_memory_32<T>, cuda_memory_64<T>>::type {
+    : public std::conditional<sizeof(T) == 4, cuda_memory_32<T, order>, cuda_memory_64<T, order>>::type {
   static_assert(sizeof(T) == sizeof(uint32_t) || sizeof(T) == sizeof(uint64_t));
 
   __device__ static inline void atomic_thread_fence() {

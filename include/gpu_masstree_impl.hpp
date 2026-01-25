@@ -29,7 +29,6 @@
 #include <iostream>
 #include <masstree_node.hpp>
 #include <masstree_suffix.hpp>
-#include <pair_type.hpp>
 #include <queue>
 #include <sstream>
 #include <type_traits>
@@ -91,10 +90,18 @@ struct gpu_masstree {
             const size_type num_keys,
             cudaStream_t stream = 0,
             bool concurrent = false) {
-    kernels::find_device_func<key_slice_type, size_type, value_type> func{
-      .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths,
-      .d_values = values, .concurrent = concurrent};
-    launch_batch_kernel(func, num_keys, stream);
+    if (concurrent) {
+      kernels::find_device_func<true, key_slice_type, size_type, value_type> func{
+        .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths,
+        .d_values = values};
+      launch_batch_kernel(func, num_keys, stream);
+    }
+    else {
+      kernels::find_device_func<false, key_slice_type, size_type, value_type> func{
+        .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths,
+        .d_values = values};
+      launch_batch_kernel(func, num_keys, stream);
+    }
   }
 
   void insert(const key_slice_type* keys,
@@ -119,23 +126,27 @@ struct gpu_masstree {
              bool do_merge = true,
              bool concurrent = true) {
     if (do_remove_empty_root) {
-      kernels::erase_device_func<true, true, key_slice_type, size_type, value_type> func{
-        .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths,
-        .concurrent = concurrent};
+      kernels::erase_device_func<true, true, true, key_slice_type, size_type, value_type> func{
+        .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths};
       launch_batch_kernel(func, num_keys, stream);
     }
     else {
       if (do_merge) {
-        kernels::erase_device_func<true, false, key_slice_type, size_type, value_type> func{
-          .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths,
-          .concurrent = concurrent};
+        kernels::erase_device_func<true, true, false, key_slice_type, size_type, value_type> func{
+          .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths};
         launch_batch_kernel(func, num_keys, stream);
       }
       else {
-        kernels::erase_device_func<false, false, key_slice_type, size_type, value_type> func{
-          .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths,
-          .concurrent = concurrent};
-        launch_batch_kernel(func, num_keys, stream);
+        if (concurrent) {
+          kernels::erase_device_func<true, false, false, key_slice_type, size_type, value_type> func{
+            .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths};
+          launch_batch_kernel(func, num_keys, stream);
+        }
+        else {
+          kernels::erase_device_func<false, false, false, key_slice_type, size_type, value_type> func{
+            .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths};
+          launch_batch_kernel(func, num_keys, stream);
+        }
       }
     }
   }
@@ -154,22 +165,40 @@ struct gpu_masstree {
              cudaStream_t stream = 0,
              bool concurrent = false) {
     if (upper_keys) {
-      kernels::range_device_func<true, key_slice_type, size_type, value_type> func{
-        .d_lower_keys = lower_keys, .d_lower_key_lengths = lower_key_lengths,
-        .max_key_length = max_key_length, .max_count_per_query = max_count_per_query,
-        .d_upper_keys = upper_keys, .d_upper_key_lengths = upper_key_lengths,
-        .d_counts = counts, .d_values = values, .d_out_keys = out_keys, .d_out_key_lengths = out_key_lengths,
-        .concurrent = concurrent};
-      launch_batch_kernel(func, num_queries, stream);
+      if (concurrent) {
+        kernels::range_device_func<true, true, key_slice_type, size_type, value_type> func{
+          .d_lower_keys = lower_keys, .d_lower_key_lengths = lower_key_lengths,
+          .max_key_length = max_key_length, .max_count_per_query = max_count_per_query,
+          .d_upper_keys = upper_keys, .d_upper_key_lengths = upper_key_lengths,
+          .d_counts = counts, .d_values = values, .d_out_keys = out_keys, .d_out_key_lengths = out_key_lengths};
+        launch_batch_kernel(func, num_queries, stream);
+      }
+      else {
+        kernels::range_device_func<true, false, key_slice_type, size_type, value_type> func{
+          .d_lower_keys = lower_keys, .d_lower_key_lengths = lower_key_lengths,
+          .max_key_length = max_key_length, .max_count_per_query = max_count_per_query,
+          .d_upper_keys = upper_keys, .d_upper_key_lengths = upper_key_lengths,
+          .d_counts = counts, .d_values = values, .d_out_keys = out_keys, .d_out_key_lengths = out_key_lengths};
+        launch_batch_kernel(func, num_queries, stream);
+      }
     }
     else {
-      kernels::range_device_func<false, key_slice_type, size_type, value_type> func{
-        .d_lower_keys = lower_keys, .d_lower_key_lengths = lower_key_lengths,
-        .max_key_length = max_key_length, .max_count_per_query = max_count_per_query,
-        .d_upper_keys = upper_keys, .d_upper_key_lengths = upper_key_lengths,
-        .d_counts = counts, .d_values = values, .d_out_keys = out_keys, .d_out_key_lengths = out_key_lengths,
-        .concurrent = concurrent};
-      launch_batch_kernel(func, num_queries, stream);
+      if (concurrent) {
+        kernels::range_device_func<false, true, key_slice_type, size_type, value_type> func{
+          .d_lower_keys = lower_keys, .d_lower_key_lengths = lower_key_lengths,
+          .max_key_length = max_key_length, .max_count_per_query = max_count_per_query,
+          .d_upper_keys = upper_keys, .d_upper_key_lengths = upper_key_lengths,
+          .d_counts = counts, .d_values = values, .d_out_keys = out_keys, .d_out_key_lengths = out_key_lengths};
+        launch_batch_kernel(func, num_queries, stream);
+      }
+      else {
+        kernels::range_device_func<false, false, key_slice_type, size_type, value_type> func{
+          .d_lower_keys = lower_keys, .d_lower_key_lengths = lower_key_lengths,
+          .max_key_length = max_key_length, .max_count_per_query = max_count_per_query,
+          .d_upper_keys = upper_keys, .d_upper_key_lengths = upper_key_lengths,
+          .d_counts = counts, .d_values = values, .d_out_keys = out_keys, .d_out_key_lengths = out_key_lengths};
+        launch_batch_kernel(func, num_queries, stream);
+      }
     }
   }
 
@@ -189,42 +218,39 @@ struct gpu_masstree {
       .d_keys = insert_keys, .max_key_length = max_key_length, .d_key_lengths = insert_key_lengths,
       .d_values = insert_values, .update_if_exists = insert_update_if_exists};
     if (erase_do_remove_empty_root) {
-      kernels::erase_device_func<true, true, key_slice_type, size_type, value_type> erase_func{
-        .d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths,
-        .concurrent = true};
+      kernels::erase_device_func<true, true, true, key_slice_type, size_type, value_type> erase_func{
+        .d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths};
       launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
     }
     else {
       if (erase_do_merge) {
-        kernels::erase_device_func<true, false, key_slice_type, size_type, value_type> erase_func{
-          .d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths,
-          .concurrent = true};
+        kernels::erase_device_func<true, true, false, key_slice_type, size_type, value_type> erase_func{
+          .d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths};
         launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
       }
       else {
-        kernels::erase_device_func<false, false, key_slice_type, size_type, value_type> erase_func{
-          .d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths,
-          .concurrent = true};
+        kernels::erase_device_func<true, false, false, key_slice_type, size_type, value_type> erase_func{
+          .d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths};
         launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
       }
     }
   }
 
   // device-side APIs
-  template <typename tile_type>
+  template <bool concurrent, typename tile_type>
   DEVICE_QUALIFIER value_type cooperative_find(const key_slice_type* key,
                                                size_type key_length,
                                                const tile_type& tile,
-                                               device_allocator_context_type& allocator,
-                                               bool concurrent = false) {
+                                               device_allocator_context_type& allocator) {
     using node_type = masstree_node<tile_type>;
     using suffix_type = masstree_suffix_node<tile_type, device_allocator_context_type>;
+    static constexpr auto memory_order = concurrent ? cuda_memory_order::relaxed : cuda_memory_order::weak;
     size_type current_node_index = *d_root_index_;
     size_type slice = 0;
     while (slice < key_length) {
       const key_slice_type key_slice = key[slice];
       const bool more_key = (slice < key_length - 1);
-      auto border_node = coop_traverse_until_border(key_slice, current_node_index, tile, allocator, false, concurrent);
+      auto border_node = coop_traverse_until_border<concurrent>(key_slice, current_node_index, tile, allocator, false);
       const int found_keystate = border_node.get_key_value_from_node(key_slice, current_node_index, more_key);
       if (found_keystate < 0) {
         // key not exists, exit early
@@ -233,15 +259,8 @@ struct gpu_masstree {
       if (found_keystate == node_type::KEYSTATE_SUFFIX) {
         auto suffix = suffix_type(
             reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile, allocator);
-        bool suffix_eq;
-        if (concurrent) {
-          suffix.load(cuda_memory_order::memory_order_relaxed);
-          suffix_eq = suffix.streq(key + slice, key_length - slice, cuda_memory_order::memory_order_relaxed);
-        }
-        else {
-          suffix.load();
-          suffix_eq = suffix.streq(key + slice, key_length - slice);
-        }
+        suffix.template load<memory_order>();
+        const bool suffix_eq = suffix.template streq<memory_order>(key + slice, key_length - slice);
         return suffix_eq ? suffix.get_value() : invalid_value;
       }
       else {  // keystate == LINK or VALUE
@@ -252,7 +271,7 @@ struct gpu_masstree {
     return current_node_index;
   }
 
-  template <bool use_upper_key, typename tile_type>
+  template <bool use_upper_key, bool concurrent, typename tile_type>
   DEVICE_QUALIFIER size_type cooperative_range(const key_slice_type* lower_key,
                                                const size_type lower_key_length,
                                                const tile_type& tile,
@@ -263,11 +282,11 @@ struct gpu_masstree {
                                                value_type* out_value = nullptr,
                                                key_slice_type* out_keys = nullptr,
                                                size_type* out_key_lengths = nullptr,
-                                               const size_type out_key_max_length = 1,
-                                               bool concurrent = false) {
+                                               const size_type out_key_max_length = 1) {
     using node_type = masstree_node<tile_type>;
     using dynamic_stack_type_x2 = utils::dynamic_stack_u32<2, tile_type, device_allocator_context_type>;
     using dynamic_stack_type_x1 = utils::dynamic_stack_u32<1, tile_type, device_allocator_context_type>;
+    static constexpr auto memory_order = concurrent ? cuda_memory_order::relaxed : cuda_memory_order::weak;
     if (out_max_count <= 0) { return 0; }
     assert(!use_upper_key || upper_key != nullptr);
 
@@ -290,7 +309,7 @@ struct gpu_masstree {
     [[maybe_unused]] dynamic_stack_type_x1 ignore_upper_key_stack(allocator, tile);
     while (true) {
       // traverse the btree: current_node_index can be root node or border node
-      auto border_node = coop_traverse_until_border(lower_key_slice, current_node_index, tile, allocator, false, concurrent, &current_node_index);
+      auto border_node = coop_traverse_until_border<concurrent>(lower_key_slice, current_node_index, tile, allocator, false, &current_node_index);
       // traverse side links, scan the nodes, and decide scan_op:
       //      >=0 (down-link location; go to next layer)
       //      -1 (continue side-link traverse)
@@ -303,15 +322,15 @@ struct gpu_masstree {
           // scan a node and store outputs
           uint32_t count;
           if constexpr (use_upper_key) {
-            count = border_node.scan(lower_key_slice, lower_key_more,
-                                     ignore_upper_key, upper_key_slice, upper_key_more,
-                                     out_max_count, scan_op, out_value, out_keys, concurrent,
-                                     layer, out_key_max_length);
+            count = border_node.template scan<memory_order>(lower_key_slice, lower_key_more,
+                                                            ignore_upper_key, upper_key_slice, upper_key_more,
+                                                            out_max_count, scan_op, out_value, out_keys,
+                                                            layer, out_key_max_length);
           }
           else {
-            count = border_node.scan(lower_key_slice, lower_key_more,
-                                     out_max_count, scan_op, out_value, out_keys, concurrent,
-                                     layer, out_key_max_length);
+            count = border_node.template scan<memory_order>(lower_key_slice, lower_key_more,
+                                                            out_max_count, scan_op, out_value, out_keys,
+                                                            layer, out_key_max_length);
           }
           assert(count <= out_max_count);
           out_count += count;
@@ -343,8 +362,7 @@ struct gpu_masstree {
             reinterpret_cast<key_slice_type*>(allocator.address(current_node_index)),
             current_node_index,
             tile);
-        if (concurrent) { border_node.load(cuda_memory_order::memory_order_relaxed); }
-        else { border_node.load(); }
+        border_node.template load<memory_order>();
       }
       // switch layer
       if (scan_op >= 0) { // go to next layer
@@ -482,14 +500,14 @@ struct gpu_masstree {
         else { // node_type::KEYSTATE_SUFFIX
           auto suffix = suffix_type(
               reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile, allocator);
-          suffix.load(cuda_memory_order::memory_order_relaxed);
+          suffix.template load<cuda_memory_order::relaxed>();
           key_slice_type mismatch_suffix_slice;
-          int cmp = suffix.strcmp(key + slice, key_length - slice, cuda_memory_order::memory_order_relaxed, &mismatch_suffix_slice);
+          int cmp = suffix.template strcmp<cuda_memory_order::relaxed>(key + slice, key_length - slice, &mismatch_suffix_slice);
           if (cmp == 0) { // already exists
             if (update_if_exists) {
               // protected by border_node.lock()
               suffix.update_value(value);
-              suffix.store_head(cuda_memory_order::memory_order_relaxed);
+              suffix.template store_head<cuda_memory_order::relaxed>();
               border_node.unlock();
               return true;
             }
@@ -511,7 +529,7 @@ struct gpu_masstree {
               singleton_node.initialize_root();
               current_node_index = allocator.allocate(tile);
               singleton_node.insert(key[slice], current_node_index, node_type::KEYSTATE_LINK);
-              singleton_node.store(cuda_memory_order::memory_order_relaxed);
+              singleton_node.template store<cuda_memory_order::relaxed>();
             }
             slice++;
             // one diverging node with two entries
@@ -522,11 +540,11 @@ struct gpu_masstree {
             assert(num_matches < suffix.get_key_length());
             if (num_matches == suffix.get_key_length() - 1) {
               doubleton_node.insert(mismatch_suffix_slice, suffix.get_value(), node_type::KEYSTATE_VALUE);
-              suffix.retire(reclaimer, suffix_index, cuda_memory_order::memory_order_relaxed);
+              suffix.template retire<cuda_memory_order::relaxed>(reclaimer, suffix_index);
             }
             else {
-              suffix.trim(num_matches + 1, suffix_index, reclaimer, cuda_memory_order::memory_order_relaxed);
-              suffix.store_head(cuda_memory_order::memory_order_relaxed);
+              suffix.template trim<cuda_memory_order::relaxed>(num_matches + 1, suffix_index, reclaimer);
+              suffix.template store_head<cuda_memory_order::relaxed>();
               doubleton_node.insert(mismatch_suffix_slice, suffix_index, node_type::KEYSTATE_SUFFIX);
             }
             // insert suffix of this key
@@ -538,11 +556,11 @@ struct gpu_masstree {
               current_node_index = allocator.allocate(tile);
               suffix = suffix_type(
                   reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile, allocator);
-              suffix.create_from(key + slice, key_length - slice, value, cuda_memory_order::memory_order_relaxed);
-              suffix.store_head(cuda_memory_order::memory_order_relaxed);
+              suffix.template create_from<cuda_memory_order::relaxed>(key + slice, key_length - slice, value);
+              suffix.template store_head<cuda_memory_order::relaxed>();
               doubleton_node.insert(key[slice], current_node_index, node_type::KEYSTATE_SUFFIX);
             }
-            doubleton_node.store(cuda_memory_order::memory_order_relaxed);
+            doubleton_node.template store<cuda_memory_order::relaxed>();
             __threadfence();
           }
         }
@@ -554,8 +572,8 @@ struct gpu_masstree {
           current_node_index = allocator.allocate(tile);
           auto suffix = suffix_type(
               reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile, allocator);
-          suffix.create_from(key + slice, key_length - slice, value, cuda_memory_order::memory_order_relaxed);
-          suffix.store_head(cuda_memory_order::memory_order_relaxed);
+          suffix.template create_from<cuda_memory_order::relaxed>(key + slice, key_length - slice, value);
+          suffix.template store_head<cuda_memory_order::relaxed>();
           __threadfence();
           keystate = node_type::KEYSTATE_SUFFIX;
         }
@@ -567,7 +585,7 @@ struct gpu_masstree {
         border_node.insert(key_slice, current_node_index, keystate);
       }
       // reaching here means we updated border node and it's done
-      border_node.store(cuda_memory_order::memory_order_relaxed);
+      border_node.template store<cuda_memory_order::relaxed>();
       border_node.unlock();
       return true;
     }
@@ -575,17 +593,18 @@ struct gpu_masstree {
     return false;
   }
 
-  template <bool do_merge, bool do_remove_empty_root, typename tile_type>
+  template <bool concurrent, bool do_merge, bool do_remove_empty_root, typename tile_type>
   DEVICE_QUALIFIER bool cooperative_erase(const key_slice_type* key,
                                           const size_type key_length,
                                           const tile_type& tile,
                                           device_allocator_context_type& allocator,
-                                          device_reclaimer_context_type& reclaimer,
-                                          bool concurrent = false) {
+                                          device_reclaimer_context_type& reclaimer) {
+    static_assert(concurrent || (!do_merge && !do_remove_empty_root));
     static_assert(do_merge || !do_remove_empty_root);
     using node_type = masstree_node<tile_type>;
     using suffix_type = masstree_suffix_node<tile_type, device_allocator_context_type>;
     using dynamic_stack_type = utils::dynamic_stack_u32<2, tile_type, device_allocator_context_type>;
+    static constexpr auto memory_order = concurrent ? cuda_memory_order::relaxed : cuda_memory_order::weak;
     struct merge_early_exit_check {
       DEVICE_QUALIFIER bool operator()(const node_type& border_node,
                                        const key_slice_type& key_slice,
@@ -609,9 +628,8 @@ struct gpu_masstree {
       // traverse the layer
       if (!retry_with_merge && (!do_merge || more_key)) {
         // start with read-only traverse
-        border_node = coop_traverse_until_border(key_slice, current_node_index, tile, allocator, !more_key,
-                                                 do_merge || concurrent,
-                                                 do_remove_empty_root ? &border_node_index: nullptr);
+        border_node = coop_traverse_until_border<concurrent>(key_slice, current_node_index, tile, allocator, !more_key,
+                                                             do_remove_empty_root ? &border_node_index: nullptr);
       }
       else {  // retry_with_merge || (do_merge && !more_key (i.e. last slice))
         // traverse with proactive merge
@@ -642,15 +660,8 @@ struct gpu_masstree {
         else {  // KEYSTATE_SUFFIX
           auto suffix = suffix_type(
               reinterpret_cast<elem_type*>(allocator.address(next_index)), next_index, tile, allocator);
-          bool suffix_eq;
-          if (concurrent) {
-            suffix.load(cuda_memory_order::memory_order_relaxed);
-            suffix_eq = suffix.streq(key + slice, key_length - slice, cuda_memory_order::memory_order_relaxed);
-          }
-          else {
-            suffix.load();
-            suffix_eq = suffix.streq(key + slice, key_length - slice);
-          }
+          suffix.template load<memory_order>();
+          const bool suffix_eq = suffix.template streq<memory_order>(key + slice, key_length - slice);
           if (suffix_eq) {
             // key exists, erase suffix value and mark suffix nodes garbage
             if (border_node.is_underflow()) {
@@ -661,7 +672,7 @@ struct gpu_masstree {
             }
             const bool success = border_node.erase(key_slice, node_type::KEYSTATE_SUFFIX);
             assert(success);
-            border_node.store(cuda_memory_order::memory_order_relaxed);
+            border_node.template store<cuda_memory_order::relaxed>();
             border_node.unlock();
             suffix.retire(reclaimer, next_index);
           }
@@ -672,7 +683,7 @@ struct gpu_masstree {
         // erase VALUE entry if exists
         const bool success = border_node.erase(key_slice, node_type::KEYSTATE_VALUE);
         if (success) {
-          border_node.store(cuda_memory_order::memory_order_relaxed);
+          border_node.template store<cuda_memory_order::relaxed>();
         }
         border_node.unlock();
         if (!success) { return false; }
@@ -699,14 +710,14 @@ struct gpu_masstree {
             auto next_layer_root_node = node_type(
               reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile);
             next_layer_root_node.lock();
-            next_layer_root_node.load(cuda_memory_order::memory_order_relaxed);
+            next_layer_root_node.template load<cuda_memory_order::relaxed>();
             if (!next_layer_root_node.is_garbage() && next_layer_root_node.num_keys() == 0) {
               // still empty, remove them
               next_layer_root_node.make_garbage_node(false);
               border_node.erase(key_slice, node_type::KEYSTATE_LINK);
-              next_layer_root_node.store(cuda_memory_order::memory_order_relaxed);
+              next_layer_root_node.template store<cuda_memory_order::relaxed>();
               __threadfence();
-              border_node.store(cuda_memory_order::memory_order_relaxed);
+              border_node.template store<cuda_memory_order::relaxed>();
               next_layer_root_node.unlock();
               border_node.unlock();
               reclaimer.retire(current_node_index, tile);
@@ -735,13 +746,12 @@ struct gpu_masstree {
 
  private:
   // device-side helper functions
-  template <typename tile_type>
+  template <bool concurrent, typename tile_type>
   DEVICE_QUALIFIER masstree_node<tile_type> coop_traverse_until_border(const key_slice_type& key_slice,
                                                                        const size_type& current_root_index,
                                                                        const tile_type& tile,
                                                                        device_allocator_context_type& allocator,
                                                                        bool lock_border_node,
-                                                                       bool concurrent,
                                                                        size_type* node_index = nullptr) {
     // starting from a local root node in a layer, return the border node and its index
     using node_type = masstree_node<tile_type>;
@@ -751,18 +761,15 @@ struct gpu_masstree {
           reinterpret_cast<elem_type*>(allocator.address(current_node_index)),
           current_node_index,
           tile);
-      if (concurrent) {
-        current_node.load(cuda_memory_order::memory_order_relaxed);
+      current_node.template load<concurrent ? cuda_memory_order::relaxed : cuda_memory_order::weak>();
+      if constexpr (concurrent) {
         traverse_side_links(current_node, current_node_index, key_slice, tile, allocator);
-      }
-      else {
-        current_node.load();
       }
       if (current_node.is_border()) {
         if (lock_border_node) {
           current_node.lock();
-          current_node.load(cuda_memory_order::memory_order_relaxed);
-          if (concurrent) {
+          current_node.template load<cuda_memory_order::relaxed>();
+          if constexpr (concurrent) {
             traverse_side_links_with_locks(current_node, current_node_index, key_slice, tile, allocator);
           }
         }
@@ -794,7 +801,7 @@ struct gpu_masstree {
           reinterpret_cast<elem_type*>(allocator.address(current_node_index)),
           current_node_index,
           tile);
-      current_node.load(cuda_memory_order::memory_order_relaxed);
+      current_node.template load<cuda_memory_order::relaxed>();
       bool link_traversed = traverse_side_links(current_node, current_node_index, key_slice, tile, allocator);
 
       // early exit condition
@@ -807,7 +814,7 @@ struct gpu_masstree {
       // if it's full, the parent should be known
       if (current_node.is_full() || current_node.is_border()) {
         if (current_node.try_lock()) {
-          current_node.load(cuda_memory_order::memory_order_relaxed);
+          current_node.template load<cuda_memory_order::relaxed>();
           if (!current_node.is_full()) {
             link_traversed |= traverse_side_links_with_locks(current_node, current_node_index, key_slice, tile, allocator);
           }
@@ -845,7 +852,7 @@ struct gpu_masstree {
           auto parent_node = node_type(
             reinterpret_cast<elem_type*>(allocator.address(parent_index)), parent_index, tile);
           parent_node.lock();
-          parent_node.load(cuda_memory_order::memory_order_relaxed);
+          parent_node.template load<cuda_memory_order::relaxed>();
           // parent should be not full, not garbage, and correct parent
           if (parent_node.is_full() ||
               parent_node.is_garbage() ||
@@ -863,11 +870,11 @@ struct gpu_masstree {
                                                  reinterpret_cast<elem_type*>(allocator.address(sibling_index)),
                                                  parent_node);
           // write order: right -> left -> parent
-          split_result.sibling.store(cuda_memory_order::memory_order_relaxed);
+          split_result.sibling.template store<cuda_memory_order::relaxed>();
           __threadfence();
-          current_node.store(cuda_memory_order::memory_order_relaxed);
+          current_node.template store<cuda_memory_order::relaxed>();
           __threadfence();
-          parent_node.store(cuda_memory_order::memory_order_relaxed);
+          parent_node.template store<cuda_memory_order::relaxed>();
           parent_node.unlock();
           // update current node if necessary
           if (current_node.key_is_in_upperhalf(split_result.pivot_key, key_slice)) {
@@ -888,11 +895,11 @@ struct gpu_masstree {
                                                          reinterpret_cast<elem_type*>(allocator.address(left_sibling_index)),
                                                          reinterpret_cast<elem_type*>(allocator.address(right_sibling_index)));
           // write order: right -> left -> parent
-          two_siblings.right.store(cuda_memory_order::memory_order_relaxed);
+          two_siblings.right.template store<cuda_memory_order::relaxed>();
           __threadfence();
-          two_siblings.left.store(cuda_memory_order::memory_order_relaxed);
+          two_siblings.left.template store<cuda_memory_order::relaxed>();
           __threadfence();
-          current_node.store(cuda_memory_order::memory_order_relaxed);
+          current_node.template store<cuda_memory_order::relaxed>();
           current_node.unlock();
           // update current node to left or right
           current_node_index = current_node.find_next(key_slice);
@@ -945,7 +952,7 @@ struct gpu_masstree {
           reinterpret_cast<elem_type*>(allocator.address(current_node_index)),
           current_node_index,
           tile);
-      current_node.load(cuda_memory_order::memory_order_relaxed);
+      current_node.template load<cuda_memory_order::relaxed>();
       bool link_traversed = traverse_side_links(current_node, current_node_index, key_slice, tile, allocator);
 
       // early exit condition
@@ -958,7 +965,7 @@ struct gpu_masstree {
       // if it's underflow, the parent and sibling should be known
       if (current_node.is_underflow() || current_node.is_border()) {
         if (current_node.try_lock()) {
-          current_node.load(cuda_memory_order::memory_order_relaxed);
+          current_node.template load<cuda_memory_order::relaxed>();
           if (!current_node.is_underflow()) {
             link_traversed |= traverse_side_links_with_locks(current_node, current_node_index, key_slice, tile, allocator);
           }
@@ -1010,7 +1017,7 @@ struct gpu_masstree {
             continue;
           }
         }
-        sibling_node.load(cuda_memory_order::memory_order_relaxed);
+        sibling_node.template load<cuda_memory_order::relaxed>();
         // check sibling validity
         if (sibling_node.is_garbage() ||
             (sibling_at_left ?
@@ -1027,7 +1034,7 @@ struct gpu_masstree {
         auto parent_node = node_type(
             reinterpret_cast<elem_type*>(allocator.address(parent_index)), parent_index, tile);
         parent_node.lock();
-        parent_node.load(cuda_memory_order::memory_order_relaxed);
+        parent_node.template load<cuda_memory_order::relaxed>();
         // make sure parent is not garbage and not underflow
         if (parent_node.is_garbage() || parent_node.is_underflow()) {
           current_node.unlock();
@@ -1058,11 +1065,11 @@ struct gpu_masstree {
           if (parent_index != current_root_index || parent_node.num_keys() > 2) {
             auto left_sibling_index = plan.sibling_at_left ? plan.sibling_index : current_node_index;
             left_sibling_node.merge(left_sibling_index, right_sibling_node, parent_node, plan.left_location);
-            left_sibling_node.store(cuda_memory_order::memory_order_relaxed);
+            left_sibling_node.template store<cuda_memory_order::relaxed>();
             __threadfence();
-            right_sibling_node.store(cuda_memory_order::memory_order_relaxed);
+            right_sibling_node.template store<cuda_memory_order::relaxed>();
             __threadfence();
-            parent_node.store(cuda_memory_order::memory_order_relaxed);
+            parent_node.template store<cuda_memory_order::relaxed>();
             parent_node.unlock();
             right_sibling_node.unlock();
             auto right_sibling_index = plan.sibling_at_left ? current_node_index : plan.sibling_index;
@@ -1074,11 +1081,11 @@ struct gpu_masstree {
           }
           else {
             parent_node.merge_to_root(current_root_index, left_sibling_node, right_sibling_node);
-            parent_node.store(cuda_memory_order::memory_order_relaxed);
+            parent_node.template store<cuda_memory_order::relaxed>();
             __threadfence();
-            left_sibling_node.store(cuda_memory_order::memory_order_relaxed);
+            left_sibling_node.template store<cuda_memory_order::relaxed>();
             __threadfence();
-            right_sibling_node.store(cuda_memory_order::memory_order_relaxed);
+            right_sibling_node.template store<cuda_memory_order::relaxed>();
             left_sibling_node.unlock();
             right_sibling_node.unlock();
             reclaimer.retire(current_node_index, tile);
@@ -1091,11 +1098,11 @@ struct gpu_masstree {
           // borrow
           if (plan.sibling_at_left) {
             current_node.borrow_left(sibling_node, parent_node, plan.left_location);
-            current_node.store(cuda_memory_order::memory_order_relaxed);
+            current_node.template store<cuda_memory_order::relaxed>();
             __threadfence();
-            sibling_node.store(cuda_memory_order::memory_order_relaxed);
+            sibling_node.template store<cuda_memory_order::relaxed>();
             __threadfence();
-            parent_node.store(cuda_memory_order::memory_order_relaxed);
+            parent_node.template store<cuda_memory_order::relaxed>();
           }
           else {
             // borrow_right need additional node to ensure correct lock-free traversal
@@ -1110,13 +1117,13 @@ struct gpu_masstree {
                                       current_node_index,
                                       new_sibling_index,
                                       new_sibling_node);
-            new_sibling_node.store(cuda_memory_order::memory_order_relaxed);
+            new_sibling_node.template store<cuda_memory_order::relaxed>();
             __threadfence();
-            current_node.store(cuda_memory_order::memory_order_relaxed);
+            current_node.template store<cuda_memory_order::relaxed>();
             __threadfence();
-            sibling_node.store(cuda_memory_order::memory_order_relaxed);
+            sibling_node.template store<cuda_memory_order::relaxed>();
             __threadfence();
-            parent_node.store(cuda_memory_order::memory_order_relaxed);
+            parent_node.template store<cuda_memory_order::relaxed>();
             new_sibling_node.unlock();
             reclaimer.retire(sibling_index, tile);
           }
@@ -1164,7 +1171,7 @@ struct gpu_masstree {
           reinterpret_cast<elem_type*>(allocator.address(current_node_index)),
           current_node_index,
           tile);
-      current_node.load();
+      current_node.template load<cuda_memory_order::weak>();
       if (num_traversed_children == 0) {
         // first time visiting
         task.exec(current_node, tile, allocator);
@@ -1234,7 +1241,7 @@ struct gpu_masstree {
             auto suffix_index = node.get_value_from_location(i);
             auto suffix = masstree_suffix_node<tile_type, device_allocator_context_type>(
                 reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
-            suffix.load();
+            suffix.template load<cuda_memory_order::weak>();
             num_suffix_nodes_ += suffix.get_num_nodes();
           }
           before_key = key;
@@ -1275,7 +1282,7 @@ struct gpu_masstree {
       node_index = node.get_sibling_index();
       node =
           node_type(reinterpret_cast<key_slice_type*>(allocator.address(node_index)), node_index, tile);
-      node.load(cuda_memory_order::memory_order_relaxed);
+      node.template load<cuda_memory_order::relaxed>();
       traversed |= true;
     }
     return traversed;
@@ -1297,7 +1304,7 @@ struct gpu_masstree {
       node.unlock();
       sibling_node.lock();
       node = sibling_node;
-      node.load(cuda_memory_order::memory_order_relaxed);
+      node.template load<cuda_memory_order::relaxed>();
       traversed |= true;
     }
     return traversed;
@@ -1314,7 +1321,7 @@ struct gpu_masstree {
                   root_index,
                   tile);
     root_node.initialize_root();
-    root_node.store();
+    root_node.template store<cuda_memory_order::weak>();
   }
 
   void allocate() {

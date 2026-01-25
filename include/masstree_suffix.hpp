@@ -37,11 +37,13 @@ struct masstree_suffix_node {
       , tile_(tile)
       , allocator_(allocator) {}
 
-  DEVICE_QUALIFIER void load(cuda_memory_order order = cuda_memory_order::memory_order_weak) {
-    lane_elem_ = cuda_memory<elem_type>::load(node_ptr_ + tile_.thread_rank(), order);
+  template <cuda_memory_order order>
+  DEVICE_QUALIFIER void load() {
+    lane_elem_ = cuda_memory<elem_type, order>::load(node_ptr_ + tile_.thread_rank());
   }
-  DEVICE_QUALIFIER void store_head(cuda_memory_order order = cuda_memory_order::memory_order_weak) {
-    cuda_memory<elem_type>::store(node_ptr_ + tile_.thread_rank(), lane_elem_, order);
+  template <cuda_memory_order order>
+  DEVICE_QUALIFIER void store_head() {
+    cuda_memory<elem_type, order>::store(node_ptr_ + tile_.thread_rank(), lane_elem_);
   }  
 
   DEVICE_QUALIFIER size_type get_next() const {
@@ -69,7 +71,8 @@ struct masstree_suffix_node {
     return (length + node_max_len_ - 1) / node_max_len_;
   }
 
-  DEVICE_QUALIFIER bool streq(const elem_type* key, uint32_t key_length, cuda_memory_order order = cuda_memory_order::memory_order_weak) const {
+  template <cuda_memory_order order>
+  DEVICE_QUALIFIER bool streq(const elem_type* key, uint32_t key_length) const {
     // ignore first slice in the border node
     key++;
     key_length--;
@@ -87,12 +90,13 @@ struct masstree_suffix_node {
       key += node_max_len_;
       auto next_index = get_next();
       auto* next_ptr = reinterpret_cast<elem_type*>(allocator_.address(next_index));
-      elem = cuda_memory<elem_type>::load(next_ptr + tile_.thread_rank(), order);
+      elem = cuda_memory<elem_type, order>::load(next_ptr + tile_.thread_rank());
     }
     assert(false);
   }
 
-  DEVICE_QUALIFIER int strcmp(const elem_type* key, uint32_t key_length, cuda_memory_order order = cuda_memory_order::memory_order_weak, elem_type* mismatch_value = nullptr) const {
+  template <cuda_memory_order order>
+  DEVICE_QUALIFIER int strcmp(const elem_type* key, uint32_t key_length, elem_type* mismatch_value = nullptr) const {
     // ignore first slice in the border node
     key++;
     key_length--;
@@ -132,12 +136,13 @@ struct masstree_suffix_node {
       key += node_max_len_;
       auto next_index = tile_.shfl(elem, next_lane_);
       auto* next_ptr = reinterpret_cast<elem_type*>(allocator_.address(next_index));
-      elem = cuda_memory<elem_type>::load(next_ptr + tile_.thread_rank(), order);
+      elem = cuda_memory<elem_type, order>::load(next_ptr + tile_.thread_rank());
     }
     assert(false);
   }
 
-  DEVICE_QUALIFIER void create_from(const elem_type* key, size_type key_length, elem_type value, cuda_memory_order order = cuda_memory_order::memory_order_weak) {
+  template <cuda_memory_order order>
+  DEVICE_QUALIFIER void create_from(const elem_type* key, size_type key_length, elem_type value) {
     // ignore first slice, already stored in border node
     key++;
     key_length--;
@@ -159,7 +164,7 @@ struct masstree_suffix_node {
       }
       // store
       if (curr_ptr) { // !is_head
-        cuda_memory<elem_type>::store(curr_ptr + tile_.thread_rank(), elem, order);
+        cuda_memory<elem_type, order>::store(curr_ptr + tile_.thread_rank(), elem);
       }
       else {  // is_head
         if (tile_.thread_rank() < node_max_len_ || tile_.thread_rank() == next_lane_) {
@@ -174,8 +179,8 @@ struct masstree_suffix_node {
     }
   }
 
-  template <typename reclaimer_type>
-  DEVICE_QUALIFIER size_type trim(uint32_t offset, size_type old_suffix_index, reclaimer_type& reclaimer, cuda_memory_order order = cuda_memory_order::memory_order_weak) {
+  template <cuda_memory_order order, typename reclaimer_type>
+  DEVICE_QUALIFIER size_type trim(uint32_t offset, size_type old_suffix_index, reclaimer_type& reclaimer) {
     // trim first offset elements and return new_suffix_index
     auto new_length = get_key_length() - offset;
     set_length(new_length);
@@ -188,7 +193,7 @@ struct masstree_suffix_node {
       reclaimer.retire(new_suffix_index, tile_);
       new_suffix_index = next_index;
       dst_ptr = reinterpret_cast<elem_type*>(allocator_.address(new_suffix_index));
-      src_lane_elem = cuda_memory<elem_type>::load(dst_ptr + tile_.thread_rank(), order);
+      src_lane_elem = cuda_memory<elem_type, order>::load(dst_ptr + tile_.thread_rank());
       offset -= node_max_len_;
     }
     if (offset == 0) { return new_suffix_index; }
@@ -206,7 +211,7 @@ struct masstree_suffix_node {
       // phase 2. copy src.next[0:offset) -> dst[node_max_len-offset:node_max_len)
       auto src_next_index = tile_.shfl(src_lane_elem, next_lane_);
       auto* src_next_ptr = reinterpret_cast<elem_type*>(allocator_.address(src_next_index));
-      src_lane_elem = cuda_memory<elem_type>::load(src_next_ptr + tile_.thread_rank(), order);
+      src_lane_elem = cuda_memory<elem_type, order>::load(src_next_ptr + tile_.thread_rank());
       copy_count = min(new_length, offset);
       auto up_src_elem = tile_.shfl_up(src_lane_elem, node_max_len_ - offset);
       if (node_max_len_ - offset <= tile_.thread_rank()) {
@@ -221,7 +226,7 @@ struct masstree_suffix_node {
       // phase 3. store dst
       if (tile_.thread_rank() < node_max_len_) {
         if (dst_ptr) {
-          cuda_memory<elem_type>::store(dst_ptr + tile_.thread_rank(), dst_lane_elem, order);
+          cuda_memory<elem_type, order>::store(dst_ptr + tile_.thread_rank(), dst_lane_elem);
         }
         else {
           lane_elem_ = dst_lane_elem;
@@ -232,7 +237,7 @@ struct masstree_suffix_node {
     // flush dst_lane_elem
     if (tile_.thread_rank() < node_max_len_) {
       if (dst_ptr) {
-        cuda_memory<elem_type>::store(dst_ptr + tile_.thread_rank(), dst_lane_elem, order);
+        cuda_memory<elem_type, order>::store(dst_ptr + tile_.thread_rank(), dst_lane_elem);
       }
       else {
         lane_elem_ = dst_lane_elem;
@@ -241,29 +246,25 @@ struct masstree_suffix_node {
     return new_suffix_index;
   }
 
-  template <typename reclaimer_type>
-  DEVICE_QUALIFIER void retire(reclaimer_type& reclaimer, size_type suffix_head_index, cuda_memory_order order = cuda_memory_order::memory_order_weak) {
+  template <cuda_memory_order order, typename reclaimer_type>
+  DEVICE_QUALIFIER void retire(reclaimer_type& reclaimer, size_type suffix_head_index) {
     reclaimer.retire(suffix_head_index, tile_);
     auto key_length = get_key_length();
     auto suffix_index = get_next();
     while (true) {
       if (key_length <= node_max_len_) { break; }
       auto* suffix_ptr = reinterpret_cast<elem_type*>(allocator_.address(suffix_index));
-      auto next_index = cuda_memory<elem_type>::load(suffix_ptr + next_lane_, order);
+      auto next_index = cuda_memory<elem_type, order>::load(suffix_ptr + next_lane_);
       reclaimer.retire(suffix_index, tile_);
       suffix_index = next_index;
       key_length -= node_max_len_;
     }
   }
 
-  static DEVICE_QUALIFIER elem_type fetch_value_only(size_type suffix_index, allocator_type& allocator, bool concurrent) {
+  template <cuda_memory_order order>
+  static DEVICE_QUALIFIER elem_type fetch_value_only(size_type suffix_index, allocator_type& allocator) {
     auto* ptr = reinterpret_cast<elem_type*>(allocator.address(suffix_index));
-    if (concurrent) {
-      return cuda_memory<elem_type>::load(ptr + head_node_value_lane_, cuda_memory_order::memory_order_relaxed);
-    }
-    else {
-      return cuda_memory<elem_type>::load(ptr + head_node_value_lane_, cuda_memory_order::memory_order_weak);
-    }
+    cuda_memory<elem_type, order>::load(ptr + head_node_value_lane_);
   }
 
   DEVICE_QUALIFIER masstree_suffix_node<tile_type, allocator_type>& operator=(
