@@ -840,7 +840,7 @@ struct masstree_node {
         elem_type suffix_index = tile_.shfl(lane_elem_, get_value_lane_from_location(i));
         auto suffix = masstree_suffix_node<tile_type, allocator_type>(
             reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile_, allocator);
-        suffix.load();
+        suffix.template load<cuda_memory_order::weak>();
         suffix.print();
       }
     }

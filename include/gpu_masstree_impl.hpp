@@ -619,39 +619,36 @@ struct gpu_masstree {
     [[maybe_unused]] dynamic_stack_type per_layer_indexes(allocator, tile); // (root_index, border_index)
     size_type current_node_index = *d_root_index_;
     uint32_t slice = 0;
-    bool retry_with_merge = false;
     while (slice < key_length) {
       key_slice_type key_slice = key[slice];
       const bool more_key = (slice < key_length - 1);
-      [[maybe_unused]] size_type border_node_index;
+      size_type border_node_index;
       node_type border_node(tile);
       // traverse the layer
-      if (!retry_with_merge && (!do_merge || more_key)) {
-        // start with read-only traverse
-        border_node = coop_traverse_until_border<concurrent>(key_slice, current_node_index, tile, allocator, !more_key,
-                                                             do_remove_empty_root ? &border_node_index: nullptr);
+      if constexpr (!do_merge) {
+        const bool lock_border_node = !more_key;
+        border_node = coop_traverse_until_border<concurrent>(key_slice, current_node_index, tile, allocator, lock_border_node, &border_node_index);
       }
-      else {  // retry_with_merge || (do_merge && !more_key (i.e. last slice))
-        // traverse with proactive merge
+      else {
         merge_early_exit_check early_exit_check;
         border_node = coop_traverse_until_border_merge(key_slice, more_key, current_node_index,
                                                        tile, allocator, reclaimer, early_exit_check,
-                                                       do_remove_empty_root ? &border_node_index: nullptr);
+                                                       &border_node_index);
         if (early_exit_check.early_exited_) {
           return false; // key not exists
         }
-        retry_with_merge = false;
       }
-      assert(more_key || border_node.is_locked());
       if (more_key) {
         // try traverse
         size_type next_index;
         const int found_keystate = border_node.get_key_value_from_node(key_slice, next_index, true);
         if (found_keystate < 0) { // key not exists
+          if (border_node.is_locked()) { border_node.unlock(); }
           return false;
         }
         else if (found_keystate == node_type::KEYSTATE_LINK) {
           // traverse to next layer
+          if (border_node.is_locked()) { border_node.unlock(); }
           if constexpr (do_remove_empty_root) { per_layer_indexes.push(current_node_index, border_node_index); }
           current_node_index = next_index;
           slice++;
@@ -664,19 +661,23 @@ struct gpu_masstree {
           const bool suffix_eq = suffix.template streq<memory_order>(key + slice, key_length - slice);
           if (suffix_eq) {
             // key exists, erase suffix value and mark suffix nodes garbage
-            if (border_node.is_underflow()) {
-              // cannot allow underflow, retry from root with proactive merging
-              border_node.unlock();
-              retry_with_merge = true;
-              continue;
+            if (!border_node.is_locked()) {
+              border_node.lock();
+              border_node.template load<cuda_memory_order::relaxed>();
+              if constexpr (concurrent) {
+                traverse_side_links_with_locks(border_node, border_node_index, key_slice, tile, allocator);
+              }
             }
             const bool success = border_node.erase(key_slice, node_type::KEYSTATE_SUFFIX);
             assert(success);
             border_node.template store<cuda_memory_order::relaxed>();
             border_node.unlock();
-            suffix.retire(reclaimer, next_index);
+            suffix.template retire<memory_order>(reclaimer, next_index);
           }
-          else { return false; }
+          else {
+            if (border_node.is_locked()) { border_node.unlock(); }
+            return false;
+          }
         }
       }
       else {  // !more_key
@@ -696,7 +697,7 @@ struct gpu_masstree {
           key_slice = key[slice];
           size_type layer_root_index;
           per_layer_indexes.pop(layer_root_index, current_node_index);
-          border_node = coop_traverse_until_border(key_slice, current_node_index, tile, allocator, true, true);
+          border_node = coop_traverse_until_border<true>(key_slice, current_node_index, tile, allocator, true);
           if (border_node.key_is_in_node(key_slice, node_type::KEYSTATE_LINK) && border_node.is_underflow()) {
             // cannot allow underflow. retry from root with proactive merging
             border_node.unlock();
