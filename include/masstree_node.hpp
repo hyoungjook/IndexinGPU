@@ -38,10 +38,7 @@ struct masstree_node {
   static constexpr uint32_t KEYSTATE_SUFFIX = 0b11u;
   DEVICE_QUALIFIER masstree_node(const tile_type& tile): tile_(tile) {}
   DEVICE_QUALIFIER masstree_node(elem_type* ptr, const size_type index, const tile_type& tile)
-      : node_ptr_(ptr), tile_(tile)
-      #ifdef NODE_DEBUG
-      , node_index_(index)
-      #endif
+      : node_ptr_(ptr), node_index_(index), tile_(tile)
   {
     assert(tile_.size() == 2 * node_width);
   }
@@ -52,9 +49,7 @@ struct masstree_node {
                                  uint32_t metadata,
                                  uint32_t keystate)
       : node_ptr_(ptr)
-      #ifdef NODE_DEBUG
       , node_index_(index)
-      #endif
       , lane_elem_(elem)
       , tile_(tile)
       , metadata_(metadata)
@@ -134,6 +129,9 @@ struct masstree_node {
     return node_width <= tile_.thread_rank() && tile_.thread_rank() < node_width + num_keys();
   }
 
+  DEVICE_QUALIFIER size_type get_node_index() const {
+    return node_index_;
+  }
   DEVICE_QUALIFIER uint32_t num_keys() const {
     return (metadata_ & num_keys_mask_) >> num_keys_offset_;
   }
@@ -788,9 +786,7 @@ struct masstree_node {
   DEVICE_QUALIFIER masstree_node<tile_type>& operator=(
       const masstree_node<tile_type>& other) {
     node_ptr_ = other.node_ptr_;
-    #ifdef NODE_DEBUG
     node_index_ = other.node_index_;
-    #endif
     lane_elem_ = other.lane_elem_;
     metadata_ = other.metadata_;
     keystate_ = other.keystate_;
@@ -849,9 +845,7 @@ struct masstree_node {
 
  private:
   elem_type* node_ptr_;
-  #ifdef NODE_DEBUG
   size_type node_index_;
-  #endif
   elem_type lane_elem_;
   const tile_type tile_;
   
