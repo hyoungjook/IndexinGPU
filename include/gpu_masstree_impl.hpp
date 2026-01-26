@@ -514,13 +514,13 @@ struct gpu_masstree {
         slice--;
         continue;
       }
-      prev_root_index = current_node_index;
       auto keystate = border_node.get_key_value_from_node(key_slice, current_node_index, more_key);
       if (keystate >= 0) {
         // key exists, the value is stored in current_node_index
         if (keystate == node_type::KEYSTATE_LINK) {
           // continue to next layer
           border_node.unlock();
+          prev_root_index = current_node_index;
           slice++;
           continue;
         }
@@ -617,6 +617,7 @@ struct gpu_masstree {
           }
           else {
             // insert link entry and continue to next layer
+            prev_root_index = current_node_index;
             current_node_index = allocator.allocate(tile);
             auto next_root_node = masstree_node<tile_type>(
               reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile);
@@ -658,7 +659,6 @@ struct gpu_masstree {
     using suffix_type = masstree_suffix_node<tile_type, device_allocator_context_type>;
     using dynamic_stack_type = utils::dynamic_stack_u32<2, tile_type, device_allocator_context_type>;
     static constexpr auto memory_order = concurrent ? cuda_memory_order::relaxed : cuda_memory_order::weak;
-    dummy_early_exit_check<node_type> dummy_early_exit;
     struct merge_early_exit_check {
       DEVICE_QUALIFIER bool check(const node_type& border_node) {
         // if the border node doesn't have the key slice, no need to lock the node
@@ -679,19 +679,20 @@ struct gpu_masstree {
       node_type border_node(tile);
       // traverse the layer
       bool border_node_locked_by_me = true;
-      if (do_merge && retry_with_merge) {
+      {
         merge_early_exit_check early_exit{key_slice, more_key};
-        border_node = coop_traverse_until_border_merge(key_slice, current_node_index,
-                                                       tile, allocator, reclaimer, early_exit);
+        if (do_merge && retry_with_merge) {
+          border_node = coop_traverse_until_border_merge(key_slice, current_node_index, tile, allocator, reclaimer, early_exit);
+          retry_with_merge = false;
+        }
+        else {
+          const bool lock_border_node = !more_key;
+          border_node = coop_traverse_until_border<concurrent>(key_slice, current_node_index, tile, allocator, lock_border_node, early_exit);
+          border_node_locked_by_me = lock_border_node;
+        }
         if (early_exit.exited_) {
           return false; // key not exists
         }
-        retry_with_merge = false;
-      }
-      else {
-        const bool lock_border_node = !more_key;
-        border_node = coop_traverse_until_border<concurrent>(key_slice, current_node_index, tile, allocator, lock_border_node, dummy_early_exit);
-        border_node_locked_by_me = lock_border_node;
       }
       if (more_key) {
         // try traverse
@@ -787,11 +788,12 @@ struct gpu_masstree {
           key_slice = key[slice];
           size_type layer_root_index;
           per_layer_indexes.pop(layer_root_index, current_node_index);
-          border_node = coop_traverse_until_border<true>(key_slice, current_node_index, tile, allocator, true, dummy_early_exit);
+          merge_early_exit_check early_exit{key_slice, true};
+          border_node = coop_traverse_until_border<true>(key_slice, current_node_index, tile, allocator, true, early_exit);
+          if (early_exit.exited_) { break; }
           if (border_node.key_is_in_node(key_slice, node_type::KEYSTATE_LINK) && border_node.is_underflow()) {
             // cannot allow underflow. retry from root with proactive merging
             border_node.unlock();
-            merge_early_exit_check early_exit{key_slice, true};
             border_node = coop_traverse_until_border_merge(key_slice, layer_root_index, tile, allocator, reclaimer, early_exit);
             if (early_exit.exited_) { break; }
           }
