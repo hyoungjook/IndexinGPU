@@ -926,7 +926,7 @@ struct masstree_node {
 
   static constexpr uint32_t interior_max_num_keys_ = node_width - 1;
   static constexpr uint32_t border_max_num_keys_ = node_width - 2;
-  static constexpr uint32_t underflow_num_keys_ = node_width / 3; // TODO adjust
+  static constexpr uint32_t underflow_num_keys_ = node_width / 3;
   static constexpr uint32_t half_node_width_ = node_width / 2;
 
   static_assert(num_keys_offset_ == 0); // this allows (metadata +/- N) equivalent to (num_keys +/- N) within range

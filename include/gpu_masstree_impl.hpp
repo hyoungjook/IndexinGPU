@@ -692,7 +692,7 @@ struct gpu_masstree {
       if (more_key) {
         // try traverse
         size_type next_index;
-        const int found_keystate = border_node.get_key_value_from_node(key_slice, next_index, true);
+        int found_keystate = border_node.get_key_value_from_node(key_slice, next_index, true);
         if (found_keystate < 0) { // key not exists
           if (border_node_locked_by_me) { border_node.unlock(); }
           return false;
@@ -744,10 +744,22 @@ struct gpu_masstree {
             }
             const bool success = border_node.erase(key_slice, node_type::KEYSTATE_SUFFIX);
             if (!success) {
-              // something changed after lock
+              // something changed after lock: retry from get_key_value_from_node() above
+              found_keystate = border_node.get_key_value_from_node(key_slice, next_index, true);
               border_node.unlock();
-              retry_with_merge = true;
-              continue;
+              if (found_keystate < 0) {
+                return false;
+              }
+              else {
+                assert(found_keystate == node_type::KEYSTATE_LINK);
+                if constexpr (do_remove_empty_root) {
+                  auto border_node_index = border_node.get_node_index();
+                  per_layer_indexes.push(current_node_index, border_node_index);
+                }
+                current_node_index = next_index;
+                slice++;
+                continue;
+              }
             }
             border_node.template store<cuda_memory_order::relaxed>();
             border_node.unlock();
