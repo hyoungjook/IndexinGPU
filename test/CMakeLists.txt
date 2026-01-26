@@ -1,21 +1,5 @@
 project (test)
 
-set(TESTS
-    test_bulk_build
-    concurrent_insert_rq_vtree
-    erase_test
-    find_blink_test
-    find_versioned_test
-    test_slab_alloc
-)
-
-foreach(TEST ${TESTS})
-    add_executable(${TEST} ${TEST}.cu)
-    set_target_properties(${TEST} PROPERTIES FOLDER "tests")
-    target_link_libraries(${TEST} PRIVATE gpu_btrees)
-endforeach()
-
-
 # unit tests
 include(${CMAKE_SOURCE_DIR}/cmake/CPM.cmake)
 
@@ -28,8 +12,6 @@ CPMAddPackage(
 )
 
 set(GTEST_TESTS
-    unittest_btree
-    unittest_versioning
     unittest_masstree
 )
 foreach(TEST ${GTEST_TESTS})

@@ -15,7 +15,7 @@
  *   limitations under the License.
  */
 
-#include <gpu_btree.h>
+#include <gpu_masstree.h>
 #include <gtest/gtest.h>
 #include <cmd.hpp>
 #include <cstdint>
@@ -255,7 +255,7 @@ void validate(btree* tree, uint32_t min_key_length_bytes, uint32_t max_key_lengt
   testing_input input(num_keys, min_key_length, max_key_length);
   tree->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), num_keys);
   EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
-  tree->validate_tree();
+  tree->validate();
   input.free();
 }
 
@@ -335,7 +335,7 @@ void test_eraseall(btree* tree, uint32_t min_key_length_bytes, uint32_t max_key_
     auto found_value    = find_results[i];
     ASSERT_EQ(found_value, expected_value);
   }
-  tree->validate_tree();
+  tree->validate();
   find_results.free();
   input.free();
 }
@@ -468,7 +468,7 @@ void test_concurrentinserterase(btree* tree, uint32_t min_key_length_bytes, uint
 }
 
 template <typename btree>
-void test_range(btree* tree, uint32_t min_key_length_bytes, uint32_t max_key_length_bytes) {
+void test_scan(btree* tree, uint32_t min_key_length_bytes, uint32_t max_key_length_bytes) {
   const size_type min_key_length = min_key_length_bytes / sizeof(key_slice_type);
   const size_type max_key_length = max_key_length_bytes / sizeof(key_slice_type);
   uint32_t num_queries = num_keys / 2;
@@ -481,11 +481,11 @@ void test_range(btree* tree, uint32_t min_key_length_bytes, uint32_t max_key_len
   testing_range_input rinput(input, num_queries, max_count_per_query);
   tree->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), num_keys);
   cuda_try(cudaDeviceSynchronize());
-  tree->range(rinput.lower_keys.data(), rinput.lower_lengths.data(),
-              max_key_length, max_count_per_query, num_queries,
-              rinput.upper_keys.data(), rinput.upper_lengths.data(),
-              result_counts.data(), result_values.data(),
-              result_keys.data(), result_key_lengths.data());
+  tree->scan(rinput.lower_keys.data(), rinput.lower_lengths.data(),
+             max_key_length, max_count_per_query, num_queries,
+             rinput.upper_keys.data(), rinput.upper_lengths.data(),
+             result_counts.data(), result_values.data(),
+             result_keys.data(), result_key_lengths.data());
   EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   for (std::size_t i = 0; i < num_queries; i++) {
     auto expected_count = rinput.counts[i];
@@ -543,12 +543,14 @@ TYPED_TEST(BTreeMapTest, ConcurrentInsertErase##min_length##_##max_length) { \
   test_concurrentinserterase(this->btree_map_, min_length, max_length); \
 } \
 TYPED_TEST(BTreeMapTest, RangeQuery##min_length##_##max_length) { \
-  test_range(this->btree_map_, min_length, max_length); \
+  test_scan(this->btree_map_, min_length, max_length); \
 }
 
 DECLARE_TESTS_FOR_KEY_LENGTHS(4, 4)
 DECLARE_TESTS_FOR_KEY_LENGTHS(64, 64)
 DECLARE_TESTS_FOR_KEY_LENGTHS(4, 64)
+DECLARE_TESTS_FOR_KEY_LENGTHS(200, 200)
+DECLARE_TESTS_FOR_KEY_LENGTHS(100, 200)
 
 }  // namespace
 
