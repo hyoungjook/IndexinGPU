@@ -541,7 +541,6 @@ struct gpu_masstree {
           }
           else {  // mismatch: create new node chain
             int num_matches = abs(cmp) - 1;
-            auto suffix_index = current_node_index;
             current_node_index = allocator.allocate(tile);
             border_node.update(key_slice, current_node_index, node_type::KEYSTATE_SUFFIX, node_type::KEYSTATE_LINK);
             // chain of singleton nodes for matching prefix
@@ -563,12 +562,12 @@ struct gpu_masstree {
             assert(num_matches < suffix.get_key_length());
             if (num_matches == suffix.get_key_length() - 1) {
               doubleton_node.insert(mismatch_suffix_slice, suffix.get_value(), node_type::KEYSTATE_VALUE);
-              suffix.template retire<cuda_memory_order::relaxed>(reclaimer, suffix_index);
+              suffix.template retire<cuda_memory_order::relaxed>(reclaimer);
             }
             else {
-              suffix.template trim<cuda_memory_order::relaxed>(num_matches + 1, suffix_index, reclaimer);
+              suffix.template trim<cuda_memory_order::relaxed>(num_matches + 1, reclaimer);
               suffix.template store_head<cuda_memory_order::relaxed>();
-              doubleton_node.insert(mismatch_suffix_slice, suffix_index, node_type::KEYSTATE_SUFFIX);
+              doubleton_node.insert(mismatch_suffix_slice, suffix.get_node_index(), node_type::KEYSTATE_SUFFIX);
             }
             // insert suffix of this key
             assert(slice < key_length);
@@ -743,7 +742,7 @@ struct gpu_masstree {
             }
             border_node.template store<cuda_memory_order::relaxed>();
             border_node.unlock();
-            suffix.template retire<memory_order>(reclaimer, next_index);
+            suffix.template retire<memory_order>(reclaimer);
           }
           else {
             if (border_node_locked_by_me) { border_node.unlock(); }

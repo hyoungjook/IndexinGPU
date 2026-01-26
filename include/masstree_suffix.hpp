@@ -20,9 +20,6 @@
 #include <memory_utils.hpp>
 #include <utils.hpp>
 
-#ifndef NDEBUG
-//#define NODE_DEBUG
-#endif
 template <typename tile_type, typename allocator_type>
 struct masstree_suffix_node {
   using elem_type = uint32_t;
@@ -31,9 +28,7 @@ struct masstree_suffix_node {
 
   DEVICE_QUALIFIER masstree_suffix_node(elem_type* ptr, const size_type index, const tile_type& tile, allocator_type& allocator)
       : node_ptr_(ptr)
-      #ifdef NODE_DEBUG
       , node_index_(index)
-      #endif
       , tile_(tile)
       , allocator_(allocator) {}
 
@@ -44,7 +39,11 @@ struct masstree_suffix_node {
   template <cuda_memory_order order>
   DEVICE_QUALIFIER void store_head() {
     cuda_memory<elem_type, order>::store(node_ptr_ + tile_.thread_rank(), lane_elem_);
-  }  
+  }
+
+  DEVICE_QUALIFIER size_type get_node_index() const {
+    return node_index_;
+  }
 
   DEVICE_QUALIFIER size_type get_next() const {
     return tile_.shfl(lane_elem_, next_lane_);
@@ -200,28 +199,25 @@ struct masstree_suffix_node {
   }
 
   template <cuda_memory_order order, typename reclaimer_type>
-  DEVICE_QUALIFIER size_type trim(uint32_t offset, size_type old_suffix_index, reclaimer_type& reclaimer) {
-    // trim first offset elements and return new_suffix_index
+  DEVICE_QUALIFIER void trim(uint32_t offset, reclaimer_type& reclaimer) {
+    // trim first offset elements
     auto new_length = get_key_length() - offset;
     set_length(new_length);
     // retire nodes until the node with valid element
-    size_type new_suffix_index = old_suffix_index;
-    elem_type* dst_ptr = nullptr;
     elem_type src_lane_elem = lane_elem_;
     while (offset >= node_max_len_) {
       auto next_index = tile_.shfl(src_lane_elem, next_lane_);
-      reclaimer.retire(new_suffix_index, tile_);
-      new_suffix_index = next_index;
-      dst_ptr = reinterpret_cast<elem_type*>(allocator_.address(new_suffix_index));
-      src_lane_elem = cuda_memory<elem_type, order>::load(dst_ptr + tile_.thread_rank());
+      reclaimer.retire(node_index_, tile_);
+      node_index_ = next_index;
+      node_ptr_ = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
+      src_lane_elem = cuda_memory<elem_type, order>::load(node_ptr_ + tile_.thread_rank());
       offset -= node_max_len_;
     }
-    if (offset == 0) { return new_suffix_index; }
-    // new_suffix_index is fixed from now
-    // dst_ptr has the pointer of new_suffix_index; nullptr if new_suffix_index is old head
-    // src_lane_elem has the contents of new_suffix_index (new head)
-    if (dst_ptr) { node_ptr_ = dst_ptr; }
+    if (offset == 0) { return; }
+    // node_index_ and node_ptr_ are fixed from now
+    // src_lane_elem has the contents of node_index_ (new head)
     elem_type dst_lane_elem;
+    elem_type* dst_ptr = nullptr; // NULL means it's head
     while (true) {
       // phase 1. copy src[offset:node_max_len) -> dst[0:node_max_len-offset) in same node
       uint32_t copy_count = min(new_length, node_max_len_ - offset);
@@ -263,12 +259,11 @@ struct masstree_suffix_node {
         lane_elem_ = dst_lane_elem;
       }
     }
-    return new_suffix_index;
   }
 
   template <cuda_memory_order order, typename reclaimer_type>
-  DEVICE_QUALIFIER void retire(reclaimer_type& reclaimer, size_type suffix_head_index) {
-    reclaimer.retire(suffix_head_index, tile_);
+  DEVICE_QUALIFIER void retire(reclaimer_type& reclaimer) {
+    reclaimer.retire(node_index_, tile_);
     auto key_length = get_key_length();
     auto suffix_index = get_next();
     while (true) {
@@ -296,15 +291,12 @@ struct masstree_suffix_node {
   DEVICE_QUALIFIER masstree_suffix_node<tile_type, allocator_type>& operator=(
       const masstree_suffix_node<tile_type, allocator_type>& other) {
     node_ptr_ = other.node_ptr_;
-    #ifdef NODE_DEBUG
     node_index_ = other.node_index_;
-    #endif
     lane_elem_ = other.lane_elem_;
     return *this;
   }
 
   DEVICE_QUALIFIER void print() const {
-    #ifdef NODE_DEBUG
     bool lead_lane = (tile_.thread_rank() == 0);
     auto length = get_key_length();
     auto value = get_value();
@@ -339,14 +331,11 @@ struct masstree_suffix_node {
         }
       }
     }
-    #endif
   }
 
  private:
   elem_type* node_ptr_;
-  #ifdef NODE_DEBUG
   size_type node_index_;
-  #endif
   elem_type lane_elem_;
   const tile_type& tile_;
   allocator_type& allocator_;

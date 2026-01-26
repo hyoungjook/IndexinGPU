@@ -22,9 +22,6 @@
 #include <utils.hpp>
 #include <masstree_suffix.hpp>
 
-#ifndef NDEBUG
-//#define NODE_DEBUG
-#endif
 template <typename tile_type>
 struct masstree_node {
   using elem_type = uint32_t;
@@ -829,7 +826,6 @@ struct masstree_node {
 
   template <typename allocator_type>
   DEVICE_QUALIFIER void print(allocator_type& allocator) const {
-    #ifdef NODE_DEBUG
     bool lead_lane = (tile_.thread_rank() == 0);
     if (lead_lane) printf("node[%u]: {", node_index_);
     if (num_keys() > interior_max_num_keys_) {
@@ -874,7 +870,6 @@ struct masstree_node {
         suffix.print();
       }
     }
-    #endif
   }
 
  private:

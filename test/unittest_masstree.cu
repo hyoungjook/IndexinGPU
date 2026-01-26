@@ -543,7 +543,7 @@ TYPED_TEST(BTreeMapTest, ConcurrentInsertErase##min_length##_##max_length) { \
   test_concurrentinserterase(this->btree_map_, min_length, max_length); \
 } \
 TYPED_TEST(BTreeMapTest, RangeQuery##min_length##_##max_length) { \
-  test_range(this->btree_map_, min_length, max_length); \
+  test_scan(this->btree_map_, min_length, max_length); \
 }
 
 DECLARE_TESTS_FOR_KEY_LENGTHS(4, 4)
