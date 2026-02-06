@@ -253,11 +253,11 @@ struct suffix_node {
       new_length -= copy_count;
       if (new_length == 0) { break; }
       // phase 2. copy src.next[0:offset) -> dst[node_max_len-offset:node_max_len)
+      src.node_index_ = src.get_next();
+      src.node_ptr_ = reinterpret_cast<elem_type*>(allocator_.address(src.node_index_));
+      src.template load_head<order>();
+      reclaimer.retire(src.node_index_, tile_);
       if (offset > 0) {
-        src.node_index_ = src.get_next();
-        src.node_ptr_ = reinterpret_cast<elem_type*>(allocator_.address(src.node_index_));
-        src.template load_head<order>();
-        reclaimer.retire(src.node_index_, tile_);
         copy_count = min(new_length, offset);
         auto up_src_elem = tile_.shfl_up(src.lane_elem_, node_max_len_ - offset);
         if (node_max_len_ - offset <= tile_.thread_rank() &&
