@@ -252,7 +252,6 @@ struct suffix_node {
       dst_lane_elem = (tile_.thread_rank() >= skip_elems) ? down_elem : dst_lane_elem;
       new_length -= copy_count;
       if (new_length == 0) { break; }
-      skip_elems = (skip_elems != 0 && copy_count == 1) ? 1 : 0; // skip = max(skip - count, 0);
       // phase 2. copy src.next[0:offset) -> dst[node_max_len-offset:node_max_len)
       if (offset > 0) {
         src.node_index_ = src.get_next();
@@ -267,8 +266,8 @@ struct suffix_node {
         }
         new_length -= copy_count;
         if (new_length == 0) { break; }
-        skip_elems = 0;
       }
+      skip_elems = 0;
       // phase 3. store dst & allocate dst.next
       auto dst_index = allocator_.allocate(tile_);
       if (tile_.thread_rank() == next_lane_) {
