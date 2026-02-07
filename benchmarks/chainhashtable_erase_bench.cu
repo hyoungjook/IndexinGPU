@@ -40,7 +40,7 @@ struct bench_rates {
   float insertion_rate;
   float find_rate;
 };
-template <typename chainhashtable_type, bool do_merge>
+template <typename chainhashtable_type, bool do_merge, bool use_hash_for_longkey>
 bench_rates bench_chainhashtable_insertion_erase(thrust::device_vector<key_slice_type>& d_keys,
                                                  thrust::device_vector<size_type>& d_lengths,
                                                  thrust::device_vector<value_type>& d_values,
@@ -66,7 +66,7 @@ bench_rates bench_chainhashtable_insertion_erase(thrust::device_vector<key_slice
               << std::endl;
     gpu_timer insert_timer(insertion_stream);
     insert_timer.start_timer();
-    table.insert(d_keys.data().get(), max_key_length, d_lengths.data().get(), d_values.data().get(), num_keys, insertion_stream);
+    table.insert(d_keys.data().get(), max_key_length, d_lengths.data().get(), d_values.data().get(), num_keys, insertion_stream, false use_hash_for_longkey);
     insert_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
     auto insertion_elapsed = insert_timer.get_elapsed_s();
@@ -75,7 +75,7 @@ bench_rates bench_chainhashtable_insertion_erase(thrust::device_vector<key_slice
     gpu_timer erase_timer(erase_stream);
     uint32_t num_erase = (uint32_t)(((float)num_keys) * erase_ratio);
     erase_timer.start_timer();
-    table.erase(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), num_erase, erase_stream, do_merge);
+    table.erase(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), num_erase, erase_stream, do_merge, use_hash_for_longkey);
     erase_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
     auto erase_elapsed = erase_timer.get_elapsed_s();
@@ -216,13 +216,23 @@ int main(int argc, char** argv) {
   using chainhashtable_slab_type = GpuChainHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_dummy_reclaim_type>;
   using chainhashtable_slab_reclaim_type = GpuChainHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_debra_reclaim_type>;
 
-  std::cout << "Benchmarking chainhashtable_slab_reclaim_type no-merge" << std::endl;
-  bench_chainhashtable_insertion_erase<chainhashtable_slab_reclaim_type, false>(
+  std::cout << "Benchmarking chainhashtable_slab_reclaim_type no-merge prefix4longkey" << std::endl;
+  bench_chainhashtable_insertion_erase<chainhashtable_slab_reclaim_type, false, false>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
     num_keys, fill_factor, max_key_length, erase_ratio, num_experiments
   );
-  std::cout << "Benchmarking chainhashtable_slab_reclaim_type merge" << std::endl;
-  bench_chainhashtable_insertion_erase<chainhashtable_slab_reclaim_type, true>(
+  std::cout << "Benchmarking chainhashtable_slab_reclaim_type merge prefix4longkey" << std::endl;
+  bench_chainhashtable_insertion_erase<chainhashtable_slab_reclaim_type, true, false>(
+    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
+    num_keys, fill_factor, max_key_length, erase_ratio, num_experiments
+  );
+  std::cout << "Benchmarking chainhashtable_slab_reclaim_type no-merge hash4longkey" << std::endl;
+  bench_chainhashtable_insertion_erase<chainhashtable_slab_reclaim_type, false, true>(
+    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
+    num_keys, fill_factor, max_key_length, erase_ratio, num_experiments
+  );
+  std::cout << "Benchmarking chainhashtable_slab_reclaim_type merge hash4longkey" << std::endl;
+  bench_chainhashtable_insertion_erase<chainhashtable_slab_reclaim_type, true, true>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
     num_keys, fill_factor, max_key_length, erase_ratio, num_experiments
   );

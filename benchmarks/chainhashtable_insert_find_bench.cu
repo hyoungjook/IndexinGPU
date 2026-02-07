@@ -40,7 +40,7 @@ struct bench_rates {
   float insertion_rate;
   float find_rate;
 };
-template <typename chainhashtable_type>
+template <typename chainhashtable_type, bool use_hash_for_longkey>
 bench_rates bench_chainhashtable_insertion_find(thrust::device_vector<key_slice_type>& d_keys,
                                                 thrust::device_vector<size_type>& d_lengths,
                                                 thrust::device_vector<value_type>& d_values,
@@ -69,7 +69,7 @@ bench_rates bench_chainhashtable_insertion_find(thrust::device_vector<key_slice_
               << std::endl;
     gpu_timer insert_timer(insertion_stream);
     insert_timer.start_timer();
-    table.insert(d_keys.data().get(), max_key_length, d_lengths.data().get(), d_values.data().get(), num_keys, insertion_stream);
+    table.insert(d_keys.data().get(), max_key_length, d_lengths.data().get(), d_values.data().get(), num_keys, insertion_stream, false, use_hash_for_longkey);
     insert_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
     auto insertion_elapsed = insert_timer.get_elapsed_s();
@@ -77,7 +77,7 @@ bench_rates bench_chainhashtable_insertion_find(thrust::device_vector<key_slice_
 
     gpu_timer find_timer(find_stream);
     find_timer.start_timer();
-    table.find(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), d_query_results.data().get(), num_keys, find_stream);
+    table.find(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), d_query_results.data().get(), num_keys, find_stream, false, use_hash_for_longkey);
     find_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
     auto find_elapsed = find_timer.get_elapsed_s();
@@ -243,8 +243,13 @@ int main(int argc, char** argv) {
   using chainhashtable_slab_type = GpuChainHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_dummy_reclaim_type>;
   using chainhashtable_slab_reclaim_type = GpuChainHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_debra_reclaim_type>;
 
-  std::cout << "Benchmarking chainhashtable_slab_reclaim_type" << std::endl;
-  bench_chainhashtable_insertion_find<chainhashtable_slab_reclaim_type>(
+  std::cout << "Benchmarking chainhashtable_slab_reclaim_type prefix4longkey" << std::endl;
+  bench_chainhashtable_insertion_find<chainhashtable_slab_reclaim_type, false>(
+    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
+    num_keys, fill_factor, max_key_length, num_experiments, validate_result, validate_index
+  );
+  std::cout << "Benchmarking chainhashtable_slab_reclaim_type hash4longkey" << std::endl;
+  bench_chainhashtable_insertion_find<chainhashtable_slab_reclaim_type, true>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
     num_keys, fill_factor, max_key_length, num_experiments, validate_result, validate_index
   );
