@@ -126,11 +126,19 @@ struct gpu_chainht {
              const size_type max_key_length,
              const size_type* key_lengths,
              const size_type num_keys,
-             cudaStream_t stream = 0) {
-    using erase_func = kernel::GpuChainHT::erase_device_func<key_slice_type, size_type, value_type>;
+             cudaStream_t stream = 0,
+             bool do_merge = true) {
+    using erase_readonly = kernel::GpuChainHT::erase_device_func<false, key_slice_type, size_type, value_type>;
+    using erase_merge = kernel::GpuChainHT::erase_device_func<true, key_slice_type, size_type, value_type>;
     #define erase_args .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths
-    erase_func func{erase_args};
-    launch_batch_kernel(func, num_keys, stream);
+    if (do_merge) {
+      erase_merge func{erase_args};
+      launch_batch_kernel(func, num_keys, stream);
+    }
+    else {
+      erase_readonly func{erase_args};
+      launch_batch_kernel(func, num_keys, stream);
+    }
     #undef erase_args
   }
 
@@ -143,14 +151,22 @@ struct gpu_chainht {
                                     const size_type erase_num_keys,
                                     const size_type max_key_length,
                                     cudaStream_t stream = 0,
-                                    bool insert_update_if_exists = false) {
+                                    bool insert_update_if_exists = false,
+                                    bool erase_do_merge = true) {
     using insert_func = kernel::GpuChainHT::insert_device_func<key_slice_type, size_type, value_type>;
-    using erase_func = kernel::GpuChainHT::erase_device_func<key_slice_type, size_type, value_type>;
+    using erase_readonly = kernel::GpuChainHT::erase_device_func<false, key_slice_type, size_type, value_type>;
+    using erase_merge = kernel::GpuChainHT::erase_device_func<true, key_slice_type, size_type, value_type>;
     #define insert_args .d_keys = insert_keys, .max_key_length = max_key_length, .d_key_lengths = insert_key_lengths, .d_values = insert_values, .update_if_exists = insert_update_if_exists
     #define erase_args .d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths
     insert_func ins_func{insert_args};
-    erase_func ers_func{erase_args};
-    launch_batch_concurrent_two_funcs_kernel(ins_func, insert_num_keys, ers_func, erase_num_keys, stream);
+    if (erase_do_merge) {
+      erase_merge erase_func{erase_args};
+      launch_batch_concurrent_two_funcs_kernel(ins_func, insert_num_keys, erase_func, erase_num_keys, stream);
+    }
+    else {
+      erase_readonly erase_func{erase_args};
+      launch_batch_concurrent_two_funcs_kernel(ins_func, insert_num_keys, erase_func, erase_num_keys, stream);
+    }
     #undef insert_args
     #undef erase_args
   }
@@ -228,7 +244,7 @@ struct gpu_chainht {
     if (target_bucket.is_full()) {
       auto next_index = allocator.allocate(tile);
       auto new_bucket = bucket_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
-      new_bucket.initialize_empty();
+      new_bucket.initialize_empty(false);
       new_bucket.insert(first_slice, to_insert, more_key);
       new_bucket.template store<cuda_memory_order::relaxed>();
       __threadfence();
@@ -243,7 +259,7 @@ struct gpu_chainht {
     return true;
   }
 
-  template <typename tile_type>
+  template <bool do_merge, typename tile_type>
   DEVICE_QUALIFIER bool cooperative_erase(const key_slice_type* key,
                                           const size_type key_length,
                                           const tile_type& tile,
@@ -258,8 +274,15 @@ struct gpu_chainht {
     const bool more_key = (key_length > 1);
     int location_if_found;
     suffix_type suffix_if_found(tile, allocator);
-    auto target_bucket = coop_traverse_until_found<true>(
+    bucket_type target_bucket(tile);
+    if constexpr (do_merge) {
+      target_bucket = coop_traverse_until_found_merge(
+        first_slice, more_key, key, key_length, bucket_ptr, location_if_found, suffix_if_found, tile, allocator, reclaimer);
+    }
+    else {
+      target_bucket = coop_traverse_until_found<true>(
         first_slice, more_key, key, key_length, bucket_ptr, location_if_found, suffix_if_found, tile, allocator);
+    }
     if (location_if_found >= 0) { // exists
       target_bucket.erase(location_if_found);
       target_bucket.template store<cuda_memory_order::relaxed>();
@@ -274,6 +297,172 @@ struct gpu_chainht {
     return false;
   }
 
+ private:
+  // device-side helper functions
+  template <bool concurrent, typename tile_type>
+  DEVICE_QUALIFIER chainht_bucket<tile_type> coop_traverse_until_found(const key_slice_type& first_slice,
+                                                                       bool more_key,
+                                                                       const key_slice_type* key,
+                                                                       const size_type& key_length,
+                                                                       elem_type* bucket_ptr,
+                                                                       int& location_if_found,
+                                                                       suffix_node<tile_type, device_allocator_context_type>& suffix_if_found,
+                                                                       const tile_type& tile,
+                                                                       device_allocator_context_type& allocator) {
+    using bucket_type = chainht_bucket<tile_type>;
+    using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
+    static constexpr auto memory_order = concurrent ? cuda_memory_order::relaxed : cuda_memory_order::weak;
+    auto bucket = bucket_type(bucket_ptr, tile);
+    while (true) {
+      bucket.template load<memory_order>();
+      uint32_t to_check = bucket.match_key_in_node(first_slice, more_key);
+      if (more_key) {
+        // if length > 1, compare suffixes
+        while (to_check != 0) {
+          auto cur_location = __ffs(to_check) - 1;
+          auto suffix_index = bucket.get_value_from_location(cur_location);
+          auto suffix = suffix_type(
+              reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
+          suffix.template load_head<memory_order>();
+          if (suffix.template streq<memory_order>(key, key_length)) {
+            // found
+            location_if_found = cur_location;
+            suffix_if_found = suffix;
+            return bucket;
+          }
+          to_check &= ~(1u << cur_location);
+        }
+      }
+      else {
+        // if length == 1, match means match
+        if (to_check != 0) {
+          // found
+          location_if_found = __ffs(to_check) - 1;
+          return bucket;
+        }
+      }
+      // done searching this bucket, move on to next
+      if (!bucket.has_next()) { break; }
+      auto next_index = bucket.get_next_index();
+      bucket = bucket_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
+    }
+    // not found until the end
+    location_if_found = -1;
+    return bucket;
+  }
+
+  template <typename tile_type>
+  DEVICE_QUALIFIER chainht_bucket<tile_type> coop_traverse_until_found_merge(const key_slice_type& first_slice,
+                                                                             bool more_key,
+                                                                             const key_slice_type* key,
+                                                                             const size_type& key_length,
+                                                                             elem_type* bucket_ptr,
+                                                                             int& location_if_found,
+                                                                             suffix_node<tile_type, device_allocator_context_type>& suffix_if_found,
+                                                                             const tile_type& tile,
+                                                                             device_allocator_context_type& allocator,
+                                                                             device_reclaimer_context_type& reclaimer) {
+    using bucket_type = chainht_bucket<tile_type>;
+    using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
+    auto bucket = bucket_type(bucket_ptr, tile);
+    bucket.template load<cuda_memory_order::relaxed>();
+    bool current_bucket_store_deferred = false;
+    while (true) {
+      uint32_t to_check = bucket.match_key_in_node(first_slice, more_key);
+      if (more_key) {
+        // if length > 1, compare suffixes
+        while (to_check != 0) {
+          auto cur_location = __ffs(to_check) - 1;
+          auto suffix_index = bucket.get_value_from_location(cur_location);
+          auto suffix = suffix_type(
+              reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
+          suffix.template load_head<cuda_memory_order::relaxed>();
+          if (suffix.template streq<cuda_memory_order::relaxed>(key, key_length)) {
+            // found
+            location_if_found = cur_location;
+            suffix_if_found = suffix;
+            // current_bucket_store_deferred: USER SHOULD STORE the bucket returned
+            return bucket;
+          }
+          to_check &= ~(1u << cur_location);
+        }
+      }
+      else {
+        // if length == 1, match means match
+        if (to_check != 0) {
+          // found
+          location_if_found = __ffs(to_check) - 1;
+          // current_bucket_store_deferred: USER SHOULD STORE the bucket returned
+          return bucket;
+        }
+      }
+      if (current_bucket_store_deferred) {
+        bucket.template store<cuda_memory_order::relaxed>();
+        current_bucket_store_deferred = false;
+      }
+      // done searching this bucket, move on to next
+      if (!bucket.has_next()) { break; }
+      auto next_index = bucket.get_next_index();
+      auto next_bucket = bucket_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
+      next_bucket.template load<cuda_memory_order::relaxed>();
+      if (bucket.is_mergeable(next_bucket)) {
+        bucket.merge(next_bucket);
+        current_bucket_store_deferred = true;
+        __threadfence();
+        reclaimer.retire(next_index, tile);
+      }
+      else {
+        bucket = next_bucket;
+      }
+    }
+    // not found until the end
+    location_if_found = -1;
+    return bucket;
+  }
+
+  __host__ __device__ static constexpr uint32_t _constexpr_pow(uint32_t base, uint32_t exp) {
+    return (exp == 0) ? 1 : base * _constexpr_pow(base, exp - 1);
+  }
+
+  template <typename tile_type>
+  DEVICE_QUALIFIER uint32_t compute_hash(const key_slice_type* key,
+                                         size_type key_length,
+                                         const tile_type& tile) {
+    // parallel polynomial rolling hash
+    static constexpr uint32_t prime = 16777619;
+    static constexpr uint32_t prime_multiplier = _constexpr_pow(prime, cg_tile_size);
+    // 1. exponent = [1, p, p^2, p^3, ..., p^31]; parallel prefix product
+    uint32_t exponent = (tile.thread_rank() == 0) ? 1 : prime;
+    for (uint32_t offset = 1; offset < cg_tile_size; offset <<= 1) {
+      exponent *= tile.shfl_up(exponent, offset);
+    }
+    // 2. compute per-lane value
+    uint32_t value = 0;
+    while (true) {
+      if (tile.thread_rank() < key_length) {
+        value += key[tile.thread_rank()] * exponent;
+      }
+      if (key_length <= cg_tile_size) { break; }
+      key += cg_tile_size;
+      key_length -= cg_tile_size;
+      exponent *= prime_multiplier;
+    }
+    // 3. reduce sum
+    for (uint32_t offset = (cg_tile_size / 2); offset != 0; offset >>= 1) {
+      value += tile.shfl_down(value, offset);
+    }
+    value = tile.shfl(value, 0);
+    // 4. finalize
+    value ^= (key_length * 0x9e3779b1); // embed length
+    value ^= value >> 16; // murmur3 finalizer
+    value *= 0x85ebca6b;
+    value ^= value >> 13;
+    value *= 0xc2b2ae35;
+    value ^= value >> 16;
+    return value;
+  }
+
+ public:
   // device-side debug functions
   template <typename tile_type, typename Func>
   DEVICE_QUALIFIER void cooperative_traverse_buckets(Func& task, const tile_type& tile) {
@@ -371,107 +560,12 @@ struct gpu_chainht {
   }
 
  private:
-  // device-side helper functions
-  template <bool concurrent, typename tile_type>
-  DEVICE_QUALIFIER chainht_bucket<tile_type> coop_traverse_until_found(const key_slice_type& first_slice,
-                                                                       bool more_key,
-                                                                       const key_slice_type* key,
-                                                                       const size_type& key_length,
-                                                                       elem_type* bucket_ptr,
-                                                                       int& location_if_found,
-                                                                       suffix_node<tile_type, device_allocator_context_type>& suffix_if_found,
-                                                                       const tile_type& tile,
-                                                                       device_allocator_context_type& allocator) {
-    using bucket_type = chainht_bucket<tile_type>;
-    using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
-    static constexpr auto memory_order = concurrent ? cuda_memory_order::relaxed : cuda_memory_order::weak;
-    auto bucket = bucket_type(bucket_ptr, tile);
-    while (true) {
-      bucket.template load<memory_order>();
-      uint32_t to_check = bucket.match_key_in_node(first_slice, more_key);
-      if (more_key) {
-        // if length > 1, compare suffixes
-        while (to_check != 0) {
-          auto cur_location = __ffs(to_check) - 1;
-          auto suffix_index = bucket.get_value_from_location(cur_location);
-          auto suffix = suffix_type(
-              reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
-          suffix.template load_head<memory_order>();
-          if (suffix.template streq<memory_order>(key, key_length)) {
-            // found
-            location_if_found = cur_location;
-            suffix_if_found = suffix;
-            return bucket;
-          }
-          to_check &= ~(1u << cur_location);
-        }
-      }
-      else {
-        // if length == 1, match means match
-        if (to_check != 0) {
-          // found
-          location_if_found = __ffs(to_check) - 1;
-          return bucket;
-        }
-      }
-      // done searching this bucket, move on to next
-      if (!bucket.has_next()) { break; }
-      auto next_index = bucket.get_next_index();
-      bucket = bucket_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
-    }
-    // not found until the end
-    location_if_found = -1;
-    return bucket;
-  }
-
-  __host__ __device__ static constexpr uint32_t _constexpr_pow(uint32_t base, uint32_t exp) {
-    return (exp == 0) ? 1 : base * _constexpr_pow(base, exp - 1);
-  }
-
-  template <typename tile_type>
-  DEVICE_QUALIFIER uint32_t compute_hash(const key_slice_type* key,
-                                         size_type key_length,
-                                         const tile_type& tile) {
-    // parallel polynomial rolling hash
-    static constexpr uint32_t prime = 16777619;
-    static constexpr uint32_t prime_multiplier = _constexpr_pow(prime, cg_tile_size);
-    // 1. exponent = [1, p, p^2, p^3, ..., p^31]; parallel prefix product
-    uint32_t exponent = (tile.thread_rank() == 0) ? 1 : prime;
-    for (uint32_t offset = 1; offset < cg_tile_size; offset <<= 1) {
-      exponent *= tile.shfl_up(exponent, offset);
-    }
-    // 2. compute per-lane value
-    uint32_t value = 0;
-    while (true) {
-      if (tile.thread_rank() < key_length) {
-        value += key[tile.thread_rank()] * exponent;
-      }
-      if (key_length <= cg_tile_size) { break; }
-      key += cg_tile_size;
-      key_length -= cg_tile_size;
-      exponent *= prime_multiplier;
-    }
-    // 3. reduce sum
-    for (uint32_t offset = (cg_tile_size / 2); offset != 0; offset >>= 1) {
-      value += tile.shfl_down(value, offset);
-    }
-    value = tile.shfl(value, 0);
-    // 4. finalize
-    value ^= (key_length * 0x9e3779b1); // embed length
-    value ^= value >> 16; // murmur3 finalizer
-    value *= 0x85ebca6b;
-    value ^= value >> 13;
-    value *= 0xc2b2ae35;
-    value ^= value >> 16;
-    return value;
-  }
-
   template <typename tile_type>
   DEVICE_QUALIFIER void initialize_bucket(size_type bucket_index,
                                           const tile_type& tile) {
     using bucket_type = chainht_bucket<tile_type>;
     auto bucket = bucket_type(d_table_ + (bucket_index * bucket_size), tile);
-    bucket.initialize_empty();
+    bucket.initialize_empty(true);
     bucket.template store<cuda_memory_order::weak>();
   }
 

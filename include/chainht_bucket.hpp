@@ -35,13 +35,15 @@ struct chainht_bucket {
   {
     assert(tile_.size() == 2 * node_width);
   }
-  DEVICE_QUALIFIER void initialize_empty() {
+  DEVICE_QUALIFIER void initialize_empty(bool is_head) {
     lane_elem_ = 0;
     metadata_ = (
       (0u << num_keys_offset_) |  // num_keys = 0;
       (0u & lock_bit_mask_) |     // is_locked = false;
-      (0u & next_bit_mask_)       // has_next = false;
+      (0u & next_bit_mask_) |     // has_next = false;
+      (0u & head_bit_mask_)       // is_head = false;
     );
+    if (is_head) { metadata_ |= head_bit_mask_; }
     write_metadata_to_registers();
   }
 
@@ -97,6 +99,9 @@ struct chainht_bucket {
   DEVICE_QUALIFIER bool is_full() const {
     return (num_keys() == max_num_keys_);
   }
+  DEVICE_QUALIFIER bool is_mergeable(const chainht_bucket& next_bucket) const {
+    return (num_keys() + next_bucket.num_keys()) <= max_num_keys_;
+  }
   DEVICE_QUALIFIER bool get_suffix_of_location(int location) const {
     return (metadata_ >> (suffix_bits_offset_ + location)) & 1u;
   }
@@ -117,6 +122,9 @@ struct chainht_bucket {
   }
   DEVICE_QUALIFIER void set_next_index(const value_type& index) {
     if (tile_.thread_rank() == next_ptr_lane_) { lane_elem_ = index; }
+  }
+  DEVICE_QUALIFIER bool is_head() const {
+    return static_cast<bool>(metadata_ & head_bit_mask_);
   }
 
   static DEVICE_QUALIFIER bool is_locked(elem_type* bucket_ptr, const tile_type& tile) {
@@ -177,12 +185,36 @@ struct chainht_bucket {
     }
   }
 
+  DEVICE_QUALIFIER void merge(const chainht_bucket<tile_type>& next_node) {
+    assert(is_mergeable(next_node));
+    // copy elements from next node
+    bool suffix_bit = get_suffix_of_location(tile_.thread_rank());
+    elem_type shifted_elem = tile_.shfl_up(next_node.lane_elem_, num_keys());
+    bool shifted_suffix_bit = next_node.get_suffix_of_location(tile_.thread_rank() - num_keys());
+    auto new_num_keys = num_keys() + next_node.num_keys();
+    if ((num_keys() <= tile_.thread_rank() && tile_.thread_rank() < new_num_keys) ||
+        (node_width + num_keys() <= tile_.thread_rank() && tile_.thread_rank() < node_width + new_num_keys)) {
+      lane_elem_ = shifted_elem;
+      suffix_bit = shifted_suffix_bit;
+    }
+    set_num_keys(new_num_keys);
+    auto new_suffix_bits = tile_.ballot(suffix_bit);
+    metadata_ &= ~suffix_bits_mask_;
+    metadata_ |= ((new_suffix_bits << suffix_bits_offset_) & suffix_bits_mask_);
+    // copy next node's next index
+    metadata_ = (metadata_ & ~next_bit_mask_) ^ (next_node.metadata_ & next_bit_mask_); // has_next = next.has_next
+    if (tile_.thread_rank() == next_ptr_lane_) {
+      lane_elem_ = next_node.lane_elem_;
+    }
+    write_metadata_to_registers();
+  }
+
   DEVICE_QUALIFIER void erase(int location) {
     assert(location < num_keys());
     metadata_--;    // equiv. to num_keys--
     bool suffix_bit = get_suffix_of_location(tile_.thread_rank());
     auto down_elem = tile_.shfl_down(lane_elem_, 1);
-    auto down_suffix_bit = tile_.shfl_down(suffix_bit, 1);
+    auto down_suffix_bit = get_suffix_of_location(tile_.thread_rank() + 1);
     if (is_valid_key_lane()) {
       if (tile_.thread_rank() >= get_key_lane_from_location(location)) {
         lane_elem_ = down_elem;
@@ -227,7 +259,6 @@ struct chainht_bucket {
       bool suffix_bit = get_suffix_of_location(i);
       if (lead_lane) printf("(%u %u %s) ", key, value, suffix_bit ? "s" : "$");
     }
-    if (lead_lane) printf("%s ", is_locked() ? "locked" : "unlocked");
     elem_type next_index = get_next_index();
     if (has_next()) {
       if (lead_lane) printf("next(%u)", next_index);
@@ -259,8 +290,9 @@ struct chainht_bucket {
 
   // metadata is 32bits.
   //    (MSB)
-  //    [empty:11]
+  //    [empty:10]
   //    [key_suffix_bits_per_key:15]
+  //    [is_head:1]
   //    [has_next:1][is_locked:1]
   //    [num_keys:4]
   //    (LSB)
@@ -274,7 +306,9 @@ struct chainht_bucket {
   static constexpr uint32_t lock_bit_mask_ = 1u << lock_bit_offset_;
   static constexpr uint32_t next_bit_offset_ = 5;
   static constexpr uint32_t next_bit_mask_ = 1u << next_bit_offset_;
-  static constexpr uint32_t suffix_bits_offset_ = 6;
+  static constexpr uint32_t head_bit_offset_ = 6;
+  static constexpr uint32_t head_bit_mask_ = 1u << head_bit_offset_;
+  static constexpr uint32_t suffix_bits_offset_ = 7;
   static constexpr uint32_t suffix_bits_bits_ = 15;
   static constexpr uint32_t suffix_bits_mask_ = ((1u << suffix_bits_bits_) - 1) << suffix_bits_offset_;
   static constexpr uint32_t max_num_keys_ = node_width - 1;

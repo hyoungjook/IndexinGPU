@@ -40,7 +40,7 @@ struct bench_rates {
   float insertion_rate;
   float find_rate;
 };
-template <typename chainht_type>
+template <typename chainht_type, bool do_merge>
 bench_rates bench_chainht_insertion_erase(thrust::device_vector<key_slice_type>& d_keys,
                                            thrust::device_vector<size_type>& d_lengths,
                                            thrust::device_vector<value_type>& d_values,
@@ -75,7 +75,7 @@ bench_rates bench_chainht_insertion_erase(thrust::device_vector<key_slice_type>&
     gpu_timer erase_timer(erase_stream);
     uint32_t num_erase = (uint32_t)(((float)num_keys) * erase_ratio);
     erase_timer.start_timer();
-    table.erase(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), num_erase, erase_stream);
+    table.erase(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), num_erase, erase_stream, do_merge);
     erase_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
     auto erase_elapsed = erase_timer.get_elapsed_s();
@@ -216,8 +216,13 @@ int main(int argc, char** argv) {
   using chainht_slab_type = GpuChainHT::gpu_chainht<simple_slab_alloc_type, simple_dummy_reclaim_type>;
   using chainht_slab_reclaim_type = GpuChainHT::gpu_chainht<simple_slab_alloc_type, simple_debra_reclaim_type>;
 
-  std::cout << "Benchmarking chainht_slab_reclaim_type" << std::endl;
-  bench_chainht_insertion_erase<chainht_slab_reclaim_type>(
+  std::cout << "Benchmarking chainht_slab_reclaim_type no-merge" << std::endl;
+  bench_chainht_insertion_erase<chainht_slab_reclaim_type, false>(
+    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
+    num_keys, fill_factor, max_key_length, erase_ratio, num_experiments
+  );
+  std::cout << "Benchmarking chainht_slab_reclaim_type merge" << std::endl;
+  bench_chainht_insertion_erase<chainht_slab_reclaim_type, true>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
     num_keys, fill_factor, max_key_length, erase_ratio, num_experiments
   );

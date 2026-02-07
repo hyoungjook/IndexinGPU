@@ -393,7 +393,7 @@ struct find_device_func {
   }
 };
 
-template <typename key_slice_type, typename size_type, typename value_type>
+template <bool do_merge, typename key_slice_type, typename size_type, typename value_type>
 struct erase_device_func {
   static constexpr bool reclaim_required = true;
   // kernel args
@@ -417,7 +417,7 @@ struct erase_device_func {
   DEVICE_QUALIFIER void exec(chainht& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    table.template cooperative_erase(cur_key, cur_key_length, tile, allocator, reclaimer);
+    table.template cooperative_erase<do_merge>(cur_key, cur_key_length, tile, allocator, reclaimer);
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };

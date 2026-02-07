@@ -1170,8 +1170,7 @@ struct gpu_masstree {
           auto& left_sibling_node = plan.sibling_at_left ? sibling_node : current_node;
           auto& right_sibling_node = plan.sibling_at_left ? current_node : sibling_node;
           if (parent_index != current_root_index || parent_node.num_keys() > 2) {
-            auto left_sibling_index = plan.sibling_at_left ? plan.sibling_index : current_node_index;
-            left_sibling_node.merge(left_sibling_index, right_sibling_node, parent_node, plan.left_location);
+            left_sibling_node.merge(right_sibling_node, parent_node, plan.left_location);
             left_sibling_node.template store<cuda_memory_order::relaxed>();
             __threadfence();
             right_sibling_node.template store<cuda_memory_order::relaxed>();

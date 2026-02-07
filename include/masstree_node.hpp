@@ -615,8 +615,7 @@ struct masstree_node {
     write_metadata_to_registers();
   }
 
-  DEVICE_QUALIFIER void merge(const value_type& left_sibling_index,
-                              masstree_node& right_sibling_node,
+  DEVICE_QUALIFIER void merge(masstree_node& right_sibling_node,
                               masstree_node& parent_node,
                               int left_location) { 
     // this node is the left sibling
@@ -643,7 +642,7 @@ struct masstree_node {
     parent_node.do_erase(get_key_lane_from_location(left_location),
                          get_value_lane_from_location(left_location + 1));
     // set right sibling as empty node and connect it to this node
-    right_sibling_node.make_garbage_node(true, left_sibling_index);
+    right_sibling_node.make_garbage_node(true, node_index_);
   }
 
   DEVICE_QUALIFIER void merge_to_root(const value_type& parent_index,
