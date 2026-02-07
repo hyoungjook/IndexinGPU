@@ -385,8 +385,61 @@ struct gpu_chainht {
     traverse_buckets<print_bucket_task>();
   }
 
+  struct validate_bucket_task {
+    DEVICE_QUALIFIER void init(bool lead_lane) {
+      lead_lane_ = lead_lane;
+      num_head_nodes_ = 0;
+      num_aux_nodes_ = 0;
+      num_suffix_nodes_ = 0;
+      this_bucket_num_entries_ = 0;
+      max_entries_per_bucket_ = 0;
+      num_entries_ = 0;
+      this_bucket_num_nodes_ = 0;
+      max_nodes_per_bucket_ = 0;
+    }
+    template <typename bucket_type, typename tile_type>
+    DEVICE_QUALIFIER void exec(const bucket_type& bucket, int head_index, const tile_type& tile, device_allocator_context_type& allocator) {
+      if (head_index >= 0) {
+        // wrap up previous num_entry count and update stats
+        max_entries_per_bucket_ = max(max_entries_per_bucket_, this_bucket_num_entries_);
+        max_nodes_per_bucket_ = max(max_nodes_per_bucket_, this_bucket_num_nodes_);
+        this_bucket_num_entries_ = 0;
+        this_bucket_num_nodes_ = 0;
+      }
+      uint16_t num_keys = bucket.num_keys();
+      for (uint16_t i = 0; i < num_keys; i++) {
+        bool suffix_bit = bucket.get_suffix_of_location(i);
+        if (suffix_bit) {
+          auto suffix_index = bucket.get_value_from_location(i);
+          auto suffix = suffix_node<tile_type, device_allocator_context_type>(
+              reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
+          suffix.template load_head<cuda_memory_order::weak>();
+          num_suffix_nodes_ += suffix.get_num_nodes();
+        }
+      }
+      this_bucket_num_entries_ += num_keys;
+      num_entries_ += num_keys;
+      this_bucket_num_nodes_++;
+      if (head_index >= 0) { num_head_nodes_++; }
+      else { num_aux_nodes_++; }
+    }
+    DEVICE_QUALIFIER void fini() {
+      max_entries_per_bucket_ = max(max_entries_per_bucket_, this_bucket_num_entries_);
+      max_nodes_per_bucket_ = max(max_nodes_per_bucket_, this_bucket_num_nodes_);
+      float avg_entries_per_bucket = float(num_entries_) / num_head_nodes_;
+      float avg_nodes_per_bucket = float(num_head_nodes_ + num_aux_nodes_) / num_head_nodes_;
+      if (lead_lane_) {
+        printf("%lu heads, %lu auxiliary nodes (+%lu suffix nodes) found; per-bucket nodes(max %lu, avg %f), entries(max %lu, avg %f)\n",
+          num_head_nodes_, num_aux_nodes_, num_suffix_nodes_, max_nodes_per_bucket_, avg_nodes_per_bucket, max_entries_per_bucket_, avg_entries_per_bucket);
+      }
+    }
+    bool lead_lane_;
+    uint64_t num_head_nodes_, num_aux_nodes_, num_suffix_nodes_;
+    uint64_t this_bucket_num_entries_, max_entries_per_bucket_, num_entries_;
+    uint64_t this_bucket_num_nodes_, max_nodes_per_bucket_;
+  };
   void validate() {
-    // TODO
+    traverse_buckets<validate_bucket_task>();
   }
 
  private:

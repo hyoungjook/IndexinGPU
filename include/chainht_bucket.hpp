@@ -97,9 +97,8 @@ struct chainht_bucket {
   DEVICE_QUALIFIER bool is_full() const {
     return (num_keys() == max_num_keys_);
   }
-  DEVICE_QUALIFIER bool is_this_lane_suffix() const {
-    assert(is_valid_key_lane());
-    return (metadata_ >> (suffix_bits_offset_ + tile_.thread_rank())) & 1u;
+  DEVICE_QUALIFIER bool get_suffix_of_location(int location) const {
+    return (metadata_ >> (suffix_bits_offset_ + location)) & 1u;
   }
   DEVICE_QUALIFIER void set_suffix_of_location(int location, bool more_key) {
     auto mask = (1u << (suffix_bits_offset_ + location));
@@ -165,7 +164,7 @@ struct chainht_bucket {
   DEVICE_QUALIFIER uint32_t match_key_in_node(const key_type& key, bool more_key) const {
     return tile_.ballot(is_valid_key_lane() &&
                         lane_elem_ == key &&
-                        is_this_lane_suffix() == more_key);
+                        get_suffix_of_location(tile_.thread_rank()) == more_key);
   }
 
   DEVICE_QUALIFIER void insert(const key_type& key, const value_type& value, bool more_key) {
@@ -192,7 +191,7 @@ struct chainht_bucket {
   DEVICE_QUALIFIER void erase(int location) {
     assert(location < num_keys());
     metadata_--;    // equiv. to num_keys--
-    bool suffix_bit = static_cast<bool>((metadata_ >> (suffix_bits_offset_ + tile_.thread_rank())) & 1u);
+    bool suffix_bit = get_suffix_of_location(tile_.thread_rank());
     auto down_elem = tile_.shfl_down(lane_elem_, 1);
     auto down_suffix_bit = tile_.shfl_down(suffix_bit, 1);
     if (is_valid_key_lane()) {
@@ -236,7 +235,7 @@ struct chainht_bucket {
     for (size_type i = 0; i < num_keys(); ++i) {
       elem_type key = tile_.shfl(lane_elem_, get_key_lane_from_location(i));
       elem_type value = tile_.shfl(lane_elem_, get_value_lane_from_location(i));
-      bool suffix_bit = static_cast<bool>((metadata_ >> (suffix_bits_offset_ + i)) & 1u);
+      bool suffix_bit = get_suffix_of_location(i);
       if (lead_lane) printf("(%u %u %s) ", key, value, suffix_bit ? "s" : "$");
     }
     if (lead_lane) printf("%s ", is_locked() ? "locked" : "unlocked");
@@ -249,7 +248,7 @@ struct chainht_bucket {
     }
     if (lead_lane) printf("}\n");
     for (size_type i = 0; i < num_keys(); ++i) {
-      bool suffix_bit = static_cast<bool>((metadata_ >> (suffix_bits_offset_ + i)) & 1u);
+      bool suffix_bit = get_suffix_of_location(i);
       if (suffix_bit) {
         elem_type suffix_index = tile_.shfl(lane_elem_, get_value_lane_from_location(i));
         auto suffix = suffix_node<tile_type, allocator_type>(
