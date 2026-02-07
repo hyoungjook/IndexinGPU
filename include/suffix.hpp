@@ -73,9 +73,6 @@ struct suffix_node {
 
   template <cuda_memory_order order>
   DEVICE_QUALIFIER bool streq(const elem_type* key, uint32_t key_length) const {
-    // ignore first slice in the border node
-    key++;
-    key_length--;
     if (get_key_length() != key_length) { return false; }
     // ignore first two elements in head
     key -= 2;
@@ -103,9 +100,6 @@ struct suffix_node {
 
   template <cuda_memory_order order>
   DEVICE_QUALIFIER int strcmp(const elem_type* key, uint32_t key_length, elem_type* mismatch_value = nullptr) const {
-    // ignore first slice in the border node
-    key++;
-    key_length--;
     // strcmp(this, key) -> 0 (match), +(this<key), -(this>key)
     // the absolute of return value: (1 + num_matches)
     // NOTE if one is prefix of the other, num_matches is (len(smaller) - 1)
@@ -157,9 +151,6 @@ struct suffix_node {
 
   template <cuda_memory_order order>
   DEVICE_QUALIFIER void create_from(const elem_type* key, size_type key_length, elem_type value) {
-    // ignore first slice, already stored in border node
-    key++;
-    key_length--;
     // head node metadata
     elem_type elem;
     elem_type* curr_ptr = nullptr;  // NULL if head, else appendix
@@ -198,8 +189,6 @@ struct suffix_node {
 
   template <cuda_memory_order order>
   DEVICE_QUALIFIER void flush(elem_type* key_buffer) {
-    // ignore first slice
-    key_buffer++;
     auto this_length = get_key_length();
     auto elem = lane_elem_;
     // ignore first two elements in head

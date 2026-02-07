@@ -419,7 +419,7 @@ DECLARE_TESTS_FOR_KEY_LENGTHS(100, 800)
 int main(int argc, char** argv) {
   auto arguments = std::vector<std::string>(argv, argv + argc);
   num_keys       = get_arg_value<uint32_t>(arguments, "num-keys").value_or(1024);
-  fill_factor    = get_arg_value<float>(arguments, "fill-factor").value_or(0.5f);
+  fill_factor    = get_arg_value<float>(arguments, "fill-factor").value_or(1.0f);
   std::cout << "Testing using " << num_keys << " keys, fill factor " << fill_factor << "\n";
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

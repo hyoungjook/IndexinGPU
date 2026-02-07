@@ -97,7 +97,7 @@ bench_rates bench_chainht_insertion_erase(thrust::device_vector<key_slice_type>&
 int main(int argc, char** argv) {
   auto arguments    = std::vector<std::string>(argv, argv + argc);
   uint32_t num_keys = get_arg_value<uint32_t>(arguments, "num-keys").value_or(1'000'000);
-  float fill_factor = get_arg_value<float>(arguments, "fill-factor").value_or(0.7f);
+  float fill_factor = get_arg_value<float>(arguments, "fill-factor").value_or(1.0f);
   int device_id     = get_arg_value<int>(arguments, "device").value_or(0);
   uint32_t min_key_length = get_arg_value<uint32_t>(arguments, "min-key-length").value_or(1u);
   uint32_t max_key_length = get_arg_value<uint32_t>(arguments, "max-key-length").value_or(1u);

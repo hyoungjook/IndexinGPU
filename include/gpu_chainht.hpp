@@ -237,7 +237,7 @@ struct gpu_chainht {
       to_insert = allocator.allocate(tile);
       auto suffix = suffix_type(
           reinterpret_cast<elem_type*>(allocator.address(to_insert)), to_insert, tile, allocator);
-      suffix.template create_from<cuda_memory_order::relaxed>(key, key_length, value);
+      suffix.template create_from<cuda_memory_order::relaxed>(key + 1, key_length - 1, value);
       suffix.template store_head<cuda_memory_order::relaxed>();
       __threadfence();
     }
@@ -324,7 +324,7 @@ struct gpu_chainht {
           auto suffix = suffix_type(
               reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
           suffix.template load_head<memory_order>();
-          if (suffix.template streq<memory_order>(key, key_length)) {
+          if (suffix.template streq<memory_order>(key + 1, key_length - 1)) {
             // found
             location_if_found = cur_location;
             suffix_if_found = suffix;
@@ -377,7 +377,7 @@ struct gpu_chainht {
           auto suffix = suffix_type(
               reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
           suffix.template load_head<cuda_memory_order::relaxed>();
-          if (suffix.template streq<cuda_memory_order::relaxed>(key, key_length)) {
+          if (suffix.template streq<cuda_memory_order::relaxed>(key + 1, key_length - 1)) {
             // found
             location_if_found = cur_location;
             suffix_if_found = suffix;
@@ -429,7 +429,7 @@ struct gpu_chainht {
                                          size_type key_length,
                                          const tile_type& tile) {
     // parallel polynomial rolling hash
-    static constexpr uint32_t prime = 16777619;
+    static constexpr uint32_t prime = 0x9e3779b1;
     static constexpr uint32_t prime_multiplier = _constexpr_pow(prime, cg_tile_size);
     // 1. exponent = [1, p, p^2, p^3, ..., p^31]; parallel prefix product
     uint32_t exponent = (tile.thread_rank() == 0) ? 1 : prime;
@@ -453,7 +453,7 @@ struct gpu_chainht {
     }
     value = tile.shfl(value, 0);
     // 4. finalize
-    value ^= (key_length * 0x9e3779b1); // embed length
+    value ^= (key_length * prime); // embed length
     value ^= value >> 16; // murmur3 finalizer
     value *= 0x85ebca6b;
     value ^= value >> 13;

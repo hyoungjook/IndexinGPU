@@ -293,7 +293,7 @@ struct gpu_masstree {
         auto suffix = suffix_type(
             reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile, allocator);
         suffix.template load_head<memory_order>();
-        const bool suffix_eq = suffix.template streq<memory_order>(key + slice, key_length - slice);
+        const bool suffix_eq = suffix.template streq<memory_order>(key + slice + 1, key_length - slice - 1);
         return suffix_eq ? suffix.get_value() : invalid_value;
       }
       else {  // keystate == LINK or VALUE
@@ -527,7 +527,7 @@ struct gpu_masstree {
               reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile, allocator);
           suffix.template load_head<cuda_memory_order::relaxed>();
           key_slice_type mismatch_suffix_slice;
-          int cmp = suffix.template strcmp<cuda_memory_order::relaxed>(key + slice, key_length - slice, &mismatch_suffix_slice);
+          int cmp = suffix.template strcmp<cuda_memory_order::relaxed>(key + slice + 1, key_length - slice - 1, &mismatch_suffix_slice);
           if (cmp == 0) { // already exists
             if (update_if_exists) {
               // protected by border_node.lock()
@@ -583,7 +583,7 @@ struct gpu_masstree {
               current_node_index = allocator.allocate(tile);
               suffix = suffix_type(
                   reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile, allocator);
-              suffix.template create_from<cuda_memory_order::relaxed>(key + slice, key_length - slice, value);
+              suffix.template create_from<cuda_memory_order::relaxed>(key + slice + 1, key_length - slice - 1, value);
               suffix.template store_head<cuda_memory_order::relaxed>();
               doubleton_node.insert(key[slice], current_node_index, node_type::KEYSTATE_SUFFIX);
             }
@@ -600,7 +600,7 @@ struct gpu_masstree {
             current_node_index = allocator.allocate(tile);
             auto suffix = suffix_type(
                 reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile, allocator);
-            suffix.template create_from<cuda_memory_order::relaxed>(key + slice, key_length - slice, value);
+            suffix.template create_from<cuda_memory_order::relaxed>(key + slice + 1, key_length - slice - 1, value);
             suffix.template store_head<cuda_memory_order::relaxed>();
             __threadfence();
             keystate = node_type::KEYSTATE_SUFFIX;
@@ -712,7 +712,7 @@ struct gpu_masstree {
           auto suffix = suffix_type(
               reinterpret_cast<elem_type*>(allocator.address(next_index)), next_index, tile, allocator);
           suffix.template load_head<memory_order>();
-          const bool suffix_eq = suffix.template streq<memory_order>(key + slice, key_length - slice);
+          const bool suffix_eq = suffix.template streq<memory_order>(key + slice + 1, key_length - slice - 1);
           if (suffix_eq) {
             // key exists, erase suffix value and mark suffix nodes garbage
             if (do_merge && border_node.is_underflow()) {

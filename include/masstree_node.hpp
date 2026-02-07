@@ -323,7 +323,7 @@ struct masstree_node {
         auto suffix_index = get_value_from_location(first_location);
         auto suffix = suffix_type(reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile_, allocator);
         suffix.template load_head<order>();
-        if (suffix.template strcmp<order>(lower_key + layer, lower_key_length - layer) > 0) {
+        if (suffix.template strcmp<order>(lower_key + layer + 1, lower_key_length - layer - 1) > 0) {
           if (tile_.thread_rank() == first_location) { in_range = false; }
           in_range_ballot = tile_.ballot(in_range);
           if (in_range_ballot == 0) {
@@ -348,7 +348,7 @@ struct masstree_node {
         auto suffix_index = get_value_from_location(last_location - 1);
         auto suffix = suffix_type(reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile_, allocator);
         suffix.template load_head<order>();
-        if (suffix.template strcmp<order>(upper_key + layer, upper_key_length - layer) < 0) {
+        if (suffix.template strcmp<order>(upper_key + layer + 1, upper_key_length - layer - 1) < 0) {
           last_location--;
         }
       }
@@ -393,7 +393,7 @@ struct masstree_node {
           auto suffix_index = get_value_from_location(cur_location);
           auto suffix = suffix_type(reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile_, allocator);
           suffix.template load_head<order>();
-          suffix.template flush<order>(out_keys + ((cur_location - first_location) * out_key_max_length + layer));
+          suffix.template flush<order>(out_keys + ((cur_location - first_location) * out_key_max_length + layer + 1));
           if (tile_.thread_rank() == cur_location) { to_flush = false; }
           flush_queue = tile_.ballot(to_flush);
         }
