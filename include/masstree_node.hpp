@@ -122,7 +122,6 @@ struct masstree_node {
     return tile_.thread_rank() < num_keys();
   }
   DEVICE_QUALIFIER bool is_valid_value_lane() const {
-    // intermediate node has children one more than keys
     return node_width <= tile_.thread_rank() && tile_.thread_rank() < node_width + num_keys();
   }
 
@@ -324,7 +323,7 @@ struct masstree_node {
         auto suffix_index = get_value_from_location(first_location);
         auto suffix = suffix_type(reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile_, allocator);
         suffix.template load_head<order>();
-        if (suffix.template strcmp<order>(lower_key + layer, lower_key_length - layer) > 0) {
+        if (suffix.template strcmp<order>(lower_key + layer + 1, lower_key_length - layer - 1) > 0) {
           if (tile_.thread_rank() == first_location) { in_range = false; }
           in_range_ballot = tile_.ballot(in_range);
           if (in_range_ballot == 0) {
@@ -349,7 +348,7 @@ struct masstree_node {
         auto suffix_index = get_value_from_location(last_location - 1);
         auto suffix = suffix_type(reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile_, allocator);
         suffix.template load_head<order>();
-        if (suffix.template strcmp<order>(upper_key + layer, upper_key_length - layer) < 0) {
+        if (suffix.template strcmp<order>(upper_key + layer + 1, upper_key_length - layer - 1) < 0) {
           last_location--;
         }
       }
@@ -394,7 +393,7 @@ struct masstree_node {
           auto suffix_index = get_value_from_location(cur_location);
           auto suffix = suffix_type(reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile_, allocator);
           suffix.template load_head<order>();
-          suffix.template flush<order>(out_keys + ((cur_location - first_location) * out_key_max_length + layer));
+          suffix.template flush<order>(out_keys + ((cur_location - first_location) * out_key_max_length + layer + 1));
           if (tile_.thread_rank() == cur_location) { to_flush = false; }
           flush_queue = tile_.ballot(to_flush);
         }
@@ -616,8 +615,7 @@ struct masstree_node {
     write_metadata_to_registers();
   }
 
-  DEVICE_QUALIFIER void merge(const value_type& left_sibling_index,
-                              masstree_node& right_sibling_node,
+  DEVICE_QUALIFIER void merge(masstree_node& right_sibling_node,
                               masstree_node& parent_node,
                               int left_location) { 
     // this node is the left sibling
@@ -644,7 +642,7 @@ struct masstree_node {
     parent_node.do_erase(get_key_lane_from_location(left_location),
                          get_value_lane_from_location(left_location + 1));
     // set right sibling as empty node and connect it to this node
-    right_sibling_node.make_garbage_node(true, left_sibling_index);
+    right_sibling_node.make_garbage_node(true, node_index_);
   }
 
   DEVICE_QUALIFIER void merge_to_root(const value_type& parent_index,

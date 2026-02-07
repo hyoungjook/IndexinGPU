@@ -21,7 +21,7 @@
 #include <cooperative_groups.h>
 #include <cuda_runtime.h>
 #include <stdio.h>
-#include <masstree_kernels.hpp>
+#include <kernels.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
@@ -90,8 +90,8 @@ struct gpu_masstree {
             const size_type num_keys,
             cudaStream_t stream = 0,
             bool concurrent = false) {
-    using find_concurrent = kernels::find_device_func<true, key_slice_type, size_type, value_type>;
-    using find_readonly = kernels::find_device_func<false, key_slice_type, size_type, value_type>;
+    using find_concurrent = kernel::GpuMasstree::find_device_func<true, key_slice_type, size_type, value_type>;
+    using find_readonly = kernel::GpuMasstree::find_device_func<false, key_slice_type, size_type, value_type>;
     #define find_args .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values
     if (concurrent) {
       find_concurrent func{find_args};
@@ -112,8 +112,8 @@ struct gpu_masstree {
               cudaStream_t stream = 0,
               bool update_if_exists = false,
               bool enable_suffix = true) {
-    using insert_suffix = kernels::insert_device_func<true, key_slice_type, size_type, value_type>;
-    using insert_nosuffix = kernels::insert_device_func<false, key_slice_type, size_type, value_type>;
+    using insert_suffix = kernel::GpuMasstree::insert_device_func<true, key_slice_type, size_type, value_type>;
+    using insert_nosuffix = kernel::GpuMasstree::insert_device_func<false, key_slice_type, size_type, value_type>;
     #define insert_args .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .update_if_exists = update_if_exists
     if (enable_suffix) {
       insert_suffix func{insert_args};
@@ -134,10 +134,10 @@ struct gpu_masstree {
              bool do_remove_empty_root = true,
              bool do_merge = true,
              bool concurrent = true) {
-    using erase_readonly = kernels::erase_device_func<false, false, false, key_slice_type, size_type, value_type>;
-    using erase_concurrent = kernels::erase_device_func<true, false, false, key_slice_type, size_type, value_type>;
-    using erase_merge = kernels::erase_device_func<true, true, false, key_slice_type, size_type, value_type>;
-    using erase_rmroot = kernels::erase_device_func<true, true, true, key_slice_type, size_type, value_type>;
+    using erase_readonly = kernel::GpuMasstree::erase_device_func<false, false, false, key_slice_type, size_type, value_type>;
+    using erase_concurrent = kernel::GpuMasstree::erase_device_func<true, false, false, key_slice_type, size_type, value_type>;
+    using erase_merge = kernel::GpuMasstree::erase_device_func<true, true, false, key_slice_type, size_type, value_type>;
+    using erase_rmroot = kernel::GpuMasstree::erase_device_func<true, true, true, key_slice_type, size_type, value_type>;
     #define erase_args .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths
     if (do_remove_empty_root) {
       erase_rmroot func{erase_args};
@@ -175,10 +175,10 @@ struct gpu_masstree {
             size_type* out_key_lengths = nullptr,
             cudaStream_t stream = 0,
             bool concurrent = false) {
-    using scan_bothbound_concurrent = kernels::scan_device_func<true, true, key_slice_type, size_type, value_type>;
-    using scan_bothbound_readonly = kernels::scan_device_func<true, false, key_slice_type, size_type, value_type>;
-    using scan_loweronly_concurrent = kernels::scan_device_func<false, true, key_slice_type, size_type, value_type>;
-    using scan_loweronly_readonly = kernels::scan_device_func<false, false, key_slice_type, size_type, value_type>;
+    using scan_bothbound_concurrent = kernel::GpuMasstree::scan_device_func<true, true, key_slice_type, size_type, value_type>;
+    using scan_bothbound_readonly = kernel::GpuMasstree::scan_device_func<true, false, key_slice_type, size_type, value_type>;
+    using scan_loweronly_concurrent = kernel::GpuMasstree::scan_device_func<false, true, key_slice_type, size_type, value_type>;
+    using scan_loweronly_readonly = kernel::GpuMasstree::scan_device_func<false, false, key_slice_type, size_type, value_type>;
     #define scan_args .d_lower_keys = lower_keys, .d_lower_key_lengths = lower_key_lengths,  \
                        .max_key_length = max_key_length, .max_count_per_query = max_count_per_query,  \
                        .d_upper_keys = upper_keys, .d_upper_key_lengths = upper_key_lengths, \
@@ -219,11 +219,11 @@ struct gpu_masstree {
                                     bool insert_enable_suffix = true,
                                     bool erase_do_remove_empty_root = true,
                                     bool erase_do_merge = true) {
-    using insert_suffix = kernels::insert_device_func<true, key_slice_type, size_type, value_type>;
-    using insert_nosuffix = kernels::insert_device_func<false, key_slice_type, size_type, value_type>;
-    using erase_concurrent = kernels::erase_device_func<true, false, false, key_slice_type, size_type, value_type>;
-    using erase_merge = kernels::erase_device_func<true, true, false, key_slice_type, size_type, value_type>;
-    using erase_rmroot = kernels::erase_device_func<true, true, true, key_slice_type, size_type, value_type>;
+    using insert_suffix = kernel::GpuMasstree::insert_device_func<true, key_slice_type, size_type, value_type>;
+    using insert_nosuffix = kernel::GpuMasstree::insert_device_func<false, key_slice_type, size_type, value_type>;
+    using erase_concurrent = kernel::GpuMasstree::erase_device_func<true, false, false, key_slice_type, size_type, value_type>;
+    using erase_merge = kernel::GpuMasstree::erase_device_func<true, true, false, key_slice_type, size_type, value_type>;
+    using erase_rmroot = kernel::GpuMasstree::erase_device_func<true, true, true, key_slice_type, size_type, value_type>;
     #define insert_args .d_keys = insert_keys, .max_key_length = max_key_length, .d_key_lengths = insert_key_lengths, .d_values = insert_values, .update_if_exists = insert_update_if_exists
     #define erase_args .d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths
     if (erase_do_remove_empty_root) {
@@ -293,7 +293,7 @@ struct gpu_masstree {
         auto suffix = suffix_type(
             reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile, allocator);
         suffix.template load_head<memory_order>();
-        const bool suffix_eq = suffix.template streq<memory_order>(key + slice, key_length - slice);
+        const bool suffix_eq = suffix.template streq<memory_order>(key + slice + 1, key_length - slice - 1);
         return suffix_eq ? suffix.get_value() : invalid_value;
       }
       else {  // keystate == LINK or VALUE
@@ -527,7 +527,7 @@ struct gpu_masstree {
               reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile, allocator);
           suffix.template load_head<cuda_memory_order::relaxed>();
           key_slice_type mismatch_suffix_slice;
-          int cmp = suffix.template strcmp<cuda_memory_order::relaxed>(key + slice, key_length - slice, &mismatch_suffix_slice);
+          int cmp = suffix.template strcmp<cuda_memory_order::relaxed>(key + slice + 1, key_length - slice - 1, &mismatch_suffix_slice);
           if (cmp == 0) { // already exists
             if (update_if_exists) {
               // protected by border_node.lock()
@@ -583,7 +583,7 @@ struct gpu_masstree {
               current_node_index = allocator.allocate(tile);
               suffix = suffix_type(
                   reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile, allocator);
-              suffix.template create_from<cuda_memory_order::relaxed>(key + slice, key_length - slice, value);
+              suffix.template create_from<cuda_memory_order::relaxed>(key + slice + 1, key_length - slice - 1, value);
               suffix.template store_head<cuda_memory_order::relaxed>();
               doubleton_node.insert(key[slice], current_node_index, node_type::KEYSTATE_SUFFIX);
             }
@@ -600,7 +600,7 @@ struct gpu_masstree {
             current_node_index = allocator.allocate(tile);
             auto suffix = suffix_type(
                 reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile, allocator);
-            suffix.template create_from<cuda_memory_order::relaxed>(key + slice, key_length - slice, value);
+            suffix.template create_from<cuda_memory_order::relaxed>(key + slice + 1, key_length - slice - 1, value);
             suffix.template store_head<cuda_memory_order::relaxed>();
             __threadfence();
             keystate = node_type::KEYSTATE_SUFFIX;
@@ -712,7 +712,7 @@ struct gpu_masstree {
           auto suffix = suffix_type(
               reinterpret_cast<elem_type*>(allocator.address(next_index)), next_index, tile, allocator);
           suffix.template load_head<memory_order>();
-          const bool suffix_eq = suffix.template streq<memory_order>(key + slice, key_length - slice);
+          const bool suffix_eq = suffix.template streq<memory_order>(key + slice + 1, key_length - slice - 1);
           if (suffix_eq) {
             // key exists, erase suffix value and mark suffix nodes garbage
             if (do_merge && border_node.is_underflow()) {
@@ -1170,8 +1170,7 @@ struct gpu_masstree {
           auto& left_sibling_node = plan.sibling_at_left ? sibling_node : current_node;
           auto& right_sibling_node = plan.sibling_at_left ? current_node : sibling_node;
           if (parent_index != current_root_index || parent_node.num_keys() > 2) {
-            auto left_sibling_index = plan.sibling_at_left ? plan.sibling_index : current_node_index;
-            left_sibling_node.merge(left_sibling_index, right_sibling_node, parent_node, plan.left_location);
+            left_sibling_node.merge(right_sibling_node, parent_node, plan.left_location);
             left_sibling_node.template store<cuda_memory_order::relaxed>();
             __threadfence();
             right_sibling_node.template store<cuda_memory_order::relaxed>();
@@ -1303,7 +1302,7 @@ struct gpu_masstree {
 
   template <typename func>
   void traverse_tree_nodes() {
-    kernels::traverse_tree_nodes_kernel<func><<<1, 32>>>(*this);
+    kernel::GpuMasstree::traverse_tree_nodes_kernel<func><<<1, 32>>>(*this);
     cudaDeviceSynchronize();
   }
 
@@ -1446,7 +1445,7 @@ struct gpu_masstree {
   void initialize() {
     const uint32_t num_blocks = 1;
     const uint32_t block_size = cg_tile_size;
-    kernels::initialize_kernel<<<num_blocks, block_size>>>(*this);
+    kernel::GpuMasstree::initialize_kernel<<<num_blocks, block_size>>>(*this);
     cuda_try(cudaDeviceSynchronize());
   }
 
@@ -1458,14 +1457,14 @@ struct gpu_masstree {
     int num_blocks_per_sm;
     cudaOccupancyMaxActiveBlocksPerMultiprocessor(
       &num_blocks_per_sm,
-      kernels::batch_kernel<do_reclaim, device_func, masstree_type>,
+      kernel::batch_kernel<do_reclaim, device_func, masstree_type>,
       block_size,
       shmem_size);
     cudaDeviceProp device_prop;
     cudaGetDeviceProperties(&device_prop, 0);
     uint32_t num_blocks = num_blocks_per_sm * device_prop.multiProcessorCount;
 
-    kernels::batch_kernel<do_reclaim><<<num_blocks, block_size, shmem_size, stream>>>(
+    kernel::batch_kernel<do_reclaim><<<num_blocks, block_size, shmem_size, stream>>>(
         *this, func, num_requests);
   }
 
@@ -1477,14 +1476,14 @@ struct gpu_masstree {
     int num_blocks_per_sm;
     cudaOccupancyMaxActiveBlocksPerMultiprocessor(
       &num_blocks_per_sm,
-      kernels::batch_concurrent_two_funcs_kernel<do_reclaim, device_func0, device_func1, masstree_type>,
+      kernel::batch_concurrent_two_funcs_kernel<do_reclaim, device_func0, device_func1, masstree_type>,
       block_size,
       shmem_size);
     cudaDeviceProp device_prop;
     cudaGetDeviceProperties(&device_prop, 0);
     uint32_t num_blocks = num_blocks_per_sm * device_prop.multiProcessorCount;
     
-    kernels::batch_concurrent_two_funcs_kernel<do_reclaim><<<num_blocks, block_size, shmem_size, stream>>>(
+    kernel::batch_concurrent_two_funcs_kernel<do_reclaim><<<num_blocks, block_size, shmem_size, stream>>>(
         *this, func0, num_requests0, func1, num_requests1);
   }
 
@@ -1494,19 +1493,19 @@ struct gpu_masstree {
   device_reclaimer_instance_type reclaimer_;
 
   template <typename masstree>
-  friend __global__ void kernels::initialize_kernel(masstree);
+  friend __global__ void kernel::GpuMasstree::initialize_kernel(masstree);
 
-  template <bool do_reclaim, typename device_func, typename masstree>
-  friend __global__ void kernels::batch_kernel(masstree tree,
-                                               const device_func func,
-                                               uint32_t num_requests);
+  template <bool do_reclaim, typename device_func, typename index_type>
+  friend __global__ void kernel::batch_kernel(index_type index,
+                                              const device_func func,
+                                              uint32_t num_requests);
 
-  template <bool do_reclaim, typename device_func0, typename device_func1, typename masstree>
-  friend __global__ void kernels::batch_concurrent_two_funcs_kernel(masstree tree,
-                                                                    const device_func0 func0,
-                                                                    uint32_t num_requests0,
-                                                                    const device_func1 func1,
-                                                                    uint32_t num_requests1);
+  template <bool do_reclaim, typename device_func0, typename device_func1, typename index_type>
+  friend __global__ void kernel::batch_concurrent_two_funcs_kernel(index_type tree,
+                                                                   const device_func0 func0,
+                                                                   uint32_t num_requests0,
+                                                                   const device_func1 func1,
+                                                                   uint32_t num_requests1);
 
 }; // struct gpu_masstree
 
