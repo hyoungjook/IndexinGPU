@@ -21,6 +21,7 @@
 #include <cstdint>
 
 std::size_t num_keys;
+float fill_factor;
 
 namespace {
 using key_slice_type   = uint32_t;
@@ -41,7 +42,8 @@ class MapTest : public testing::Test {
   MapTest() {
     host_allocator_ = new typename map_data::host_allocator();
     host_reclaimer_ = new typename map_data::host_reclaimer();
-    map_ = new typename map_data::map(*host_allocator_, *host_reclaimer_);
+    std::size_t num_buckets = static_cast<std::size_t>(static_cast<double>(num_keys) / fill_factor);
+    map_ = new typename map_data::map(*host_allocator_, *host_reclaimer_, num_buckets);
   }
   ~MapTest() override {
     //host_allocator_->print_stats();
@@ -130,36 +132,6 @@ struct testing_input {
     values2.free();
     keys_not_exist.free();
   }
-  void sort() {
-    // decide order
-    std::vector<std::size_t> order(num_keys);
-    for (std::size_t i = 0; i < num_keys; i++) order[i] = i;
-    std::sort(order.begin(), order.end(), [&](const std::size_t& a, const std::size_t& b) {
-      // returns true if a < b
-      const key_slice_type* a_key = &keys[a * max_key_length];
-      const key_slice_type* b_key = &keys[b * max_key_length];
-      const size_type a_length = lengths[a], b_length = lengths[b];
-      return std::lexicographical_compare(a_key, a_key + a_length, b_key, b_key + b_length);
-    });
-    // rearrange
-    mapped_vector<key_slice_type> sorted_keys(keys.size());
-    mapped_vector<size_type> sorted_lengths(lengths.size());
-    mapped_vector<value_type> sorted_values(values.size());
-    for (std::size_t i = 0; i < num_keys; i++) {
-      std::size_t old_i = order[i];
-      for (uint32_t s = 0; s < max_key_length; s++) {
-        sorted_keys[i * max_key_length + s] = keys[old_i * max_key_length + s];
-      }
-      sorted_lengths[i] = lengths[old_i];
-      sorted_values[i] = values[old_i];
-    }
-    keys.free();
-    lengths.free();
-    values.free();
-    keys = sorted_keys;
-    lengths = sorted_lengths;
-    values = sorted_values;
-  }
 
   std::size_t num_keys;
   uint32_t min_key_length;
@@ -171,82 +143,15 @@ struct testing_input {
   mapped_vector<key_slice_type> keys_not_exist;
 };
 
-struct testing_range_input {
-  testing_range_input(testing_input& input_, uint32_t input_num_queries, uint32_t input_max_count_per_query)
-      : input(input_)
-      , max_key_length(input.max_key_length)
-      , num_queries(input_num_queries)
-      , max_count_per_query(input_max_count_per_query)
-      , lower_keys(num_queries * max_key_length)
-      , upper_keys(num_queries * max_key_length)
-      , lower_lengths(num_queries)
-      , upper_lengths(num_queries)
-      , counts(num_queries)
-      , values(num_queries * max_count_per_query)
-      , out_keys(num_queries * max_count_per_query * max_key_length)
-      , out_key_lengths(num_queries * max_count_per_query)
-  {
-    input.sort();
-    make_input();
-  }
-  void make_input() {
-    for (uint32_t i = 0; i < num_queries; i++) {
-      uint32_t begin = i % num_keys;
-      size_type count = 1 + (i % (2* max_count_per_query));
-      uint32_t end = begin + count - 1;
-      if (end >= num_keys) { end = num_keys - 1; }
-      count = end - begin + 1;
-      for (uint32_t s = 0; s < max_key_length; s++) {
-        lower_keys[i * max_key_length + s] = input.keys[begin * max_key_length + s];
-      }
-      lower_lengths[i] = input.lengths[begin];
-      for (uint32_t s = 0; s < max_key_length; s++) {
-        upper_keys[i * max_key_length + s] = input.keys[end * max_key_length + s];
-      }
-      upper_lengths[i] = input.lengths[end];
-      counts[i] = min(count, max_count_per_query);
-      for (uint32_t v = 0; v < counts[i]; v++) {
-        values[i * max_count_per_query + v] = input.values[begin + v];
-        for (uint32_t ss = 0; ss < max_key_length; ss++) {
-          out_keys[i * max_count_per_query * max_key_length + v * max_key_length + ss] =
-              input.keys[(begin + v) * max_key_length + ss];
-        }
-        out_key_lengths[i * max_count_per_query + v] = input.lengths[begin + v];
-      }
-    }
-  }
-  void free() {
-    lower_keys.free();
-    upper_keys.free();
-    lower_lengths.free();
-    upper_lengths.free();
-    counts.free();
-    values.free();
-    out_keys.free();
-    out_key_lengths.free();
-  }
-
-  testing_input& input;
-  uint32_t max_key_length;
-  uint32_t num_queries;
-  uint32_t max_count_per_query;
-  mapped_vector<key_slice_type> lower_keys, upper_keys;
-  mapped_vector<size_type> lower_lengths, upper_lengths;
-  mapped_vector<size_type> counts;
-  mapped_vector<size_type> values;
-  mapped_vector<key_slice_type> out_keys;
-  mapped_vector<size_type> out_key_lengths;
-};
-
 using simple_bump_alloc_type = simple_bump_allocator<128>;
 using simple_slab_alloc_type = simple_slab_allocator<128>;
 using simple_dummy_reclaim_type = simple_dummy_reclaimer;
 using simple_debra_reclaim_type = simple_debra_reclaimer<>;
 
 typedef testing::Types<
-    //MapData<GpuMasstree::gpu_masstree<simple_bump_alloc_type, simple_dummy_reclaim_type>>,
-    //MapData<GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_dummy_reclaim_type>>,
-    MapData<GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type>>>
+    //MapData<GpuChainHT::gpu_chainht<simple_bump_alloc_type, simple_dummy_reclaim_type>>,
+    //MapData<GpuChainHT::gpu_chainht<simple_slab_alloc_type, simple_dummy_reclaim_type>>,
+    MapData<GpuChainHT::gpu_chainht<simple_slab_alloc_type, simple_debra_reclaim_type>>>
     Implementations;
 
 TYPED_TEST_SUITE(MapTest, Implementations);
@@ -470,50 +375,6 @@ void test_concurrentinserterase(map_type* map, uint32_t min_key_length_bytes, ui
   input.free();
 }
 
-template <typename map_type>
-void test_scan(map_type* map, uint32_t min_key_length_bytes, uint32_t max_key_length_bytes) {
-  const size_type min_key_length = min_key_length_bytes / sizeof(key_slice_type);
-  const size_type max_key_length = max_key_length_bytes / sizeof(key_slice_type);
-  uint32_t num_queries = num_keys / 2;
-  uint32_t max_count_per_query = 10;
-  mapped_vector<size_type> result_counts(num_queries);
-  mapped_vector<value_type> result_values(num_queries * max_count_per_query);
-  mapped_vector<key_slice_type> result_keys(num_queries * max_count_per_query * max_key_length);
-  mapped_vector<size_type> result_key_lengths(num_queries * max_count_per_query);
-  testing_input input(num_keys, min_key_length, max_key_length);
-  testing_range_input rinput(input, num_queries, max_count_per_query);
-  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), num_keys);
-  cuda_try(cudaDeviceSynchronize());
-  map->scan(rinput.lower_keys.data(), rinput.lower_lengths.data(),
-             max_key_length, max_count_per_query, num_queries,
-             rinput.upper_keys.data(), rinput.upper_lengths.data(),
-             result_counts.data(), result_values.data(),
-             result_keys.data(), result_key_lengths.data());
-  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
-  for (std::size_t i = 0; i < num_queries; i++) {
-    auto expected_count = rinput.counts[i];
-    auto found_count    = result_counts[i];
-    ASSERT_EQ(found_count, expected_count);
-    for (uint32_t v = 0; v < expected_count; v++) {
-      auto expected_value = rinput.values[i * max_count_per_query + v];
-      auto found_value = result_values[i * max_count_per_query + v];
-      ASSERT_EQ(found_value, expected_value);
-      auto expected_length = rinput.out_key_lengths[i * max_count_per_query + v];
-      auto found_length = result_key_lengths[i * max_count_per_query + v];
-      ASSERT_EQ(found_length, expected_length);
-      for (uint32_t s = 0; s < expected_length; s++) {
-        auto expected_key_slice = rinput.out_keys[i * max_count_per_query * max_key_length + v * max_key_length + s];
-        auto found_key_slice = result_keys[i * max_count_per_query * max_key_length + v * max_key_length + s];
-        ASSERT_EQ(found_key_slice, expected_key_slice);
-      }
-    }
-  }
-  result_counts.free();
-  result_values.free();
-  rinput.free();
-  input.free();
-}
-
 #define DECLARE_TESTS_FOR_KEY_LENGTHS(min_length, max_length) \
 TYPED_TEST(MapTest, Validate##min_length##_##max_length) { \
   validate(this->map_, min_length, max_length); \
@@ -545,9 +406,6 @@ TYPED_TEST(MapTest, EraseAllTwice##min_length##_##max_length) { \
 TYPED_TEST(MapTest, ConcurrentInsertErase##min_length##_##max_length) { \
   test_concurrentinserterase(this->map_, min_length, max_length); \
 } \
-TYPED_TEST(MapTest, RangeQuery##min_length##_##max_length) { \
-  test_scan(this->map_, min_length, max_length); \
-}
 
 DECLARE_TESTS_FOR_KEY_LENGTHS(4, 4)
 DECLARE_TESTS_FOR_KEY_LENGTHS(64, 64)
@@ -561,7 +419,8 @@ DECLARE_TESTS_FOR_KEY_LENGTHS(100, 800)
 int main(int argc, char** argv) {
   auto arguments = std::vector<std::string>(argv, argv + argc);
   num_keys       = get_arg_value<uint32_t>(arguments, "num-keys").value_or(1024);
-  std::cout << "Testing using " << num_keys << " keys\n";
+  fill_factor    = get_arg_value<float>(arguments, "fill-factor").value_or(0.5f);
+  std::cout << "Testing using " << num_keys << " keys, fill factor " << fill_factor << "\n";
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }

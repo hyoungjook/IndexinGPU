@@ -22,32 +22,22 @@
 #include <simple_dummy_reclaim.hpp>
 #include <simple_debra_reclaim.hpp>
 
-namespace GpuMasstree {
-namespace kernels {
 namespace cg = cooperative_groups;
+namespace kernel {
 
-template <typename masstree>
-__global__ void initialize_kernel(masstree tree) {
-  using allocator_type = typename masstree::device_allocator_context_type;
-  auto block = cg::this_thread_block();
-  auto tile  = cg::tiled_partition<masstree::cg_tile_size>(block);
-  allocator_type allocator{tree.allocator_, tile};
-  tree.allocate_root_node(tile, allocator);
-}
-
-template <bool do_reclaim, typename device_func, typename masstree>
-__global__ void batch_kernel(masstree tree,
+template <bool do_reclaim, typename device_func, typename index_type>
+__global__ void batch_kernel(index_type index,
                              const device_func func,
                              uint32_t num_requests) {
-  using allocator_type = typename masstree::device_allocator_context_type;
-  using reclaimer_type = typename masstree::device_reclaimer_context_type;
+  using allocator_type = typename index_type::device_allocator_context_type;
+  using reclaimer_type = typename index_type::device_reclaimer_context_type;
   __shared__ cg::block_tile_memory<reclaimer_type::block_size_> block_tile_shmem;
   auto block = cg::this_thread_block(block_tile_shmem);
-  auto tile = cg::tiled_partition<masstree::cg_tile_size>(block);
-  allocator_type allocator{tree.allocator_, tile};
+  auto tile = cg::tiled_partition<index_type::cg_tile_size>(block);
+  allocator_type allocator{index.allocator_, tile};
   auto block_wide_tile = cg::tiled_partition<reclaimer_type::block_size_>(block);
   extern __shared__ uint32_t reclaimer_shmem_buffer[];
-  reclaimer_type reclaimer{tree.reclaimer_,
+  reclaimer_type reclaimer{index.reclaimer_,
                            (reclaimer_type::required_shmem_size() > 0) ? &reclaimer_shmem_buffer[0] : nullptr,
                            gridDim.x,
                            block_wide_tile};
@@ -64,7 +54,7 @@ __global__ void batch_kernel(masstree tree,
     auto work_queue = tile.ballot(task_exists);
     while (work_queue) {
       int cur_rank = __ffs(work_queue) - 1;
-      func.exec(tree, regs, tile, allocator, reclaimer, cur_rank);
+      func.exec(index, regs, tile, allocator, reclaimer, cur_rank);
       if (tile.thread_rank() == cur_rank) { task_exists = false; }
       work_queue = tile.ballot(task_exists);
     }
@@ -74,36 +64,36 @@ __global__ void batch_kernel(masstree tree,
   if constexpr (do_reclaim) { reclaimer.drain_all(block_wide_tile, tile, allocator); }
 }
 
-template <bool do_reclaim, typename device_func0, typename device_func1, typename masstree>
-__global__ void batch_concurrent_two_funcs_kernel(masstree tree,
+template <bool do_reclaim, typename device_func0, typename device_func1, typename index_type>
+__global__ void batch_concurrent_two_funcs_kernel(index_type index,
                                                   const device_func0 func0,
                                                   uint32_t num_requests0,
                                                   const device_func1 func1,
                                                   uint32_t num_requests1) {
-  using allocator_type = typename masstree::device_allocator_context_type;
-  using reclaimer_type = typename masstree::device_reclaimer_context_type;
+  using allocator_type = typename index_type::device_allocator_context_type;
+  using reclaimer_type = typename index_type::device_reclaimer_context_type;
   __shared__ cg::block_tile_memory<reclaimer_type::block_size_> block_tile_shmem;
   auto block = cg::this_thread_block(block_tile_shmem);
-  auto tile = cg::tiled_partition<masstree::cg_tile_size>(block);
-  allocator_type allocator{tree.allocator_, tile};
+  auto tile = cg::tiled_partition<index_type::cg_tile_size>(block);
+  allocator_type allocator{index.allocator_, tile};
   auto block_wide_tile = cg::tiled_partition<reclaimer_type::block_size_>(block);
   extern __shared__ uint32_t reclaimer_shmem_buffer[];
-  reclaimer_type reclaimer{tree.reclaimer_,
+  reclaimer_type reclaimer{index.reclaimer_,
                            (reclaimer_type::required_shmem_size() > 0) ? &reclaimer_shmem_buffer[0] : nullptr,
                            gridDim.x,
                            block_wide_tile};
   // even'th tile -> do func0, odd'th tile -> do func1
   // assume num_requests0 ~= num_requests1
   uint32_t block_size = blockDim.x;
-  uint32_t num_request_tiles = (max(num_requests0, num_requests1) + masstree::cg_tile_size - 1) / masstree::cg_tile_size * 2;
-  uint32_t num_request_blocks = (num_request_tiles * masstree::cg_tile_size + block_size - 1) / block_size;
+  uint32_t num_request_tiles = (max(num_requests0, num_requests1) + index_type::cg_tile_size - 1) / index_type::cg_tile_size * 2;
+  uint32_t num_request_blocks = (num_request_tiles * index_type::cg_tile_size + block_size - 1) / block_size;
   uint32_t num_worker_blocks = gridDim.x;
   for (uint32_t thread_id = threadIdx.x + blockIdx.x * blockDim.x;
        thread_id < (num_request_blocks * block_size);
        thread_id += (num_worker_blocks * block_size)) {
-    uint32_t tile_id = thread_id / masstree::cg_tile_size;
+    uint32_t tile_id = thread_id / index_type::cg_tile_size;
     uint32_t request_id = (tile_id % 2);
-    uint32_t thread_id_within_request = (tile_id / 2) * masstree::cg_tile_size + tile.thread_rank();
+    uint32_t thread_id_within_request = (tile_id / 2) * index_type::cg_tile_size + tile.thread_rank();
     if (request_id == 0) {
       bool task_exists = (thread_id_within_request < num_requests0);
       typename device_func0::dev_regs regs;
@@ -112,7 +102,7 @@ __global__ void batch_concurrent_two_funcs_kernel(masstree tree,
       auto work_queue = tile.ballot(task_exists);
       while (work_queue) {
         int cur_rank = __ffs(work_queue) - 1;
-        func0.exec(tree, regs, tile, allocator, reclaimer, cur_rank);
+        func0.exec(index, regs, tile, allocator, reclaimer, cur_rank);
         if (tile.thread_rank() == cur_rank) { task_exists = false; }
         work_queue = tile.ballot(task_exists);
       }
@@ -127,7 +117,7 @@ __global__ void batch_concurrent_two_funcs_kernel(masstree tree,
       auto work_queue = tile.ballot(task_exists);
       while (work_queue) {
         int cur_rank = __ffs(work_queue) - 1;
-        func1.exec(tree, regs, tile, allocator, reclaimer, cur_rank);
+        func1.exec(index, regs, tile, allocator, reclaimer, cur_rank);
         if (tile.thread_rank() == cur_rank) { task_exists = false; }
         work_queue = tile.ballot(task_exists);
       }
@@ -136,6 +126,17 @@ __global__ void batch_concurrent_two_funcs_kernel(masstree tree,
     }
   }
   if constexpr (do_reclaim) { reclaimer.drain_all(block_wide_tile, tile, allocator); }
+}
+
+namespace GpuMasstree {
+
+template <typename masstree>
+__global__ void initialize_kernel(masstree tree) {
+  using allocator_type = typename masstree::device_allocator_context_type;
+  auto block = cg::this_thread_block();
+  auto tile  = cg::tiled_partition<masstree::cg_tile_size>(block);
+  allocator_type allocator{tree.allocator_, tile};
+  tree.allocate_root_node(tile, allocator);
 }
 
 template <bool enable_suffix, typename key_slice_type, typename size_type, typename value_type>
@@ -309,5 +310,118 @@ __global__ void traverse_tree_nodes_kernel(masstree tree) {
   task.fini();
 }
 
-} // namespace kernels
 } // namespace GpuMasstree
+
+namespace GpuChainHT {
+
+template <typename chainht>
+__global__ void initialize_kernel(chainht table) {
+  using allocator_type = typename chainht::device_allocator_context_type;
+  auto block = cg::this_thread_block();
+  auto tile  = cg::tiled_partition<chainht::cg_tile_size>(block);
+  auto bucket_index = blockIdx.x;
+  table.initialize_bucket(bucket_index, tile);
+}
+
+template <typename key_slice_type, typename size_type, typename value_type>
+struct insert_device_func {
+  static constexpr bool reclaim_required = false;
+  // kernel args
+  const key_slice_type* d_keys;
+  size_type max_key_length;
+  const size_type* d_key_lengths;
+  const value_type* d_values;
+  bool update_if_exists;
+  // device-side registers
+  struct dev_regs {
+    const key_slice_type* key;
+    size_type key_length;
+    value_type value;
+  };
+  // device-side functions
+  template <typename tile_type>
+  DEVICE_QUALIFIER dev_regs load(uint32_t thread_id, tile_type& tile) const {
+    return dev_regs{
+      .key = &d_keys[max_key_length * thread_id],
+      .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length,
+      .value = d_values[thread_id]
+    };
+  }
+  template <typename chainht, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(chainht& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
+    auto cur_key = tile.shfl(regs.key, cur_rank);
+    auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
+    auto cur_value = tile.shfl(regs.value, cur_rank);
+    table.template cooperative_insert(cur_key, cur_key_length, cur_value, tile, allocator, update_if_exists);
+  }
+  DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
+};
+
+template <bool concurrent, typename key_slice_type, typename size_type, typename value_type>
+struct find_device_func {
+  static constexpr bool reclaim_required = false;
+  // kernel args
+  const key_slice_type* d_keys;
+  size_type max_key_length;
+  const size_type* d_key_lengths;
+  value_type* d_values;
+  // device-side registers
+  struct dev_regs {
+    const key_slice_type* key;
+    size_type key_length;
+    value_type value;
+  };
+  // device-side functions
+  template <typename tile_type>
+  DEVICE_QUALIFIER dev_regs load(uint32_t thread_id, tile_type& tile) const {
+    return dev_regs{
+      .key = &d_keys[max_key_length * thread_id],
+      .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length
+    };
+  }
+  template <typename chainht, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(chainht& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
+    auto cur_key = tile.shfl(regs.key, cur_rank);
+    auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
+    auto cur_value = table.template cooperative_find<concurrent>(cur_key, cur_key_length, tile, allocator);
+    if (tile.thread_rank() == cur_rank) {
+      regs.value = cur_value;
+    }
+  }
+  DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const {
+    d_values[thread_id] = regs.value;
+  }
+};
+
+template <typename key_slice_type, typename size_type, typename value_type>
+struct erase_device_func {
+  static constexpr bool reclaim_required = true;
+  // kernel args
+  const key_slice_type* d_keys;
+  size_type max_key_length;
+  const size_type* d_key_lengths;
+  // device-side registers
+  struct dev_regs {
+    const key_slice_type* key;
+    size_type key_length;
+  };
+  // device-side functions
+  template <typename tile_type>
+  DEVICE_QUALIFIER dev_regs load(uint32_t thread_id, tile_type& tile) const {
+    return dev_regs{
+      .key = &d_keys[max_key_length * thread_id],
+      .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length,
+    };
+  }
+  template <typename chainht, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(chainht& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
+    auto cur_key = tile.shfl(regs.key, cur_rank);
+    auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
+    table.template cooperative_erase(cur_key, cur_key_length, tile, allocator, reclaimer);
+  }
+  DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
+};
+
+} // namespace GpuChainHT
+
+} // namespace kernel

@@ -122,7 +122,6 @@ struct masstree_node {
     return tile_.thread_rank() < num_keys();
   }
   DEVICE_QUALIFIER bool is_valid_value_lane() const {
-    // intermediate node has children one more than keys
     return node_width <= tile_.thread_rank() && tile_.thread_rank() < node_width + num_keys();
   }
 
