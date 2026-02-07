@@ -25,7 +25,7 @@ struct suffix_node {
   using elem_type = uint32_t;
   using size_type = uint32_t;
   static constexpr int node_width = 32;
-
+  DEVICE_QUALIFIER suffix_node(const tile_type& tile, allocator_type& allocator): tile_(tile), allocator_(allocator) {}
   DEVICE_QUALIFIER suffix_node(elem_type* ptr, const size_type index, const tile_type& tile, allocator_type& allocator)
       : node_ptr_(ptr)
       , node_index_(index)

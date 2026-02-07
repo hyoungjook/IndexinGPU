@@ -119,38 +119,27 @@ struct chainht_bucket {
     if (tile_.thread_rank() == next_ptr_lane_) { lane_elem_ = index; }
   }
 
-  DEVICE_QUALIFIER bool is_locked() const {
-    return static_cast<bool>(metadata_ & lock_bit_mask_);
+  static DEVICE_QUALIFIER bool is_locked(elem_type* bucket_ptr, const tile_type& tile) {
+    elem_type metadata;
+    if (tile.thread_rank() == metadata_lane_) {
+      metadata = cuda_memory<elem_type, cuda_memory_order::relaxed>::load(bucket_ptr + metadata_lane_);
+    }
+    metadata = tile.shfl(metadata, metadata_lane_);
+    return static_cast<bool>(metadata & lock_bit_mask_);
   }
-  DEVICE_QUALIFIER bool try_lock() {
+  static DEVICE_QUALIFIER bool try_lock(elem_type* bucket_ptr, const tile_type& tile) {
     elem_type old;
-    if (tile_.thread_rank() == metadata_lane_) {
-      old = atomicOr(reinterpret_cast<elem_type*>(&bucket_ptr_[metadata_lane_]),
+    if (tile.thread_rank() == metadata_lane_) {
+      old = atomicOr(reinterpret_cast<elem_type*>(&bucket_ptr[metadata_lane_]),
                      static_cast<elem_type>(lock_bit_mask_));
     }
-    old = tile_.shfl(old, metadata_lane_);
+    old = tile.shfl(old, metadata_lane_);
     bool is_locked = (old & lock_bit_mask_) == 0; // if previously not locked, now it's locked
     if (is_locked) { __threadfence(); }
     return is_locked;
-    // do not need to update registers; if locked, the code will load() again.
-    // if lock failed, this node object will be disposed.
   }
-  DEVICE_QUALIFIER void lock() {
-    while (!try_lock());
-    // the code will load() again
-  }
-  DEVICE_QUALIFIER void unlock() {
-    assert(is_locked());
-    __threadfence();
-    if (tile_.thread_rank() == metadata_lane_) {
-      atomicAnd(reinterpret_cast<elem_type*>(&bucket_ptr_[metadata_lane_]),
-                static_cast<elem_type>(~lock_bit_mask_));
-    }
-    // the node object can be used after this, so update regsiters
-    metadata_ &= ~lock_bit_mask_;
-    if (tile_.thread_rank() == metadata_lane_) {
-      lane_elem_ &= ~lock_bit_mask_;
-    }
+  static DEVICE_QUALIFIER void lock(elem_type* bucket_ptr, const tile_type& tile) {
+    while (!try_lock(bucket_ptr, tile));
   }
   static DEVICE_QUALIFIER void unlock(elem_type* bucket_ptr, const tile_type& tile) {
     // unlock, only using the pointer, not load the entire register
