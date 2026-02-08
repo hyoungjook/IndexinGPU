@@ -40,7 +40,7 @@ struct bench_rates {
   float insertion_rate;
   float find_rate;
 };
-template <typename masstree_type, bool enable_suffix, bool do_merge, bool do_remove_empty_root>
+template <typename masstree_type, bool enable_suffix, bool concurrent_erase, bool do_merge, bool do_remove_empty_root>
 bench_rates bench_masstree_insertion_erase(thrust::device_vector<key_slice_type>& d_keys,
                                            thrust::device_vector<size_type>& d_lengths,
                                            thrust::device_vector<value_type>& d_values,
@@ -73,7 +73,7 @@ bench_rates bench_masstree_insertion_erase(thrust::device_vector<key_slice_type>
     gpu_timer erase_timer(erase_stream);
     uint32_t num_erase = (uint32_t)(((float)num_keys) * erase_ratio);
     erase_timer.start_timer();
-    tree.erase(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), num_erase, erase_stream, do_remove_empty_root, do_merge, (do_remove_empty_root || do_merge));
+    tree.erase(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), num_erase, erase_stream, do_remove_empty_root, do_merge, concurrent_erase);
     erase_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
     auto erase_elapsed = erase_timer.get_elapsed_s();
@@ -212,33 +212,43 @@ int main(int argc, char** argv) {
   using masstree_slab_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_dummy_reclaim_type>;
   using masstree_slab_debra_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type>;
 
-  std::cout << "Benchmarking masstree_slab_debra_type no-suffix no-merge" << std::endl;
-  bench_masstree_insertion_erase<masstree_slab_debra_type, false, false, false>(
+  std::cout << "Benchmarking masstree_slab_debra_type no-suffix no-merge-eraseonly" << std::endl;
+  bench_masstree_insertion_erase<masstree_slab_debra_type, false, false, false, false>(
+    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
+    num_keys, max_key_length, erase_ratio, num_experiments
+  );
+  std::cout << "Benchmarking masstree_slab_debra_type no-suffix no-merge-concurrent" << std::endl;
+  bench_masstree_insertion_erase<masstree_slab_debra_type, false, true, false, false>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
     num_keys, max_key_length, erase_ratio, num_experiments
   );
   std::cout << "Benchmarking masstree_slab_debra_type no-suffix merge" << std::endl;
-  bench_masstree_insertion_erase<masstree_slab_debra_type, false, true, false>(
+  bench_masstree_insertion_erase<masstree_slab_debra_type, false, true, true, false>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
     num_keys, max_key_length, erase_ratio, num_experiments
   );
   std::cout << "Benchmarking masstree_slab_debra_type no-suffix merge+rmroot" << std::endl;
-  bench_masstree_insertion_erase<masstree_slab_debra_type, false, true, true>(
+  bench_masstree_insertion_erase<masstree_slab_debra_type, false, true, true, true>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
     num_keys, max_key_length, erase_ratio, num_experiments
   );
-  std::cout << "Benchmarking masstree_slab_debra_type suffix no-merge" << std::endl;
-  bench_masstree_insertion_erase<masstree_slab_debra_type, true, false, false>(
+  std::cout << "Benchmarking masstree_slab_debra_type suffix no-merge-eraseonly" << std::endl;
+  bench_masstree_insertion_erase<masstree_slab_debra_type, true, false, false, false>(
+    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
+    num_keys, max_key_length, erase_ratio, num_experiments
+  );
+  std::cout << "Benchmarking masstree_slab_debra_type suffix no-merge-concurrent" << std::endl;
+  bench_masstree_insertion_erase<masstree_slab_debra_type, true, true, false, false>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
     num_keys, max_key_length, erase_ratio, num_experiments
   );
   std::cout << "Benchmarking masstree_slab_debra_type suffix merge" << std::endl;
-  bench_masstree_insertion_erase<masstree_slab_debra_type, true, true, false>(
+  bench_masstree_insertion_erase<masstree_slab_debra_type, true, true, true, false>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
     num_keys, max_key_length, erase_ratio, num_experiments
   );
   std::cout << "Benchmarking masstree_slab_debra_type suffix merge+rmroot" << std::endl;
-  bench_masstree_insertion_erase<masstree_slab_debra_type, true, true, true>(
+  bench_masstree_insertion_erase<masstree_slab_debra_type, true, true, true, true>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
     num_keys, max_key_length, erase_ratio, num_experiments
   );
