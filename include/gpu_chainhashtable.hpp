@@ -93,17 +93,32 @@ struct gpu_chainhashtable {
             value_type* values,
             const size_type num_keys,
             cudaStream_t stream = 0,
-            bool concurrent = false) {
-    using find_concurrent = kernel::GpuChainHashtable::find_device_func<true, key_slice_type, size_type, value_type>;
-    using find_readonly = kernel::GpuChainHashtable::find_device_func<false, key_slice_type, size_type, value_type>;
+            bool concurrent = false,
+            bool use_hash_for_longkey = true) {
+    using find_concurrent_hash4long = kernel::GpuChainHashtable::find_device_func<true, true, key_slice_type, size_type, value_type>;
+    using find_concurrent_prfx4long = kernel::GpuChainHashtable::find_device_func<true, false, key_slice_type, size_type, value_type>;
+    using find_readonly_hash4long = kernel::GpuChainHashtable::find_device_func<false, true, key_slice_type, size_type, value_type>;
+    using find_readonly_prfx4long = kernel::GpuChainHashtable::find_device_func<false, false, key_slice_type, size_type, value_type>;
     #define find_args .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values
     if (concurrent) {
-      find_concurrent func{find_args};
-      launch_batch_kernel(func, num_keys, stream);
+      if (use_hash_for_longkey) {
+        find_concurrent_hash4long func{find_args};
+        launch_batch_kernel(func, num_keys, stream);
+      }
+      else {
+        find_concurrent_prfx4long func{find_args};
+        launch_batch_kernel(func, num_keys, stream);
+      }
     }
     else {
-      find_readonly func{find_args};
-      launch_batch_kernel(func, num_keys, stream);
+      if (use_hash_for_longkey) {
+        find_readonly_hash4long func{find_args};
+        launch_batch_kernel(func, num_keys, stream);
+      }
+      else {
+        find_readonly_prfx4long func{find_args};
+        launch_batch_kernel(func, num_keys, stream);
+      }
     }
     #undef find_args
   }
@@ -114,11 +129,19 @@ struct gpu_chainhashtable {
               const value_type* values,
               const size_type num_keys,
               cudaStream_t stream = 0,
-              bool update_if_exists = false) {
-    using insert_func = kernel::GpuChainHashtable::insert_device_func<key_slice_type, size_type, value_type>;
+              bool update_if_exists = false,
+              bool use_hash_for_longkey = true) {
+    using insert_hash4long = kernel::GpuChainHashtable::insert_device_func<true, key_slice_type, size_type, value_type>;
+    using insert_prfx4long = kernel::GpuChainHashtable::insert_device_func<false, key_slice_type, size_type, value_type>;
     #define insert_args .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .update_if_exists = update_if_exists
-    insert_func func{insert_args};
-    launch_batch_kernel(func, num_keys, stream);
+    if (use_hash_for_longkey) {
+      insert_hash4long func{insert_args};
+      launch_batch_kernel(func, num_keys, stream);
+    }
+    else {
+      insert_prfx4long func{insert_args};
+      launch_batch_kernel(func, num_keys, stream);
+    }
     #undef insert_args
   }
 
@@ -127,17 +150,32 @@ struct gpu_chainhashtable {
              const size_type* key_lengths,
              const size_type num_keys,
              cudaStream_t stream = 0,
-             bool do_merge = true) {
-    using erase_readonly = kernel::GpuChainHashtable::erase_device_func<false, key_slice_type, size_type, value_type>;
-    using erase_merge = kernel::GpuChainHashtable::erase_device_func<true, key_slice_type, size_type, value_type>;
+             bool do_merge = true,
+             bool use_hash_for_longkey = true) {
+    using erase_merge_hash4long = kernel::GpuChainHashtable::erase_device_func<true, true, key_slice_type, size_type, value_type>;
+    using erase_merge_prfx4long = kernel::GpuChainHashtable::erase_device_func<true, false, key_slice_type, size_type, value_type>;
+    using erase_nomerge_hash4long = kernel::GpuChainHashtable::erase_device_func<false, true, key_slice_type, size_type, value_type>;
+    using erase_nomerge_prfx4long = kernel::GpuChainHashtable::erase_device_func<false, false, key_slice_type, size_type, value_type>;
     #define erase_args .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths
     if (do_merge) {
-      erase_merge func{erase_args};
-      launch_batch_kernel(func, num_keys, stream);
+      if (use_hash_for_longkey) {
+        erase_merge_hash4long func{erase_args};
+        launch_batch_kernel(func, num_keys, stream);
+      }
+      else {
+        erase_merge_prfx4long func{erase_args};
+        launch_batch_kernel(func, num_keys, stream);
+      }
     }
     else {
-      erase_readonly func{erase_args};
-      launch_batch_kernel(func, num_keys, stream);
+      if (use_hash_for_longkey) {
+        erase_nomerge_hash4long func{erase_args};
+        launch_batch_kernel(func, num_keys, stream);
+      }
+      else {
+        erase_nomerge_prfx4long func{erase_args};
+        launch_batch_kernel(func, num_keys, stream);
+      }
     }
     #undef erase_args
   }
@@ -152,40 +190,66 @@ struct gpu_chainhashtable {
                                     const size_type max_key_length,
                                     cudaStream_t stream = 0,
                                     bool insert_update_if_exists = false,
-                                    bool erase_do_merge = true) {
-    using insert_func = kernel::GpuChainHashtable::insert_device_func<key_slice_type, size_type, value_type>;
-    using erase_readonly = kernel::GpuChainHashtable::erase_device_func<false, key_slice_type, size_type, value_type>;
-    using erase_merge = kernel::GpuChainHashtable::erase_device_func<true, key_slice_type, size_type, value_type>;
+                                    bool erase_do_merge = true,
+                                    bool use_hash_for_longkey = true) {
+    using insert_hash4long = kernel::GpuChainHashtable::insert_device_func<true, key_slice_type, size_type, value_type>;
+    using insert_prfx4long = kernel::GpuChainHashtable::insert_device_func<false, key_slice_type, size_type, value_type>;
+    using erase_merge_hash4long = kernel::GpuChainHashtable::erase_device_func<true, true, key_slice_type, size_type, value_type>;
+    using erase_merge_prfx4long = kernel::GpuChainHashtable::erase_device_func<true, false, key_slice_type, size_type, value_type>;
+    using erase_nomerge_hash4long = kernel::GpuChainHashtable::erase_device_func<false, true, key_slice_type, size_type, value_type>;
+    using erase_nomerge_prfx4long = kernel::GpuChainHashtable::erase_device_func<false, false, key_slice_type, size_type, value_type>;
     #define insert_args .d_keys = insert_keys, .max_key_length = max_key_length, .d_key_lengths = insert_key_lengths, .d_values = insert_values, .update_if_exists = insert_update_if_exists
     #define erase_args .d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths
-    insert_func ins_func{insert_args};
-    if (erase_do_merge) {
-      erase_merge erase_func{erase_args};
-      launch_batch_concurrent_two_funcs_kernel(ins_func, insert_num_keys, erase_func, erase_num_keys, stream);
+    if (use_hash_for_longkey) {
+      insert_hash4long insert_func{insert_args};
+      if (erase_do_merge) {
+        erase_merge_hash4long erase_func{erase_args};
+        launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
+      }
+      else {
+        erase_nomerge_hash4long erase_func{erase_args};
+        launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
+      }
     }
     else {
-      erase_readonly erase_func{erase_args};
-      launch_batch_concurrent_two_funcs_kernel(ins_func, insert_num_keys, erase_func, erase_num_keys, stream);
+      insert_prfx4long insert_func{insert_args};
+      if (erase_do_merge) {
+        erase_merge_prfx4long erase_func{erase_args};
+        launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
+      }
+      else {
+        erase_nomerge_prfx4long erase_func{erase_args};
+        launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
+      }
     }
     #undef insert_args
     #undef erase_args
   }
 
   // device-side APIs
-  template <bool concurrent, typename tile_type>
+  template <bool concurrent, bool use_hash_for_longkey, typename tile_type>
   DEVICE_QUALIFIER value_type cooperative_find(const key_slice_type* key,
                                                size_type key_length,
                                                const tile_type& tile,
                                                device_allocator_context_type& allocator) {
     using node_type = chainhashtable_node<tile_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
-    auto hash = compute_hash(key, key_length, tile) % num_buckets_;
-    elem_type* bucket_ptr = d_table_ + (bucket_size * hash);
-    const key_slice_type first_slice = key[0];
+    key_slice_type first_slice;
+    elem_type* bucket_ptr;
     const bool more_key = (key_length > 1);
+    if (use_hash_for_longkey && more_key) {
+      auto hash = compute_hashx2(key, key_length, tile);
+      bucket_ptr = d_table_ + (bucket_size * (hash.x % num_buckets_));
+      first_slice = hash.y;
+    }
+    else {
+      auto hash = compute_hash(key, key_length, tile);
+      bucket_ptr = d_table_ + (bucket_size * (hash % num_buckets_));
+      first_slice = key[0];
+    }
     int location_if_found;
     suffix_type suffix_if_found(tile, allocator);
-    auto target_node = coop_traverse_until_found<concurrent>(
+    auto target_node = coop_traverse_until_found<concurrent, use_hash_for_longkey>(
         first_slice, more_key, key, key_length, bucket_ptr, location_if_found, suffix_if_found, tile, allocator);
     if (location_if_found >= 0) { // found
       if (more_key) {
@@ -199,7 +263,7 @@ struct gpu_chainhashtable {
     return invalid_value;
   }
 
-  template <typename tile_type>
+  template <bool use_hash_for_longkey, typename tile_type>
   DEVICE_QUALIFIER bool cooperative_insert(const key_slice_type* key,
                                            const size_type key_length,
                                            const value_type& value,
@@ -208,14 +272,23 @@ struct gpu_chainhashtable {
                                            bool update_if_exists = false) {
     using node_type = chainhashtable_node<tile_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
-    auto hash = compute_hash(key, key_length, tile) % num_buckets_;
-    elem_type* bucket_ptr = d_table_ + (bucket_size * hash);
-    node_type::lock(bucket_ptr, tile);
-    const key_slice_type first_slice = key[0];
+    key_slice_type first_slice;
+    elem_type* bucket_ptr;
     const bool more_key = (key_length > 1);
+    if (use_hash_for_longkey && more_key) {
+      auto hash = compute_hashx2(key, key_length, tile);
+      bucket_ptr = d_table_ + (bucket_size * (hash.x % num_buckets_));
+      first_slice = hash.y;
+    }
+    else {
+      auto hash = compute_hash(key, key_length, tile);
+      bucket_ptr = d_table_ + (bucket_size * (hash % num_buckets_));
+      first_slice = key[0];
+    }
+    node_type::lock(bucket_ptr, tile);
     int location_if_found;
     suffix_type suffix_if_found(tile, allocator);
-    auto target_node = coop_traverse_until_found<true>(
+    auto target_node = coop_traverse_until_found<true, use_hash_for_longkey>(
         first_slice, more_key, key, key_length, bucket_ptr, location_if_found, suffix_if_found, tile, allocator);
     if (location_if_found >= 0) { // already exists
       if (update_if_exists) {
@@ -237,7 +310,8 @@ struct gpu_chainhashtable {
       to_insert = allocator.allocate(tile);
       auto suffix = suffix_type(
           reinterpret_cast<elem_type*>(allocator.address(to_insert)), to_insert, tile, allocator);
-      suffix.template create_from<cuda_memory_order::relaxed>(key + 1, key_length - 1, value);
+      static constexpr uint32_t suffix_offset = use_hash_for_longkey ? 0 : 1;
+      suffix.template create_from<cuda_memory_order::relaxed>(key + suffix_offset, key_length - suffix_offset, value);
       suffix.template store_head<cuda_memory_order::relaxed>();
       __threadfence();
     }
@@ -259,7 +333,7 @@ struct gpu_chainhashtable {
     return true;
   }
 
-  template <bool do_merge, typename tile_type>
+  template <bool do_merge, bool use_hash_for_longkey, typename tile_type>
   DEVICE_QUALIFIER bool cooperative_erase(const key_slice_type* key,
                                           const size_type key_length,
                                           const tile_type& tile,
@@ -267,20 +341,29 @@ struct gpu_chainhashtable {
                                           device_reclaimer_context_type& reclaimer) {
     using node_type = chainhashtable_node<tile_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
-    auto hash = compute_hash(key, key_length, tile) % num_buckets_;
-    elem_type* bucket_ptr = d_table_ + (bucket_size * hash);
-    node_type::lock(bucket_ptr, tile);
-    const key_slice_type first_slice = key[0];
+    key_slice_type first_slice;
+    elem_type* bucket_ptr;
     const bool more_key = (key_length > 1);
+    if (use_hash_for_longkey && more_key) {
+      auto hash = compute_hashx2(key, key_length, tile);
+      bucket_ptr = d_table_ + (bucket_size * (hash.x % num_buckets_));
+      first_slice = hash.y;
+    }
+    else {
+      auto hash = compute_hash(key, key_length, tile);
+      bucket_ptr = d_table_ + (bucket_size * (hash % num_buckets_));
+      first_slice = key[0];
+    }
+    node_type::lock(bucket_ptr, tile);
     int location_if_found;
     suffix_type suffix_if_found(tile, allocator);
     node_type target_node(tile);
     if constexpr (do_merge) {
-      target_node = coop_traverse_until_found_merge(
+      target_node = coop_traverse_until_found_merge<use_hash_for_longkey>(
         first_slice, more_key, key, key_length, bucket_ptr, location_if_found, suffix_if_found, tile, allocator, reclaimer);
     }
     else {
-      target_node = coop_traverse_until_found<true>(
+      target_node = coop_traverse_until_found<true, use_hash_for_longkey>(
         first_slice, more_key, key, key_length, bucket_ptr, location_if_found, suffix_if_found, tile, allocator);
     }
     if (location_if_found >= 0) { // exists
@@ -299,7 +382,7 @@ struct gpu_chainhashtable {
 
  private:
   // device-side helper functions
-  template <bool concurrent, typename tile_type>
+  template <bool concurrent, bool use_hash_for_longkey, typename tile_type>
   DEVICE_QUALIFIER chainhashtable_node<tile_type> coop_traverse_until_found(const key_slice_type& first_slice,
                                                                             bool more_key,
                                                                             const key_slice_type* key,
@@ -324,7 +407,8 @@ struct gpu_chainhashtable {
           auto suffix = suffix_type(
               reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
           suffix.template load_head<memory_order>();
-          if (suffix.template streq<memory_order>(key + 1, key_length - 1)) {
+          static constexpr uint32_t suffix_offset = use_hash_for_longkey ? 0 : 1;
+          if (suffix.template streq<memory_order>(key + suffix_offset, key_length - suffix_offset)) {
             // found
             location_if_found = cur_location;
             suffix_if_found = suffix;
@@ -351,7 +435,7 @@ struct gpu_chainhashtable {
     return node;
   }
 
-  template <typename tile_type>
+  template <bool use_hash_for_longkey, typename tile_type>
   DEVICE_QUALIFIER chainhashtable_node<tile_type> coop_traverse_until_found_merge(const key_slice_type& first_slice,
                                                                                   bool more_key,
                                                                                   const key_slice_type* key,
@@ -377,7 +461,8 @@ struct gpu_chainhashtable {
           auto suffix = suffix_type(
               reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
           suffix.template load_head<cuda_memory_order::relaxed>();
-          if (suffix.template streq<cuda_memory_order::relaxed>(key + 1, key_length - 1)) {
+          static constexpr uint32_t suffix_offset = use_hash_for_longkey ? 0 : 1;
+          if (suffix.template streq<cuda_memory_order::relaxed>(key + suffix_offset, key_length - suffix_offset)) {
             // found
             location_if_found = cur_location;
             suffix_if_found = suffix;
@@ -423,24 +508,24 @@ struct gpu_chainhashtable {
   __host__ __device__ static constexpr uint32_t _constexpr_pow(uint32_t base, uint32_t exp) {
     return (exp == 0) ? 1 : base * _constexpr_pow(base, exp - 1);
   }
-
+  static constexpr uint32_t hash_prime1 = 0x9e3779b1;
+  static constexpr uint32_t hash_prime2 = 0x01000193;
   template <typename tile_type>
-  DEVICE_QUALIFIER uint32_t compute_hash(const key_slice_type* key,
-                                         size_type key_length,
-                                         const tile_type& tile) {
+  DEVICE_QUALIFIER uint32_t compute_hash(const key_slice_type* key, size_type key_length, const tile_type& tile) {
     // parallel polynomial rolling hash
-    static constexpr uint32_t prime = 0x9e3779b1;
-    static constexpr uint32_t prime_multiplier = _constexpr_pow(prime, cg_tile_size);
-    // 1. exponent = [1, p, p^2, p^3, ..., p^31]; parallel prefix product
-    uint32_t exponent = (tile.thread_rank() == 0) ? 1 : prime;
+    static constexpr uint32_t prime_multiplier = _constexpr_pow(hash_prime1, cg_tile_size);
+    // 1. exponent = [p, p^2, p^3, ..., p^32]; parallel prefix product
+    uint32_t exponent = (tile.thread_rank() == 0) ? 1 : hash_prime1;
     for (uint32_t offset = 1; offset < cg_tile_size; offset <<= 1) {
       exponent *= tile.shfl_up(exponent, offset);
     }
+    exponent *= hash_prime1;
     // 2. compute per-lane value
-    uint32_t value = 0;
+    uint32_t hash = 0;
     while (true) {
       if (tile.thread_rank() < key_length) {
-        value += key[tile.thread_rank()] * exponent;
+        auto slice = key[tile.thread_rank()];
+        hash += exponent * slice;
       }
       if (key_length <= cg_tile_size) { break; }
       key += cg_tile_size;
@@ -449,17 +534,57 @@ struct gpu_chainhashtable {
     }
     // 3. reduce sum
     for (uint32_t offset = (cg_tile_size / 2); offset != 0; offset >>= 1) {
-      value += tile.shfl_down(value, offset);
+      hash += tile.shfl_down(hash, offset);
     }
-    value = tile.shfl(value, 0);
+    hash ^= (key_length * hash_prime1); // embed length
     // 4. finalize
-    value ^= (key_length * prime); // embed length
-    value ^= value >> 16; // murmur3 finalizer
-    value *= 0x85ebca6b;
-    value ^= value >> 13;
-    value *= 0xc2b2ae35;
-    value ^= value >> 16;
-    return value;
+    hash ^= hash >> 16; // murmur3 finalizer
+    hash *= 0x85ebca6b;
+    hash ^= hash >> 13;
+    hash *= 0xc2b2ae35;
+    hash ^= hash >> 16;
+    return tile.shfl(hash, 0);
+  }
+  template <typename tile_type>
+  DEVICE_QUALIFIER uint2 compute_hashx2(const key_slice_type* key, size_type key_length, const tile_type& tile) {
+    static constexpr uint32_t prime1_multiplier = _constexpr_pow(hash_prime1, cg_tile_size);
+    static constexpr uint32_t prime2_multiplier = _constexpr_pow(hash_prime2, cg_tile_size);
+    // 1. exponent = [p, p^2, p^3, ..., p^32]; parallel prefix product
+    uint32_t exponent1 = (tile.thread_rank() == 0) ? 1 : hash_prime1;
+    uint32_t exponent2 = (tile.thread_rank() == 0) ? 1 : hash_prime2;
+    for (uint32_t offset = 1; offset < cg_tile_size; offset <<= 1) {
+      exponent1 *= tile.shfl_up(exponent1, offset);
+      exponent2 *= tile.shfl_up(exponent2, offset);
+    }
+    exponent1 *= hash_prime1;
+    exponent2 *= hash_prime2;
+    // 2. compute per-lane value
+    uint32_t hash = 0, hash2 = 0;
+    while (true) {
+      key_slice_type slice = (tile.thread_rank() < key_length) ? 
+          key[tile.thread_rank()] :
+          ((tile.thread_rank() == key_length) ? key_length : 0);
+      hash += exponent1 * slice;
+      hash2 += exponent2 * slice;
+      if (key_length < cg_tile_size) { break; }
+      key += cg_tile_size;
+      key_length -= cg_tile_size;
+      exponent1 *= prime1_multiplier;
+      exponent2 *= prime2_multiplier;
+    }
+    // 3. reduce sum
+    for (uint32_t offset = (cg_tile_size / 2); offset != 0; offset >>= 1) {
+      hash += tile.shfl_down(hash, offset);
+      hash2 += tile.shfl_up(hash2, offset);
+    }
+    if (tile.thread_rank() == cg_tile_size - 1) { hash = hash2; }
+    // 4. finalize
+    hash ^= hash >> 16; // murmur3 finalizer
+    hash *= 0x85ebca6b;
+    hash ^= hash >> 13;
+    hash *= 0xc2b2ae35;
+    hash ^= hash >> 16;
+    return make_uint2(tile.shfl(hash, 0), tile.shfl(hash, cg_tile_size - 1));
   }
 
  public:

@@ -26,6 +26,7 @@ namespace cg = cooperative_groups;
 namespace kernel {
 
 template <bool do_reclaim, typename device_func, typename index_type>
+__launch_bounds__(index_type::host_reclaimer_type::block_size_)
 __global__ void batch_kernel(index_type index,
                              const device_func func,
                              uint32_t num_requests) {
@@ -65,6 +66,7 @@ __global__ void batch_kernel(index_type index,
 }
 
 template <bool do_reclaim, typename device_func0, typename device_func1, typename index_type>
+__launch_bounds__(index_type::host_reclaimer_type::block_size_)
 __global__ void batch_concurrent_two_funcs_kernel(index_type index,
                                                   const device_func0 func0,
                                                   uint32_t num_requests0,
@@ -323,7 +325,7 @@ __global__ void initialize_kernel(chainhashtable table) {
   table.initialize_bucket(bucket_index, tile);
 }
 
-template <typename key_slice_type, typename size_type, typename value_type>
+template <bool use_hash_for_longkey, typename key_slice_type, typename size_type, typename value_type>
 struct insert_device_func {
   static constexpr bool reclaim_required = false;
   // kernel args
@@ -352,12 +354,12 @@ struct insert_device_func {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_value = tile.shfl(regs.value, cur_rank);
-    table.template cooperative_insert(cur_key, cur_key_length, cur_value, tile, allocator, update_if_exists);
+    table.template cooperative_insert<use_hash_for_longkey>(cur_key, cur_key_length, cur_value, tile, allocator, update_if_exists);
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
 
-template <bool concurrent, typename key_slice_type, typename size_type, typename value_type>
+template <bool concurrent, bool use_hash_for_longkey, typename key_slice_type, typename size_type, typename value_type>
 struct find_device_func {
   static constexpr bool reclaim_required = false;
   // kernel args
@@ -383,7 +385,7 @@ struct find_device_func {
   DEVICE_QUALIFIER void exec(chainhashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    auto cur_value = table.template cooperative_find<concurrent>(cur_key, cur_key_length, tile, allocator);
+    auto cur_value = table.template cooperative_find<concurrent, use_hash_for_longkey>(cur_key, cur_key_length, tile, allocator);
     if (tile.thread_rank() == cur_rank) {
       regs.value = cur_value;
     }
@@ -393,7 +395,7 @@ struct find_device_func {
   }
 };
 
-template <bool do_merge, typename key_slice_type, typename size_type, typename value_type>
+template <bool do_merge, bool use_hash_for_longkey, typename key_slice_type, typename size_type, typename value_type>
 struct erase_device_func {
   static constexpr bool reclaim_required = true;
   // kernel args
@@ -417,7 +419,7 @@ struct erase_device_func {
   DEVICE_QUALIFIER void exec(chainhashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    table.template cooperative_erase<do_merge>(cur_key, cur_key_length, tile, allocator, reclaimer);
+    table.template cooperative_erase<do_merge, use_hash_for_longkey>(cur_key, cur_key_length, tile, allocator, reclaimer);
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
