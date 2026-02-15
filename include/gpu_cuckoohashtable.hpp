@@ -53,6 +53,7 @@ struct gpu_cuckoohashtable {
   static auto constexpr cg_tile_size = 32;
   using hashtable_type = gpu_cuckoohashtable<Allocator, Reclaimer>;
   static auto constexpr num_hfs = 4;
+  static auto constexpr default_max_fill_factor = 0.8f;
 
   static constexpr value_type invalid_value = std::numeric_limits<value_type>::max();
 
@@ -79,6 +80,7 @@ struct gpu_cuckoohashtable {
            float fill_factor)
       : allocator_(host_allocator.get_device_instance())
       , reclaimer_(host_reclaimer.get_device_instance()) {
+    if (fill_factor > default_max_fill_factor) { fill_factor = default_max_fill_factor; }
     auto num_total_buckets = std::max(static_cast<std::size_t>(static_cast<double>(num_elements) / fill_factor / 15), 1UL);
     num_buckets_per_hf_ = (num_total_buckets + num_hfs - 1) / num_hfs;
     allocate();
@@ -626,29 +628,30 @@ struct gpu_cuckoohashtable {
   }
 
   template <typename func>
-  void traverse_nodes() {
-    kernel::GpuHashtable::traverse_nodes_kernel<func><<<1, 32>>>(*this);
+  void traverse_nodes(func task) {
+    kernel::GpuHashtable::traverse_nodes_kernel<<<1, 32>>>(*this, task);
     cudaDeviceSynchronize();
   }
 
   struct print_nodes_task {
-    DEVICE_QUALIFIER void init(bool lead_lane) {}
+    template <typename tile_type>
+    DEVICE_QUALIFIER void init(const tile_type& tile) {}
     template <typename node_type, typename tile_type>
     DEVICE_QUALIFIER void exec(const node_type& node, int table_index, int bucket_index, const tile_type& tile, device_allocator_context_type& allocator) {
       if (tile.thread_rank() == 0) printf("TABLE[%d].NODE[%d] ", table_index, bucket_index);
       node.print(allocator);
     }
-    DEVICE_QUALIFIER void fini() {}
+    template <typename tile_type>
+    DEVICE_QUALIFIER void fini(const tile_type& tile) {}
   };
   void print() {
-    traverse_nodes<print_nodes_task>();
+    print_nodes_task task;
+    traverse_nodes(task);
   }
 
   struct validate_nodes_task {
-    DEVICE_QUALIFIER void init(bool lead_lane) {
-      lead_lane_ = lead_lane;
-      num_buckets_ = 0;
-      num_suffix_nodes_ = 0;
+    template <typename tile_type>
+    DEVICE_QUALIFIER void init(const tile_type& tile) {
       for (int i = 0; i < num_hfs; i++) {
         entries_per_table_[i] = 0;
       }
@@ -667,23 +670,25 @@ struct gpu_cuckoohashtable {
         }
       }
       num_buckets_++;
+      num_entries_ += num_keys;
       entries_per_table_[table_index] += num_keys;
     }
-    DEVICE_QUALIFIER void fini() {
-      if (lead_lane_) {
-        printf("%lu buckets, %lu suffix nodes; entries(", num_buckets_, num_suffix_nodes_);
+    template <typename tile_type>
+    DEVICE_QUALIFIER void fini(const tile_type& tile) {
+      if (tile.thread_rank() == 0) {
+        printf("%lu entries (", num_entries_);
         for (int i = 0; i < num_hfs; i++) {
           printf("%lu ", entries_per_table_[i]);
         }
-        printf(")\n");
+        printf("), %lu buckets (+%lu suffix nodes)\n", num_buckets_, num_suffix_nodes_);
       }
     }
-    bool lead_lane_;
-    uint64_t num_buckets_, num_suffix_nodes_;
-    uint64_t entries_per_table_[num_hfs];
+    uint64_t num_buckets_ = 0, num_suffix_nodes_ = 0;
+    uint64_t num_entries_ = 0, entries_per_table_[num_hfs] = {0,};
   };
   void validate() {
-    traverse_nodes<validate_nodes_task>();
+    validate_nodes_task task;
+    traverse_nodes(task);
   }
 
  private:

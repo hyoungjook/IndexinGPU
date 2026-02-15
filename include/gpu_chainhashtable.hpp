@@ -623,36 +623,30 @@ struct gpu_chainhashtable {
   }
 
   template <typename func>
-  void traverse_nodes() {
-    kernel::GpuHashtable::traverse_nodes_kernel<func><<<1, 32>>>(*this);
+  void traverse_nodes(func task) {
+    kernel::GpuHashtable::traverse_nodes_kernel<<<1, 32>>>(*this, task);
     cudaDeviceSynchronize();
   }
 
   struct print_nodes_task {
-    DEVICE_QUALIFIER void init(bool lead_lane) {}
+    template <typename tile_type>
+    DEVICE_QUALIFIER void init(const tile_type& tile) {}
     template <typename node_type, typename tile_type>
     DEVICE_QUALIFIER void exec(const node_type& node, int head_index, const tile_type& tile, device_allocator_context_type& allocator) {
       if (head_index >= 0 && tile.thread_rank() == 0) printf("HEAD[%d] ", head_index);
       node.print(allocator);
     }
-    DEVICE_QUALIFIER void fini() {}
+    template <typename tile_type>
+    DEVICE_QUALIFIER void fini(const tile_type& tile) {}
   };
   void print() {
-    traverse_nodes<print_nodes_task>();
+    print_nodes_task task;
+    traverse_nodes(task);
   }
 
   struct validate_nodes_task {
-    DEVICE_QUALIFIER void init(bool lead_lane) {
-      lead_lane_ = lead_lane;
-      num_head_nodes_ = 0;
-      num_aux_nodes_ = 0;
-      num_suffix_nodes_ = 0;
-      this_bucket_num_entries_ = 0;
-      max_entries_per_bucket_ = 0;
-      num_entries_ = 0;
-      this_bucket_num_nodes_ = 0;
-      max_nodes_per_bucket_ = 0;
-    }
+    template <typename tile_type>
+    DEVICE_QUALIFIER void init(const tile_type& tile) {}
     template <typename node_type, typename tile_type>
     DEVICE_QUALIFIER void exec(const node_type& node, int head_index, const tile_type& tile, device_allocator_context_type& allocator) {
       if (head_index >= 0) {
@@ -679,24 +673,27 @@ struct gpu_chainhashtable {
       if (head_index >= 0) { num_head_nodes_++; }
       else { num_aux_nodes_++; }
     }
-    DEVICE_QUALIFIER void fini() {
+    template <typename tile_type>
+    DEVICE_QUALIFIER void fini(const tile_type& tile) {
       max_entries_per_bucket_ = max(max_entries_per_bucket_, this_bucket_num_entries_);
       max_nodes_per_bucket_ = max(max_nodes_per_bucket_, this_bucket_num_nodes_);
       float avg_entries_per_bucket = float(num_entries_) / num_head_nodes_;
       float avg_nodes_per_bucket = float(num_head_nodes_ + num_aux_nodes_) / num_head_nodes_;
       float fill_factor = float(num_entries_) / (float(num_head_nodes_ + num_aux_nodes_) * 15.0f);
-      if (lead_lane_) {
-        printf("%lu heads, %lu auxiliary nodes (+%lu suffix nodes) found; per-bucket nodes(max %lu, avg %f), entries(max %lu, avg %f), fill_factor(%f)\n",
-          num_head_nodes_, num_aux_nodes_, num_suffix_nodes_, max_nodes_per_bucket_, avg_nodes_per_bucket, max_entries_per_bucket_, avg_entries_per_bucket, fill_factor);
+      if (tile.thread_rank() == 0) {
+        printf("%lu entries (per-bucket max %lu, avg %f), %lu heads + %lu aux nodes (+%lu suffix nodes) (per-bucket max %lu, avg %f); fillfactor %f\n",
+          num_entries_, max_entries_per_bucket_, avg_entries_per_bucket,
+          num_head_nodes_, num_aux_nodes_, num_suffix_nodes_, max_nodes_per_bucket_, avg_nodes_per_bucket,
+          fill_factor);
       }
     }
-    bool lead_lane_;
-    uint64_t num_head_nodes_, num_aux_nodes_, num_suffix_nodes_;
-    uint64_t this_bucket_num_entries_, max_entries_per_bucket_, num_entries_;
-    uint64_t this_bucket_num_nodes_, max_nodes_per_bucket_;
+    uint64_t num_head_nodes_ = 0, num_aux_nodes_ = 0, num_suffix_nodes_ = 0;
+    uint64_t this_bucket_num_entries_ = 0, max_entries_per_bucket_ = 0, num_entries_ = 0;
+    uint64_t this_bucket_num_nodes_ = 0, max_nodes_per_bucket_ = 0;
   };
   void validate() {
-    traverse_nodes<validate_nodes_task>();
+    validate_nodes_task task;
+    traverse_nodes(task);
   }
 
  private:

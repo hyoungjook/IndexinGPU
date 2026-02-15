@@ -299,17 +299,16 @@ struct scan_device_func {
   }
 };
 
-template <typename func, typename masstree>
-__global__ void traverse_tree_nodes_kernel(masstree tree) {
+template <typename masstree, typename func>
+__global__ void traverse_tree_nodes_kernel(masstree tree, func task) {
   // called with single warp; not parallelized for debug purpose
   assert(gridDim.x == 1 && gridDim.y == 1 && gridDim.z == 1);
   assert(blockDim.x == 32 && blockDim.y == 1 && blockDim.z == 1);
   auto block = cg::this_thread_block();
   auto tile  = cg::tiled_partition<masstree::cg_tile_size>(block);
-  func task;
-  task.init(tile.thread_rank() == 0);
+  task.init(tile);
   tree.cooperative_traverse_tree_nodes(task, tile);
-  task.fini();
+  task.fini(tile);
 }
 
 } // namespace GpuMasstree
@@ -424,17 +423,16 @@ struct erase_device_func {
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
 
-template <typename func, typename hashtable>
-__global__ void traverse_nodes_kernel(hashtable table) {
+template <typename hashtable, typename func>
+__global__ void traverse_nodes_kernel(hashtable table, func task) {
   // called with single warp; not parallelized for debug purpose
   assert(gridDim.x == 1 && gridDim.y == 1 && gridDim.z == 1);
   assert(blockDim.x == 32 && blockDim.y == 1 && blockDim.z == 1);
   auto block = cg::this_thread_block();
   auto tile  = cg::tiled_partition<hashtable::cg_tile_size>(block);
-  func task;
-  task.init(tile.thread_rank() == 0);
+  task.init(tile);
   table.cooperative_traverse_nodes(task, tile);
-  task.fini();
+  task.fini(tile);
 }
 
 } // namespace GpuHashtable
