@@ -165,6 +165,13 @@ struct hashtable_node {
                         lane_elem_ == key &&
                         get_suffix_of_location(tile_.thread_rank()) == more_key);
   }
+  DEVICE_QUALIFIER uint32_t match_key_value_in_node(const key_type& key, const value_type& value, bool more_key) const {
+    auto down_elem = tile_.shfl_down(lane_elem_, node_width);
+    return tile_.ballot(is_valid_key_lane() &&
+                        lane_elem_ == key &&
+                        down_elem == value &&
+                        get_suffix_of_location(tile_.thread_rank()) == more_key);
+  }
 
   DEVICE_QUALIFIER void insert(const key_type& key, const value_type& value, bool more_key) {
     assert(!is_full());

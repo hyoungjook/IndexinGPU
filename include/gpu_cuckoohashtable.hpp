@@ -377,16 +377,20 @@ struct gpu_cuckoohashtable {
             compute_hashx2_single_slice(nodes[i].get_key_from_location(loc), hash, tile);
           }
           uint32_t target_table_i = ((hash[0] ^ hash[1]) * hash_prime2) % num_hfs;
+          auto bucket_index = hash[0];
           if (target_table_i == table_i[i]) {
             target_table_i = (target_table_i + 1) % num_hfs;
-            hash[0] = hash[1];
+            bucket_index = hash[1];
           }
           else { assert((target_table_i + 1) % num_hfs == table_i[i]); }
           // check other node
-          auto other_node = node_type(d_table_ + (bucket_size * ((hash[0] % num_buckets_per_hf_) + (target_table_i * num_buckets_per_hf_))), tile);
+          auto other_node = node_type(d_table_ + (bucket_size * ((bucket_index % num_buckets_per_hf_) + (target_table_i * num_buckets_per_hf_))), tile);
           other_node.template load<cuda_memory_order::relaxed>();
           if (!other_node.is_full()) {
             // found the space
+            key_slice_type first_slice_for_check = nodes[i].get_key_from_location(loc);
+            value_type value_for_check = nodes[i].get_value_from_location(loc);
+            bool suffix_for_check = nodes[i].get_suffix_of_location(loc);
             if (i < target_table_i) {
               node_type::lock(nodes[i].get_node_ptr(), tile);
               node_type::lock(other_node.get_node_ptr(), tile);
@@ -401,16 +405,23 @@ struct gpu_cuckoohashtable {
               continue_to_retry = true;
             }
             else if (!other_node.is_full()) {
-              // locked the non-full node; do the cuckoo
-              key_slice_type key = nodes[i].get_key_from_location(loc);
-              value_type value = nodes[i].get_value_from_location(loc);
-              bool more_key = nodes[i].get_suffix_of_location(loc);
-              other_node.insert(key, value, more_key);
-              nodes[i].erase(loc);
-              other_node.template store<cuda_memory_order::relaxed>();
-              __threadfence();
-              nodes[i].template store<cuda_memory_order::relaxed>();
-              continue_to_retry = true;
+              // check the key still exists in nodes[i]
+              uint32_t to_check = nodes[i].match_key_value_in_node(
+                  first_slice_for_check, value_for_check, suffix_for_check);
+              if (to_check == 0) {
+                // other thread removed the element
+                // unlock (at below) and continue to next location
+              }
+              else {
+                assert(__popc(to_check) == 1);
+                // move the element
+                other_node.insert(first_slice_for_check, value_for_check, suffix_for_check);
+                nodes[i].erase(__ffs(to_check) - 1);
+                other_node.template store<cuda_memory_order::relaxed>();
+                __threadfence();
+                nodes[i].template store<cuda_memory_order::relaxed>();
+                continue_to_retry = true;
+              }
             }
             node_type::unlock(nodes[i].get_node_ptr(), tile);
             node_type::unlock(other_node.get_node_ptr(), tile);
