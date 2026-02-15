@@ -23,14 +23,14 @@
 #include <suffix.hpp>
 
 template <typename tile_type>
-struct chainhashtable_node {
+struct hashtable_node {
   using elem_type = uint32_t;
   using key_type = elem_type;
   using value_type = elem_type;
   using size_type = uint32_t;
   static constexpr int node_width = 16;
-  DEVICE_QUALIFIER chainhashtable_node(const tile_type& tile): tile_(tile) {}
-  DEVICE_QUALIFIER chainhashtable_node(elem_type* ptr, const tile_type& tile)
+  DEVICE_QUALIFIER hashtable_node(const tile_type& tile): tile_(tile) {}
+  DEVICE_QUALIFIER hashtable_node(elem_type* ptr, const tile_type& tile)
       : node_ptr_(ptr), tile_(tile)
   {
     assert(tile_.size() == 2 * node_width);
@@ -99,7 +99,7 @@ struct chainhashtable_node {
   DEVICE_QUALIFIER bool is_full() const {
     return (num_keys() == max_num_keys_);
   }
-  DEVICE_QUALIFIER bool is_mergeable(const chainhashtable_node& next_node) const {
+  DEVICE_QUALIFIER bool is_mergeable(const hashtable_node& next_node) const {
     return (num_keys() + next_node.num_keys()) <= max_num_keys_;
   }
   DEVICE_QUALIFIER bool get_suffix_of_location(int location) const {
@@ -185,7 +185,7 @@ struct chainhashtable_node {
     }
   }
 
-  DEVICE_QUALIFIER void merge(const chainhashtable_node<tile_type>& next_node) {
+  DEVICE_QUALIFIER void merge(const hashtable_node<tile_type>& next_node) {
     assert(is_mergeable(next_node));
     // copy elements from next node
     bool suffix_bit = get_suffix_of_location(tile_.thread_rank());
@@ -232,7 +232,7 @@ struct chainhashtable_node {
     write_metadata_to_registers();
   }
 
-  DEVICE_QUALIFIER chainhashtable_node<tile_type>& operator=(const chainhashtable_node<tile_type>& other) {
+  DEVICE_QUALIFIER hashtable_node<tile_type>& operator=(const hashtable_node<tile_type>& other) {
     node_ptr_ = other.node_ptr_;
     lane_elem_ = other.lane_elem_;
     metadata_ = other.metadata_;

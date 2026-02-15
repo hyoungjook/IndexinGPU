@@ -26,7 +26,7 @@
 #include <fstream>
 #include <ios>
 #include <iostream>
-#include <chainhashtable_node.hpp>
+#include <hashtable_node.hpp>
 #include <suffix.hpp>
 #include <queue>
 #include <sstream>
@@ -38,7 +38,7 @@
 #include <simple_dummy_reclaim.hpp>
 #include <simple_debra_reclaim.hpp>
 
-namespace GpuChainHashtable {
+namespace GpuHashtable {
 
 template <typename Allocator,
           typename Reclaimer>
@@ -95,10 +95,10 @@ struct gpu_chainhashtable {
             cudaStream_t stream = 0,
             bool concurrent = false,
             bool use_hash_for_longkey = true) {
-    using find_concurrent_hash4long = kernel::GpuChainHashtable::find_device_func<true, true, key_slice_type, size_type, value_type>;
-    using find_concurrent_prfx4long = kernel::GpuChainHashtable::find_device_func<true, false, key_slice_type, size_type, value_type>;
-    using find_readonly_hash4long = kernel::GpuChainHashtable::find_device_func<false, true, key_slice_type, size_type, value_type>;
-    using find_readonly_prfx4long = kernel::GpuChainHashtable::find_device_func<false, false, key_slice_type, size_type, value_type>;
+    using find_concurrent_hash4long = kernel::GpuHashtable::find_device_func<true, true, key_slice_type, size_type, value_type>;
+    using find_concurrent_prfx4long = kernel::GpuHashtable::find_device_func<true, false, key_slice_type, size_type, value_type>;
+    using find_readonly_hash4long = kernel::GpuHashtable::find_device_func<false, true, key_slice_type, size_type, value_type>;
+    using find_readonly_prfx4long = kernel::GpuHashtable::find_device_func<false, false, key_slice_type, size_type, value_type>;
     #define find_args .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values
     if (concurrent) {
       if (use_hash_for_longkey) {
@@ -131,8 +131,8 @@ struct gpu_chainhashtable {
               cudaStream_t stream = 0,
               bool update_if_exists = false,
               bool use_hash_for_longkey = true) {
-    using insert_hash4long = kernel::GpuChainHashtable::insert_device_func<true, key_slice_type, size_type, value_type>;
-    using insert_prfx4long = kernel::GpuChainHashtable::insert_device_func<false, key_slice_type, size_type, value_type>;
+    using insert_hash4long = kernel::GpuHashtable::insert_device_func<true, key_slice_type, size_type, value_type>;
+    using insert_prfx4long = kernel::GpuHashtable::insert_device_func<false, key_slice_type, size_type, value_type>;
     #define insert_args .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .update_if_exists = update_if_exists
     if (use_hash_for_longkey) {
       insert_hash4long func{insert_args};
@@ -152,10 +152,10 @@ struct gpu_chainhashtable {
              cudaStream_t stream = 0,
              bool do_merge = true,
              bool use_hash_for_longkey = true) {
-    using erase_merge_hash4long = kernel::GpuChainHashtable::erase_device_func<true, true, key_slice_type, size_type, value_type>;
-    using erase_merge_prfx4long = kernel::GpuChainHashtable::erase_device_func<true, false, key_slice_type, size_type, value_type>;
-    using erase_nomerge_hash4long = kernel::GpuChainHashtable::erase_device_func<false, true, key_slice_type, size_type, value_type>;
-    using erase_nomerge_prfx4long = kernel::GpuChainHashtable::erase_device_func<false, false, key_slice_type, size_type, value_type>;
+    using erase_merge_hash4long = kernel::GpuHashtable::erase_device_func<true, true, key_slice_type, size_type, value_type>;
+    using erase_merge_prfx4long = kernel::GpuHashtable::erase_device_func<true, false, key_slice_type, size_type, value_type>;
+    using erase_nomerge_hash4long = kernel::GpuHashtable::erase_device_func<false, true, key_slice_type, size_type, value_type>;
+    using erase_nomerge_prfx4long = kernel::GpuHashtable::erase_device_func<false, false, key_slice_type, size_type, value_type>;
     #define erase_args .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths
     if (do_merge) {
       if (use_hash_for_longkey) {
@@ -192,12 +192,12 @@ struct gpu_chainhashtable {
                                     bool insert_update_if_exists = false,
                                     bool erase_do_merge = true,
                                     bool use_hash_for_longkey = true) {
-    using insert_hash4long = kernel::GpuChainHashtable::insert_device_func<true, key_slice_type, size_type, value_type>;
-    using insert_prfx4long = kernel::GpuChainHashtable::insert_device_func<false, key_slice_type, size_type, value_type>;
-    using erase_merge_hash4long = kernel::GpuChainHashtable::erase_device_func<true, true, key_slice_type, size_type, value_type>;
-    using erase_merge_prfx4long = kernel::GpuChainHashtable::erase_device_func<true, false, key_slice_type, size_type, value_type>;
-    using erase_nomerge_hash4long = kernel::GpuChainHashtable::erase_device_func<false, true, key_slice_type, size_type, value_type>;
-    using erase_nomerge_prfx4long = kernel::GpuChainHashtable::erase_device_func<false, false, key_slice_type, size_type, value_type>;
+    using insert_hash4long = kernel::GpuHashtable::insert_device_func<true, key_slice_type, size_type, value_type>;
+    using insert_prfx4long = kernel::GpuHashtable::insert_device_func<false, key_slice_type, size_type, value_type>;
+    using erase_merge_hash4long = kernel::GpuHashtable::erase_device_func<true, true, key_slice_type, size_type, value_type>;
+    using erase_merge_prfx4long = kernel::GpuHashtable::erase_device_func<true, false, key_slice_type, size_type, value_type>;
+    using erase_nomerge_hash4long = kernel::GpuHashtable::erase_device_func<false, true, key_slice_type, size_type, value_type>;
+    using erase_nomerge_prfx4long = kernel::GpuHashtable::erase_device_func<false, false, key_slice_type, size_type, value_type>;
     #define insert_args .d_keys = insert_keys, .max_key_length = max_key_length, .d_key_lengths = insert_key_lengths, .d_values = insert_values, .update_if_exists = insert_update_if_exists
     #define erase_args .d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths
     if (use_hash_for_longkey) {
@@ -232,7 +232,7 @@ struct gpu_chainhashtable {
                                                size_type key_length,
                                                const tile_type& tile,
                                                device_allocator_context_type& allocator) {
-    using node_type = chainhashtable_node<tile_type>;
+    using node_type = hashtable_node<tile_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     key_slice_type first_slice;
     elem_type* bucket_ptr;
@@ -270,7 +270,7 @@ struct gpu_chainhashtable {
                                            const tile_type& tile,
                                            device_allocator_context_type& allocator,
                                            bool update_if_exists = false) {
-    using node_type = chainhashtable_node<tile_type>;
+    using node_type = hashtable_node<tile_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     key_slice_type first_slice;
     elem_type* bucket_ptr;
@@ -339,7 +339,7 @@ struct gpu_chainhashtable {
                                           const tile_type& tile,
                                           device_allocator_context_type& allocator,
                                           device_reclaimer_context_type& reclaimer) {
-    using node_type = chainhashtable_node<tile_type>;
+    using node_type = hashtable_node<tile_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     key_slice_type first_slice;
     elem_type* bucket_ptr;
@@ -383,7 +383,7 @@ struct gpu_chainhashtable {
  private:
   // device-side helper functions
   template <bool concurrent, bool use_hash_for_longkey, typename tile_type>
-  DEVICE_QUALIFIER chainhashtable_node<tile_type> coop_traverse_until_found(const key_slice_type& first_slice,
+  DEVICE_QUALIFIER hashtable_node<tile_type> coop_traverse_until_found(const key_slice_type& first_slice,
                                                                             bool more_key,
                                                                             const key_slice_type* key,
                                                                             const size_type& key_length,
@@ -392,7 +392,7 @@ struct gpu_chainhashtable {
                                                                             suffix_node<tile_type, device_allocator_context_type>& suffix_if_found,
                                                                             const tile_type& tile,
                                                                             device_allocator_context_type& allocator) {
-    using node_type = chainhashtable_node<tile_type>;
+    using node_type = hashtable_node<tile_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     static constexpr auto memory_order = concurrent ? cuda_memory_order::relaxed : cuda_memory_order::weak;
     auto node = node_type(bucket_ptr, tile);
@@ -436,7 +436,7 @@ struct gpu_chainhashtable {
   }
 
   template <bool use_hash_for_longkey, typename tile_type>
-  DEVICE_QUALIFIER chainhashtable_node<tile_type> coop_traverse_until_found_merge(const key_slice_type& first_slice,
+  DEVICE_QUALIFIER hashtable_node<tile_type> coop_traverse_until_found_merge(const key_slice_type& first_slice,
                                                                                   bool more_key,
                                                                                   const key_slice_type* key,
                                                                                   const size_type& key_length,
@@ -446,7 +446,7 @@ struct gpu_chainhashtable {
                                                                                   const tile_type& tile,
                                                                                   device_allocator_context_type& allocator,
                                                                                   device_reclaimer_context_type& reclaimer) {
-    using node_type = chainhashtable_node<tile_type>;
+    using node_type = hashtable_node<tile_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     auto node = node_type(bucket_ptr, tile);
     node.template load<cuda_memory_order::relaxed>();
@@ -593,7 +593,7 @@ struct gpu_chainhashtable {
   DEVICE_QUALIFIER void cooperative_traverse_nodes(Func& task, const tile_type& tile) {
     // debug-purpose, so inefficient implementation
     // called with single warp
-    using node_type = chainhashtable_node<tile_type>;
+    using node_type = hashtable_node<tile_type>;
     device_allocator_context_type allocator{allocator_, tile};
     for (size_type bucket_index = 0; bucket_index < num_buckets_; bucket_index++) {
       auto node = node_type(d_table_ + (bucket_size * bucket_index), tile);
@@ -610,7 +610,7 @@ struct gpu_chainhashtable {
 
   template <typename func>
   void traverse_nodes() {
-    kernel::GpuChainHashtable::traverse_nodes_kernel<func><<<1, 32>>>(*this);
+    kernel::GpuHashtable::traverse_nodes_kernel<func><<<1, 32>>>(*this);
     cudaDeviceSynchronize();
   }
 
@@ -670,9 +670,10 @@ struct gpu_chainhashtable {
       max_nodes_per_bucket_ = max(max_nodes_per_bucket_, this_bucket_num_nodes_);
       float avg_entries_per_bucket = float(num_entries_) / num_head_nodes_;
       float avg_nodes_per_bucket = float(num_head_nodes_ + num_aux_nodes_) / num_head_nodes_;
+      float fill_factor = float(num_entries_) / (float(num_head_nodes_ + num_aux_nodes_) * 15.0f);
       if (lead_lane_) {
-        printf("%lu heads, %lu auxiliary nodes (+%lu suffix nodes) found; per-bucket nodes(max %lu, avg %f), entries(max %lu, avg %f)\n",
-          num_head_nodes_, num_aux_nodes_, num_suffix_nodes_, max_nodes_per_bucket_, avg_nodes_per_bucket, max_entries_per_bucket_, avg_entries_per_bucket);
+        printf("%lu heads, %lu auxiliary nodes (+%lu suffix nodes) found; per-bucket nodes(max %lu, avg %f), entries(max %lu, avg %f), fill_factor(%f)\n",
+          num_head_nodes_, num_aux_nodes_, num_suffix_nodes_, max_nodes_per_bucket_, avg_nodes_per_bucket, max_entries_per_bucket_, avg_entries_per_bucket, fill_factor);
       }
     }
     bool lead_lane_;
@@ -688,7 +689,7 @@ struct gpu_chainhashtable {
   template <typename tile_type>
   DEVICE_QUALIFIER void initialize_bucket(size_type bucket_index,
                                           const tile_type& tile) {
-    using node_type = chainhashtable_node<tile_type>;
+    using node_type = hashtable_node<tile_type>;
     auto node = node_type(d_table_ + (bucket_index * bucket_size), tile);
     node.initialize_empty(true);
     node.template store<cuda_memory_order::weak>();
@@ -709,7 +710,7 @@ struct gpu_chainhashtable {
   void initialize() {
     const uint32_t num_blocks = num_buckets_;
     const uint32_t block_size = cg_tile_size;
-    kernel::GpuChainHashtable::initialize_kernel<<<num_blocks, block_size>>>(*this);
+    kernel::GpuHashtable::initialize_kernel<<<num_blocks, block_size>>>(*this);
     cuda_try(cudaDeviceSynchronize());
   }
 
@@ -757,8 +758,8 @@ struct gpu_chainhashtable {
   device_allocator_instance_type allocator_;
   device_reclaimer_instance_type reclaimer_;
 
-  template <typename chainhashtable>
-  friend __global__ void kernel::GpuChainHashtable::initialize_kernel(chainhashtable);
+  template <typename hashtable>
+  friend __global__ void kernel::GpuHashtable::initialize_kernel(hashtable);
 
   template <bool do_reclaim, typename device_func, typename index_type>
   friend __global__ void kernel::batch_kernel(index_type index,
