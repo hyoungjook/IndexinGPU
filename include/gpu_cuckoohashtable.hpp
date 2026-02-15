@@ -371,7 +371,7 @@ struct gpu_cuckoohashtable {
                 reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
             suffix.template load_head<cuda_memory_order::relaxed>();
             compute_hashx2_for_suffix<use_hash_for_longkey, cuda_memory_order::relaxed>(
-                suffix, first_slice, primes, hash, tile);
+                suffix, use_hash_for_longkey ? 0 : nodes[i].get_key_from_location(loc), primes, hash, tile);
           }
           else {
             for (int j = 0; j < 2; j++) {
@@ -470,9 +470,6 @@ struct gpu_cuckoohashtable {
       node_type::unlock(nodes[i].get_node_ptr(), tile);
     }
     // not found
-    for (int j = 0; j < num_hfs; j++) {
-      node_type::unlock(nodes[j].get_node_ptr(), tile);
-    }
     return false;
   }
 
