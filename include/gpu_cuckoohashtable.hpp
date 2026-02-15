@@ -545,6 +545,7 @@ struct gpu_cuckoohashtable {
       }
     }
     // 2. compute per-lane value
+    const auto original_length = key_length;
     uint32_t hash = 0, hash1 = 0;
     while (true) {
       if (tile.thread_rank() < key_length) {
@@ -563,8 +564,8 @@ struct gpu_cuckoohashtable {
       hash += tile.shfl_down(hash, offset);
       hash1 += tile.shfl_up(hash1, offset);
     }
-    hash = ((hash * hash_prime0) + key_length) * hash_prime0;
-    hash1 = ((hash1 * hash_prime1) + key_length) * hash_prime1;
+    hash = ((hash * hash_prime0) + original_length) * hash_prime0;
+    hash1 = ((hash1 * hash_prime1) + original_length) * hash_prime1;
     if (tile.thread_rank() == cg_tile_size - 1) { hash = hash1; }
     // 4. finalize
     hash = hash_murmur3_finalizer(hash);
