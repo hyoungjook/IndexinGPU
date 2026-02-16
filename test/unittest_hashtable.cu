@@ -373,6 +373,42 @@ void test_concurrentinserterase(map_type* map, uint32_t min_key_length_bytes, ui
   input.free();
 }
 
+template <typename map_type>
+void test_concurrentinsertfind(map_type* map, uint32_t min_key_length_bytes, uint32_t max_key_length_bytes) {
+  const size_type min_key_length = min_key_length_bytes / sizeof(key_slice_type);
+  const size_type max_key_length = max_key_length_bytes / sizeof(key_slice_type);
+  mapped_vector<value_type> find_results(num_keys);
+  testing_input input(num_keys, min_key_length, max_key_length);
+  // keys: [A: num_keys/2][B: num_keys/2]
+  std::size_t num_keysetA = num_keys / 2;
+  std::size_t offset_keysetB = num_keysetA;
+  std::size_t num_keysetB = num_keys - num_keysetA;
+  // 1. insert A
+  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), num_keysetA);
+  cuda_try(cudaDeviceSynchronize());
+  // 2. concurrently insert B & find A
+  map->test_concurrent_insert_find(
+      input.keys.data() + (max_key_length * offset_keysetB), input.lengths.data() + offset_keysetB, input.values.data() + offset_keysetB, num_keysetB,
+      input.keys.data(), input.lengths.data(), find_results.data(), num_keysetA,
+      max_key_length);
+  cuda_try(cudaDeviceSynchronize());
+  for (std::size_t i = 0; i < num_keysetA; i++) {
+    auto expected_value = input.values[i];
+    auto found_value    = find_results[i];
+    ASSERT_EQ(found_value, expected_value);
+  }
+  // 3. Check all exists
+  map->find(input.keys.data(), max_key_length, input.lengths.data(), find_results.data(), num_keys);
+  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  for (std::size_t i = 0; i < num_keys; i++) {
+    auto expected_value = input.values[i];
+    auto found_value    = find_results[i];
+    ASSERT_EQ(found_value, expected_value);
+  }
+  find_results.free();
+  input.free();
+}
+
 #define DECLARE_TESTS_FOR_KEY_LENGTHS(min_length, max_length) \
 TYPED_TEST(MapTest, Validate##min_length##_##max_length) { \
   validate(this->map_, min_length, max_length); \
@@ -403,6 +439,9 @@ TYPED_TEST(MapTest, EraseAllTwice##min_length##_##max_length) { \
 } \
 TYPED_TEST(MapTest, ConcurrentInsertErase##min_length##_##max_length) { \
   test_concurrentinserterase(this->map_, min_length, max_length); \
+} \
+TYPED_TEST(MapTest, ConcurrentInsertFind##min_length##_##max_length) { \
+  test_concurrentinsertfind(this->map_, min_length, max_length); \
 } \
 
 DECLARE_TESTS_FOR_KEY_LENGTHS(4, 4)
