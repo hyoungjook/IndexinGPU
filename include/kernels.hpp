@@ -25,8 +25,10 @@
 namespace cg = cooperative_groups;
 namespace kernel {
 
+static constexpr auto target_blocks_per_sm = 8;
+
 template <bool do_reclaim, typename device_func, typename index_type>
-__launch_bounds__(index_type::host_reclaimer_type::block_size_)
+__launch_bounds__(index_type::host_reclaimer_type::block_size_, target_blocks_per_sm)
 __global__ void batch_kernel(index_type index,
                              const device_func func,
                              uint32_t num_requests) {
@@ -66,7 +68,7 @@ __global__ void batch_kernel(index_type index,
 }
 
 template <bool do_reclaim, typename device_func0, typename device_func1, typename index_type>
-__launch_bounds__(index_type::host_reclaimer_type::block_size_)
+__launch_bounds__(index_type::host_reclaimer_type::block_size_, target_blocks_per_sm)
 __global__ void batch_concurrent_two_funcs_kernel(index_type index,
                                                   const device_func0 func0,
                                                   uint32_t num_requests0,
