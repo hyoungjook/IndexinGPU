@@ -54,6 +54,7 @@ struct gpu_cuckoohashtable {
   using hashtable_type = gpu_cuckoohashtable<Allocator, Reclaimer>;
   static auto constexpr num_hfs = 4;
   static auto constexpr default_max_fill_factor = 0.9f;
+  static uint32_t constexpr version_counter_size = 8192;
 
   static constexpr value_type invalid_value = std::numeric_limits<value_type>::max();
 
@@ -89,6 +90,7 @@ struct gpu_cuckoohashtable {
   gpu_cuckoohashtable& operator=(const gpu_cuckoohashtable& other) = delete;
   gpu_cuckoohashtable(const gpu_cuckoohashtable& other)
       : d_table_(other.d_table_)
+      , d_versions_(other.d_versions_)
       , is_owner_(false)
       , num_buckets_per_hf_(other.num_buckets_per_hf_)
       , allocator_(other.allocator_)
@@ -261,8 +263,11 @@ struct gpu_cuckoohashtable {
     auto node1 = node_type(d_table_ + (bucket_size * ((hash.y % num_buckets_per_hf_) + (((table_i + 1) % num_hfs) * num_buckets_per_hf_))), tile);
     int location_if_found;
     suffix_type suffix_if_found(tile, allocator);
+    size_type version;
+    if constexpr (concurrent) {
+      version = cuda_memory<size_type, memory_order>::load(d_versions_ + ((first_slice * hash_prime2) % version_counter_size));
+    }
     while (true) {
-      // TODO version check
       #define TRY_GET_KEY_FROM_NODE(node) \
       node.template load<memory_order>(); \
       location_if_found = coop_get_key_location_from_node<concurrent, use_hash_for_longkey>( \
@@ -273,6 +278,13 @@ struct gpu_cuckoohashtable {
       TRY_GET_KEY_FROM_NODE(node0)
       TRY_GET_KEY_FROM_NODE(node1)
       #undef TRY_GET_KEY_FROM_NODE
+      if constexpr (concurrent) {
+        auto new_version = cuda_memory<size_type, memory_order>::load(d_versions_ + ((first_slice * hash_prime2) % version_counter_size));
+        if (version != new_version || (new_version % 2 != 0)) {
+          version = new_version;
+          continue;
+        }
+      }
       break;
     }
     // not found
@@ -389,9 +401,17 @@ struct gpu_cuckoohashtable {
               /*move the element*/ \
               other_node.insert(target_key, target_value, target_suffix); \
               node.erase(__ffs(to_check) - 1); \
+              if (tile.thread_rank() == 0) { \
+                atomicAdd(d_versions_ + ((target_key * hash_prime2) % version_counter_size), 1); \
+              } \
+              __threadfence(); \
               other_node.template store<cuda_memory_order::relaxed>(); \
               __threadfence(); \
               node.template store<cuda_memory_order::relaxed>(); \
+              __threadfence(); \
+              if (tile.thread_rank() == 0) { \
+                atomicAdd(d_versions_ + ((target_key * hash_prime2) % version_counter_size), 1); \
+              } \
               cuckoo_succeed = true; \
             } \
           } \
@@ -728,12 +748,14 @@ struct gpu_cuckoohashtable {
   void allocate() {
     is_owner_ = true;
     cuda_try(cudaMalloc(&d_table_, bucket_bytes * num_buckets_per_hf_ * num_hfs));
+    cuda_try(cudaMalloc(&d_versions_, sizeof(size_type) * version_counter_size));
     initialize();
   }
 
   void deallocate() {
     if (is_owner_) {
       cuda_try(cudaFree(d_table_));
+      cuda_try(cudaFree(d_versions_));
     }
   }
 
@@ -742,6 +764,7 @@ struct gpu_cuckoohashtable {
     const uint32_t block_size = cg_tile_size;
     kernel::GpuHashtable::initialize_kernel<<<num_blocks, block_size>>>(*this);
     cuda_try(cudaDeviceSynchronize());
+    cuda_try(cudaMemset(d_versions_, 0, sizeof(size_type) * version_counter_size));
   }
 
   template <typename device_func>
@@ -783,6 +806,7 @@ struct gpu_cuckoohashtable {
   }
 
   elem_type* d_table_;
+  size_type* d_versions_;
   bool is_owner_;
   size_type num_buckets_per_hf_;
   device_allocator_instance_type allocator_;
