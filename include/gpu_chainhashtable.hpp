@@ -352,15 +352,14 @@ struct gpu_chainhashtable {
       static constexpr uint32_t suffix_offset = use_hash_for_longkey ? 0 : 1;
       suffix.template create_from<true>(key + suffix_offset, key_length - suffix_offset, value);
       suffix.template store_head<true>();
-      __threadfence();
     }
     if (target_node.is_full()) {
       auto next_index = allocator.allocate(tile);
       auto new_node = node_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
       new_node.initialize_empty(false);
       new_node.insert(first_slice, to_insert, more_key);
+      // write order: new_node -> target_node
       new_node.template store<true>();
-      __threadfence();
       target_node.set_next_index(next_index);
       target_node.set_has_next();
     }
@@ -534,7 +533,6 @@ struct gpu_chainhashtable {
       if (node.is_mergeable(next_node)) {
         node.merge(next_node);
         current_node_store_deferred = true;
-        __threadfence();
         reclaimer.retire(next_index, tile);
       }
       else {

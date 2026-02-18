@@ -66,22 +66,32 @@ __host__ __device__ static constexpr uint32_t constexpr_pow(uint32_t base, uint3
 
 namespace memory {
 
-template <typename T, bool atomic>
+template <typename T, bool atomic, bool acquire = false>
 DEVICE_QUALIFIER T load(T* ptr) {
   if constexpr (atomic) {
     cuda::atomic_ref<T, cuda::thread_scope_device> ptr_ref(*ptr);
-    return ptr_ref.load(cuda::memory_order_relaxed);
+    if constexpr (acquire) {
+      return ptr_ref.load(cuda::memory_order_acquire);
+    }
+    else {
+      return ptr_ref.load(cuda::memory_order_relaxed);
+    }
   }
   else {
     return *ptr;
   }
 }
 
-template <typename T, bool atomic>
+template <typename T, bool atomic, bool release = false>
 DEVICE_QUALIFIER void store(T* ptr, T value) {
   if constexpr (atomic) {
     cuda::atomic_ref<T, cuda::thread_scope_device> ptr_ref(*ptr);
-    ptr_ref.store(value, cuda::memory_order_relaxed);
+    if constexpr (release) {
+      ptr_ref.store(value, cuda::memory_order_release);
+    }
+    else {
+      ptr_ref.store(value, cuda::memory_order_relaxed);
+    }
   }
   else {
     *ptr = value;

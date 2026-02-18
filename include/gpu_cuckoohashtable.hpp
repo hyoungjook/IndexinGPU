@@ -264,8 +264,7 @@ struct gpu_cuckoohashtable {
     suffix_type suffix_if_found(tile, allocator);
     size_type version;
     if constexpr (concurrent) {
-      version = utils::memory::load<size_type, true>(d_versions_ + ((first_slice * hash_prime2) % version_counter_size));
-      __threadfence();
+      version = utils::memory::load<size_type, true, true>(d_versions_ + ((first_slice * hash_prime2) % version_counter_size));
     }
     while (true) {
       #define TRY_GET_KEY_FROM_NODE(node) \
@@ -279,11 +278,9 @@ struct gpu_cuckoohashtable {
       TRY_GET_KEY_FROM_NODE(node1)
       #undef TRY_GET_KEY_FROM_NODE
       if constexpr (concurrent) {
-        __threadfence();
-        auto new_version = utils::memory::load<size_type, true>(d_versions_ + ((first_slice * hash_prime2) % version_counter_size));
+        auto new_version = utils::memory::load<size_type, true, true>(d_versions_ + ((first_slice * hash_prime2) % version_counter_size));
         if (version != new_version || (new_version % 2 != 0)) {
           version = new_version;
-          __threadfence();
           continue;
         }
       }
@@ -365,7 +362,6 @@ struct gpu_cuckoohashtable {
             static constexpr uint32_t suffix_offset = use_hash_for_longkey ? 0 : 1; \
             suffix.template create_from<true>(key + suffix_offset, key_length - suffix_offset, value); \
             suffix.template store_head<true>(); \
-            __threadfence(); \
           } \
           node.insert(first_slice, to_insert, more_key); \
           node.template store<true>(); \
@@ -404,15 +400,14 @@ struct gpu_cuckoohashtable {
               other_node.insert(target_key, target_value, target_suffix); \
               node.erase(__ffs(to_check) - 1); \
               if (tile.thread_rank() == 0) { \
-                atomicAdd(d_versions_ + ((target_key * hash_prime2) % version_counter_size), 1); \
+                cuda::atomic_ref<size_type, cuda::thread_scope_device> version_ref(d_versions_[(target_key * hash_prime2) % version_counter_size]); \
+                version_ref.fetch_add(1, cuda::memory_order_release); \
               } \
-              __threadfence(); \
               other_node.template store<true>(); \
-              __threadfence(); \
               node.template store<true>(); \
-              __threadfence(); \
               if (tile.thread_rank() == 0) { \
-                atomicAdd(d_versions_ + ((target_key * hash_prime2) % version_counter_size), 1); \
+                cuda::atomic_ref<size_type, cuda::thread_scope_device> version_ref(d_versions_[(target_key * hash_prime2) % version_counter_size]); \
+                version_ref.fetch_add(1, cuda::memory_order_release); \
               } \
               cuckoo_succeed = true; \
             } \

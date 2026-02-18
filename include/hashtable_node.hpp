@@ -47,14 +47,14 @@ struct hashtable_node {
     write_metadata_to_registers();
   }
 
-  template <bool atomic>
+  template <bool atomic, bool acquire = true>
   DEVICE_QUALIFIER void load() {
-    lane_elem_ = utils::memory::load<elem_type, atomic>(node_ptr_ + tile_.thread_rank());
+    lane_elem_ = utils::memory::load<elem_type, atomic, acquire>(node_ptr_ + tile_.thread_rank());
     read_metadata_from_registers();
   }
-  template <bool atomic>
+  template <bool atomic, bool release = true>
   DEVICE_QUALIFIER void store() {
-    utils::memory::store<elem_type, atomic>(node_ptr_ + tile_.thread_rank(), lane_elem_);
+    utils::memory::store<elem_type, atomic, release>(node_ptr_ + tile_.thread_rank(), lane_elem_);
   }
 
   DEVICE_QUALIFIER void read_metadata_from_registers() {
@@ -139,12 +139,12 @@ struct hashtable_node {
   static DEVICE_QUALIFIER bool try_lock(elem_type* bucket_ptr, const tile_type& tile) {
     elem_type old;
     if (tile.thread_rank() == metadata_lane_) {
-      old = atomicOr(reinterpret_cast<elem_type*>(&bucket_ptr[metadata_lane_]),
-                     static_cast<elem_type>(lock_bit_mask_));
+      cuda::atomic_ref<elem_type, cuda::thread_scope_device> metadata_ref(bucket_ptr[metadata_lane_]);
+      old = metadata_ref.fetch_or(lock_bit_mask_, cuda::memory_order_relaxed);
     }
     old = tile.shfl(old, metadata_lane_);
     bool is_locked = (old & lock_bit_mask_) == 0; // if previously not locked, now it's locked
-    if (is_locked) { __threadfence(); }
+    if (is_locked) { cuda::atomic_thread_fence(cuda::memory_order_acquire, cuda::thread_scope_device); }
     return is_locked;
   }
   static DEVICE_QUALIFIER void lock(elem_type* bucket_ptr, const tile_type& tile) {
@@ -152,10 +152,9 @@ struct hashtable_node {
   }
   static DEVICE_QUALIFIER void unlock(elem_type* bucket_ptr, const tile_type& tile) {
     // unlock, only using the pointer, not load the entire register
-    __threadfence();
     if (tile.thread_rank() == metadata_lane_) {
-      atomicAnd(reinterpret_cast<elem_type*>(&bucket_ptr[metadata_lane_]),
-                static_cast<elem_type>(~lock_bit_mask_));
+      cuda::atomic_ref<elem_type, cuda::thread_scope_device> metadata_ref(bucket_ptr[metadata_lane_]);
+      metadata_ref.fetch_and(~lock_bit_mask_, cuda::memory_order_release);
     }
   }
 
