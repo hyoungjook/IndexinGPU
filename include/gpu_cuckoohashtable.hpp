@@ -264,6 +264,7 @@ struct gpu_cuckoohashtable {
     suffix_type suffix_if_found(tile, allocator);
     size_type version;
     if constexpr (concurrent) {
+      tile.sync();
       version = utils::memory::load<size_type, true, true>(d_versions_ + ((first_slice * hash_prime2) % version_counter_size));
     }
     while (true) {
@@ -278,6 +279,7 @@ struct gpu_cuckoohashtable {
       TRY_GET_KEY_FROM_NODE(node1)
       #undef TRY_GET_KEY_FROM_NODE
       if constexpr (concurrent) {
+        tile.sync();
         auto new_version = utils::memory::load<size_type, true, true>(d_versions_ + ((first_slice * hash_prime2) % version_counter_size));
         if (version != new_version || (new_version % 2 != 0)) {
           version = new_version;
@@ -337,7 +339,7 @@ struct gpu_cuckoohashtable {
           if (update_if_exists) { \
             if (more_key) { \
               suffix_if_found.update_value(value); \
-              suffix_if_found.template store_head<true>(); \
+              suffix_if_found.store_head(); \
             } \
             else { \
               node.update(location_if_found, value); \
@@ -360,8 +362,8 @@ struct gpu_cuckoohashtable {
             auto suffix = suffix_type( \
                 reinterpret_cast<elem_type*>(allocator.address(to_insert)), to_insert, tile, allocator); \
             static constexpr uint32_t suffix_offset = use_hash_for_longkey ? 0 : 1; \
-            suffix.template create_from<true>(key + suffix_offset, key_length - suffix_offset, value); \
-            suffix.template store_head<true>(); \
+            suffix.create_from(key + suffix_offset, key_length - suffix_offset, value); \
+            suffix.store_head(); \
           } \
           node.insert(first_slice, to_insert, more_key); \
           node.template store<true>(); \
@@ -454,7 +456,7 @@ struct gpu_cuckoohashtable {
       node.erase(location_if_found); \
       node.template store<true>(); \
       if (more_key) { \
-        suffix_if_found.template retire<true>(reclaimer); \
+        suffix_if_found.retire(reclaimer); \
       } \
       node_type::unlock(node0.get_node_ptr(), tile); \
       node_type::unlock(node1.get_node_ptr(), tile); \
@@ -494,9 +496,9 @@ struct gpu_cuckoohashtable {
         auto suffix_index = node.get_value_from_location(cur_location);
         auto suffix = suffix_type(
             reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
-        suffix.template load_head<concurrent>();
+        suffix.load_head();
         static constexpr uint32_t suffix_offset = use_hash_for_longkey ? 0 : 1;
-        if (suffix.template streq<concurrent>(key + suffix_offset, key_length - suffix_offset)) {
+        if (suffix.streq(key + suffix_offset, key_length - suffix_offset)) {
           // found
           suffix_if_found = suffix;
           return cur_location;
@@ -530,7 +532,7 @@ struct gpu_cuckoohashtable {
       auto suffix_index = node.get_value_from_location(location);
       auto suffix = suffix_type(
         reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
-      suffix.template load_head<true>();
+      suffix.load_head();
       hash = compute_hashx2_for_suffix<use_hash_for_longkey, true>(
         suffix, use_hash_for_longkey ? 0 : node.get_key_from_location(location), tile);
     }
@@ -637,7 +639,7 @@ struct gpu_cuckoohashtable {
                                                    const key_slice_type& first_slice,
                                                    const tile_type& tile) {
     // compute polynomial
-    uint2 hash = suffix.template compute_polynomial<hash_prime0, hash_prime1, atomic>();
+    uint2 hash = suffix.template compute_polynomial<hash_prime0, hash_prime1>();
     if constexpr (!use_hash_for_longkey) {
       hash.x = (hash.x * hash_prime0) + first_slice;
       hash.y = (hash.y * hash_prime1) + first_slice;
@@ -708,7 +710,7 @@ struct gpu_cuckoohashtable {
           auto suffix_index = node.get_value_from_location(i);
           auto suffix = suffix_node<tile_type, device_allocator_context_type>(
               reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
-          suffix.template load_head<false>();
+          suffix.load_head();
           num_suffix_nodes_ += suffix.get_num_nodes();
         }
       }

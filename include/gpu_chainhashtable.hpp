@@ -333,7 +333,7 @@ struct gpu_chainhashtable {
       if (update_if_exists) {
         if (more_key) {
           suffix_if_found.update_value(value);
-          suffix_if_found.template store_head<true>();
+          suffix_if_found.store_head();
         }
         else {
           target_node.update(location_if_found, value);
@@ -350,8 +350,8 @@ struct gpu_chainhashtable {
       auto suffix = suffix_type(
           reinterpret_cast<elem_type*>(allocator.address(to_insert)), to_insert, tile, allocator);
       static constexpr uint32_t suffix_offset = use_hash_for_longkey ? 0 : 1;
-      suffix.template create_from<true>(key + suffix_offset, key_length - suffix_offset, value);
-      suffix.template store_head<true>();
+      suffix.create_from(key + suffix_offset, key_length - suffix_offset, value);
+      suffix.store_head();
     }
     if (target_node.is_full()) {
       auto next_index = allocator.allocate(tile);
@@ -407,7 +407,7 @@ struct gpu_chainhashtable {
       target_node.erase(location_if_found);
       target_node.template store<true>();
       if (more_key) {
-        suffix_if_found.template retire<true>(reclaimer);
+        suffix_if_found.retire(reclaimer);
       }
       node_type::unlock(bucket_ptr_of(bucket_index), tile);
       return true;
@@ -446,9 +446,9 @@ struct gpu_chainhashtable {
           auto suffix_index = node.get_value_from_location(cur_location);
           auto suffix = suffix_type(
               reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
-          suffix.template load_head<concurrent>();
+          suffix.load_head();
           static constexpr uint32_t suffix_offset = use_hash_for_longkey ? 0 : 1;
-          if (suffix.template streq<concurrent>(key + suffix_offset, key_length - suffix_offset)) {
+          if (suffix.streq(key + suffix_offset, key_length - suffix_offset)) {
             // found
             location_if_found = cur_location;
             suffix_if_found = suffix;
@@ -500,9 +500,9 @@ struct gpu_chainhashtable {
           auto suffix_index = node.get_value_from_location(cur_location);
           auto suffix = suffix_type(
               reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
-          suffix.template load_head<true>();
+          suffix.load_head();
           static constexpr uint32_t suffix_offset = use_hash_for_longkey ? 0 : 1;
-          if (suffix.template streq<true>(key + suffix_offset, key_length - suffix_offset)) {
+          if (suffix.streq(key + suffix_offset, key_length - suffix_offset)) {
             // found
             location_if_found = cur_location;
             suffix_if_found = suffix;
@@ -693,7 +693,7 @@ struct gpu_chainhashtable {
           auto suffix_index = node.get_value_from_location(i);
           auto suffix = suffix_node<tile_type, device_allocator_context_type>(
               reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
-          suffix.template load_head<false>();
+          suffix.load_head();
           num_suffix_nodes_ += suffix.get_num_nodes();
         }
       }

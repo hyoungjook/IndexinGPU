@@ -145,8 +145,7 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
     // add to current limbo bag
     if (tile.thread_rank() == 0) {
       auto cur_bag = current_bag();
-      cuda::atomic_ref<size_type, cuda::thread_scope_block> count_per_bag_ref(count_per_bag()[cur_bag]);
-      auto num_in_bag = count_per_bag_ref.fetch_add(1, cuda::memory_order_relaxed);
+      auto num_in_bag = atomicAdd(count_per_bag() + cur_bag, 1);
       #ifdef RECLAIMER_DEBUG
       atomicAdd(&reclaimer_.stats_->num_retires, 1ull);
       atomicMax(&reclaimer_.stats_->max_bag_size, num_in_bag + 1);
@@ -172,9 +171,7 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
   template <typename block_type, typename allocator_type>
   DEVICE_QUALIFIER void begin_critical_section(const block_type& block, allocator_type& allocator) {
     block.sync();
-
-    cuda::atomic_ref<size_type, cuda::thread_scope_device> cur_epoch_ref(*reclaimer_.current_epoch_);
-    auto cur_epoch = cur_epoch_ref.load(cuda::memory_order_acquire);
+    size_type cur_epoch;
     if (try_update_global_announce(block, cur_epoch, critical_bit_mask_, 0)) {
       reclaim_and_switch_limbo_bag(block, allocator);
     }
@@ -206,8 +203,7 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
       if (tile.all(bag_empty)) { return; }
 
       // try announcing
-      cuda::atomic_ref<size_type, cuda::thread_scope_device> cur_epoch_ref(*reclaimer_.current_epoch_);
-      auto cur_epoch = cur_epoch_ref.load(cuda::memory_order_acquire);
+      size_type cur_epoch;
       if (try_update_global_announce(tile, cur_epoch, 0, 0)) {
         reclaim_and_switch_limbo_bag(tile, allocator);
       }
@@ -217,9 +213,11 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
 
 private:
   template <typename tile_type>
-  DEVICE_QUALIFIER bool try_update_global_announce(const tile_type& tile, size_type cur_epoch, size_type new_mask, size_type old_mask) {
+  DEVICE_QUALIFIER bool try_update_global_announce(const tile_type& tile, size_type& cur_epoch, size_type new_mask, size_type old_mask) {
     bool epoch_advanced = false;
     if (tile.thread_rank() == 0) {
+      cuda::atomic_ref<size_type, cuda::thread_scope_device> cur_epoch_ref(*reclaimer_.current_epoch_);
+      cur_epoch = cur_epoch_ref.load(cuda::memory_order_acquire);
       cuda::atomic_ref<size_type, cuda::thread_scope_device> announce_ref(reclaimer_.announce_[blockIdx.x]);
       auto old_epoch = announce_ref.exchange(cur_epoch | new_mask, cuda::memory_order_acquire);
       assert((old_epoch & critical_bit_mask_) == old_mask);

@@ -131,11 +131,8 @@ struct hashtable_node {
 
   DEVICE_QUALIFIER elem_type* get_node_ptr() const { return node_ptr_; }
   static DEVICE_QUALIFIER bool is_locked(elem_type* bucket_ptr, const tile_type& tile) {
-    elem_type metadata;
-    if (tile.thread_rank() == metadata_lane_) {
-      metadata = utils::memory::load<elem_type, true>(bucket_ptr + metadata_lane_);
-    }
-    metadata = tile.shfl(metadata, metadata_lane_);
+    tile.sync();
+    auto metadata = utils::memory::load<elem_type, true>(bucket_ptr + metadata_lane_);
     return static_cast<bool>(metadata & lock_bit_mask_);
   }
   static DEVICE_QUALIFIER bool try_lock(elem_type* bucket_ptr, const tile_type& tile) {
@@ -282,7 +279,7 @@ struct hashtable_node {
         elem_type suffix_index = tile_.shfl(lane_elem_, get_value_lane_from_location(i));
         auto suffix = suffix_node<tile_type, allocator_type>(
             reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile_, allocator);
-        suffix.template load_head<false>();
+        suffix.load_head();
         suffix.print();
       }
     }

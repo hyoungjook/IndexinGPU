@@ -322,8 +322,8 @@ struct gpu_masstree {
       if (found_keystate == node_type::KEYSTATE_SUFFIX) {
         auto suffix = suffix_type(
             reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile, allocator);
-        suffix.template load_head<concurrent>();
-        const bool suffix_eq = suffix.template streq<concurrent>(key + slice + 1, key_length - slice - 1);
+        suffix.load_head();
+        const bool suffix_eq = suffix.streq(key + slice + 1, key_length - slice - 1);
         return suffix_eq ? suffix.get_value() : invalid_value;
       }
       else {  // keystate == LINK or VALUE
@@ -383,7 +383,7 @@ struct gpu_masstree {
         if (border_node.is_garbage()) { scan_op = -1; }
         else {
           // scan a node and store outputs
-          uint32_t count = border_node.template scan<use_upper_key, concurrent>(
+          uint32_t count = border_node.template scan<use_upper_key>(
               lower_key_slice, lower_key_more, lower_key, lower_key_length, passed_lower_key,
               upper_key_slice, upper_key_more, upper_key, upper_key_length, ignore_upper_key,
               out_max_count, scan_op, out_value, out_keys, out_key_lengths, layer, out_key_max_length, allocator);
@@ -554,14 +554,14 @@ struct gpu_masstree {
         else if constexpr (enable_suffix) { // node_type::KEYSTATE_SUFFIX
           auto suffix = suffix_type(
               reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile, allocator);
-          suffix.template load_head<true>();
+          suffix.load_head();
           key_slice_type mismatch_suffix_slice;
-          int cmp = suffix.template strcmp<true>(key + slice + 1, key_length - slice - 1, &mismatch_suffix_slice);
+          int cmp = suffix.strcmp(key + slice + 1, key_length - slice - 1, &mismatch_suffix_slice);
           if (cmp == 0) { // already exists
             if (update_if_exists) {
               // protected by border_node.lock()
               suffix.update_value(value);
-              suffix.template store_head<true>();
+              suffix.store_head();
               border_node.unlock();
               return true;
             }
@@ -593,14 +593,14 @@ struct gpu_masstree {
             assert(num_matches < suffix.get_key_length());
             if (num_matches == suffix.get_key_length() - 1) {
               doubleton_node.insert(mismatch_suffix_slice, suffix.get_value(), node_type::KEYSTATE_VALUE);
-              suffix.template retire<true>(reclaimer);
+              suffix.retire(reclaimer);
             }
             else {
               auto new_suffix_index = allocator.allocate(tile);
               auto new_suffix = suffix_type(
                   reinterpret_cast<elem_type*>(allocator.address(new_suffix_index)), new_suffix_index, tile, allocator);
-              new_suffix.template move_from<true>(suffix, num_matches + 1, reclaimer);
-              new_suffix.template store_head<true>();
+              new_suffix.move_from(suffix, num_matches + 1, reclaimer);
+              new_suffix.store_head();
               doubleton_node.insert(mismatch_suffix_slice, new_suffix_index, node_type::KEYSTATE_SUFFIX);
             }
             // insert suffix of this key
@@ -612,8 +612,8 @@ struct gpu_masstree {
               current_node_index = allocator.allocate(tile);
               suffix = suffix_type(
                   reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile, allocator);
-              suffix.template create_from<true>(key + slice + 1, key_length - slice - 1, value);
-              suffix.template store_head<true>();
+              suffix.create_from(key + slice + 1, key_length - slice - 1, value);
+              suffix.store_head();
               doubleton_node.insert(key[slice], current_node_index, node_type::KEYSTATE_SUFFIX);
             }
             doubleton_node.template store<true, false>();
@@ -628,8 +628,8 @@ struct gpu_masstree {
             current_node_index = allocator.allocate(tile);
             auto suffix = suffix_type(
                 reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile, allocator);
-            suffix.template create_from<true>(key + slice + 1, key_length - slice - 1, value);
-            suffix.template store_head<true>();
+            suffix.create_from(key + slice + 1, key_length - slice - 1, value);
+            suffix.store_head();
             keystate = node_type::KEYSTATE_SUFFIX;
           }
           else {
@@ -734,8 +734,8 @@ struct gpu_masstree {
         else {  // KEYSTATE_SUFFIX
           auto suffix = suffix_type(
               reinterpret_cast<elem_type*>(allocator.address(next_index)), next_index, tile, allocator);
-          suffix.template load_head<concurrent>();
-          const bool suffix_eq = suffix.template streq<concurrent>(key + slice + 1, key_length - slice - 1);
+          suffix.load_head();
+          const bool suffix_eq = suffix.streq(key + slice + 1, key_length - slice - 1);
           if (suffix_eq) {
             // key exists, erase suffix value and mark suffix nodes garbage
             if (do_merge && border_node.is_underflow()) {
@@ -785,7 +785,7 @@ struct gpu_masstree {
               }
             }
             border_node.store_unlock();
-            suffix.template retire<concurrent>(reclaimer);
+            suffix.retire(reclaimer);
           }
           else {
             if (border_node_locked_by_me) { border_node.unlock(); }
@@ -1354,7 +1354,7 @@ struct gpu_masstree {
             auto suffix_index = node.get_value_from_location(i);
             auto suffix = suffix_node<tile_type, device_allocator_context_type>(
                 reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
-            suffix.template load_head<false>();
+            suffix.load_head();
             num_suffix_nodes_ += suffix.get_num_nodes();
           }
           before_key = key;

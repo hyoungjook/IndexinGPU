@@ -82,6 +82,7 @@ struct masstree_node {
     if (tile_.thread_rank() == metadata_lane_) {
       lane_elem_ &= ~lock_bit_mask_;
     }
+    tile_.sync();
     utils::memory::store<elem_type, true, true>(node_ptr_ + tile_.thread_rank(), lane_elem_);
   }
 
@@ -287,7 +288,7 @@ struct masstree_node {
   DEVICE_QUALIFIER bool cmp_key(const key_type& k1, bool morekey1, const key_type& k2, bool morekey2) const {
     return (k1 < k2) || ((k1 == k2) && (static_cast<int>(morekey1) <= static_cast<int>(morekey2)));
   }
-  template <bool use_upper_key, bool atomic, typename allocator_type>
+  template <bool use_upper_key, typename allocator_type>
   DEVICE_QUALIFIER uint32_t scan(const key_type& lower_key_slice,
                                  const bool lower_key_more,
                                  const key_type* lower_key,         // original argument
@@ -330,8 +331,8 @@ struct masstree_node {
       if (same_slice && first_keystate == KEYSTATE_SUFFIX) {
         auto suffix_index = get_value_from_location(first_location);
         auto suffix = suffix_type(reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile_, allocator);
-        suffix.template load_head<atomic>();
-        if (suffix.template strcmp<atomic>(lower_key + layer + 1, lower_key_length - layer - 1) > 0) {
+        suffix.load_head();
+        if (suffix.strcmp(lower_key + layer + 1, lower_key_length - layer - 1) > 0) {
           if (tile_.thread_rank() == first_location) { in_range = false; }
           in_range_ballot = tile_.ballot(in_range);
           if (in_range_ballot == 0) {
@@ -355,8 +356,8 @@ struct masstree_node {
           get_keystate_from_location(last_location - 1) == KEYSTATE_SUFFIX) {
         auto suffix_index = get_value_from_location(last_location - 1);
         auto suffix = suffix_type(reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile_, allocator);
-        suffix.template load_head<atomic>();
-        if (suffix.template strcmp<atomic>(upper_key + layer + 1, upper_key_length - layer - 1) < 0) {
+        suffix.load_head();
+        if (suffix.strcmp(upper_key + layer + 1, upper_key_length - layer - 1) < 0) {
           last_location--;
         }
       }
@@ -377,7 +378,7 @@ struct masstree_node {
         if (in_range) {
           out_value[tile_.thread_rank() - first_location] =
             (keystate_ != KEYSTATE_SUFFIX) ? values_to_key_lanes :
-              suffix_type::fetch_value_only<atomic>(values_to_key_lanes, allocator);
+              suffix_type::fetch_value_only(values_to_key_lanes, allocator);
         }
       }
       if (out_key_lengths) {
@@ -385,7 +386,7 @@ struct masstree_node {
         if (in_range) {
           out_key_lengths[tile_.thread_rank() - first_location] =
             layer + 1 + ((keystate_ != KEYSTATE_SUFFIX) ? 0 :
-              suffix_type::fetch_length_only<atomic>(values_to_key_lanes, allocator));
+              suffix_type::fetch_length_only(values_to_key_lanes, allocator));
         }
       }
       if (out_keys) {
@@ -400,8 +401,8 @@ struct masstree_node {
           auto cur_location = __ffs(flush_queue) - 1;
           auto suffix_index = get_value_from_location(cur_location);
           auto suffix = suffix_type(reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile_, allocator);
-          suffix.template load_head<atomic>();
-          suffix.template flush<atomic>(out_keys + ((cur_location - first_location) * out_key_max_length + layer + 1));
+          suffix.load_head();
+          suffix.flush(out_keys + ((cur_location - first_location) * out_key_max_length + layer + 1));
           if (tile_.thread_rank() == cur_location) { to_flush = false; }
           flush_queue = tile_.ballot(to_flush);
         }
@@ -872,7 +873,7 @@ struct masstree_node {
         elem_type suffix_index = tile_.shfl(lane_elem_, get_value_lane_from_location(i));
         auto suffix = suffix_node<tile_type, allocator_type>(
             reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile_, allocator);
-        suffix.template load_head<false>();
+        suffix.load_head();
         suffix.print();
       }
     }
