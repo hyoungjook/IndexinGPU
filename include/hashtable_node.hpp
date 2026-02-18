@@ -49,11 +49,13 @@ struct hashtable_node {
 
   template <bool atomic, bool acquire = true>
   DEVICE_QUALIFIER void load() {
+    if constexpr (atomic) { tile_.sync(); }
     lane_elem_ = utils::memory::load<elem_type, atomic, acquire>(node_ptr_ + tile_.thread_rank());
     read_metadata_from_registers();
   }
   template <bool atomic, bool release = true>
   DEVICE_QUALIFIER void store() {
+    if constexpr (atomic) { tile_.sync(); }
     utils::memory::store<elem_type, atomic, release>(node_ptr_ + tile_.thread_rank(), lane_elem_);
   }
 
