@@ -55,10 +55,9 @@ struct gpu_linearhashtable {
 
   static constexpr value_type invalid_value = std::numeric_limits<value_type>::max();
 
-  // TODO adjust
   static constexpr size_type max_directory_size = 128 * 1024 * 1024; // 0.5GB
+  static constexpr size_type initial_directory_size = 128 * 1024;
   static constexpr size_type directory_delta = 128;
-  static constexpr float load_factor_threshold = 1.0f;
 
   using host_allocator_type = Allocator;
   using device_allocator_instance_type = typename host_allocator_type::device_instance_type;
@@ -335,29 +334,7 @@ struct gpu_linearhashtable {
       bucket_index_hash = compute_hash(key, key_length, tile);
       first_slice = key[0];
     }
-    // check load factor
     size_type directory_size = d_global_state_->template load_directory_size<true>();
-    if ((load_factor_threshold < (
-          static_cast<float>(d_global_state_->load_num_entries()) / 15.0f / directory_size)) &&
-        (directory_size + directory_delta <= max_directory_size)) {
-      // extend directory
-      // if global state is already locked, someone else is already splitting so move on
-      if (d_global_state_->try_lock(tile)) {
-        directory_size = d_global_state_->template load_directory_size<true>();
-        auto new_directory_size = directory_size + directory_delta;
-        size_type copy_from = 1u << (compute_global_depth(new_directory_size) - 1);
-        // copy pointers to new directory
-        for (size_type bucket = directory_size; bucket < new_directory_size; bucket += 32) {
-          if (bucket + tile.thread_rank() < new_directory_size) {
-            d_directory_[bucket + tile.thread_rank()] = d_directory_[bucket - copy_from + tile.thread_rank()];
-          }
-        }
-        // publish new directory
-        directory_size = new_directory_size;
-        d_global_state_->template store_directory_size<true>(directory_size);
-        d_global_state_->unlock(tile);
-      }
-    }
     suffix_type suffix_if_found(tile, allocator);
     while (true) {
       size_type bucket_index = get_bucket_index(bucket_index_hash, directory_size);
@@ -412,11 +389,26 @@ struct gpu_linearhashtable {
       node.template store_to_allocator<true>();
       // check if chain is too long (not one)
       if (!node.is_head()) {
+        // extend directory if not locked
+        if (d_global_state_->try_lock(tile)) {
+          directory_size = d_global_state_->template load_directory_size<true>();
+          auto new_directory_size = directory_size + directory_delta;
+          size_type copy_from = 1u << (compute_global_depth(new_directory_size) - 1);
+          // copy pointers to new directory
+          for (size_type bucket = directory_size; bucket < new_directory_size; bucket += 32) {
+            if (bucket + tile.thread_rank() < new_directory_size) {
+              d_directory_[bucket + tile.thread_rank()] = d_directory_[bucket - copy_from + tile.thread_rank()];
+            }
+          }
+          // publish new directory
+          directory_size = new_directory_size;
+          d_global_state_->template store_directory_size<true>(directory_size);
+          d_global_state_->unlock(tile);
+        }
         // check if split is possible
         auto local_depth = node.get_local_depth();
           // first bucket that points to this node
         auto first_bucket_index = bucket_index & ((1u << local_depth) - 1);
-        directory_size = d_global_state_->template load_directory_size<true>();
         if ((first_bucket_index ^ (1u << local_depth)) < directory_size) {
           // do split!
           node = node_type(head_index, tile, allocator);
@@ -429,8 +421,8 @@ struct gpu_linearhashtable {
           auto new_node1_index = allocator.allocate(tile);
           auto new_node0 = node_type(new_node0_index, tile, allocator);
           auto new_node1 = node_type(new_node1_index, tile, allocator);
-          new_node0.initialize_empty(true, local_depth + 1, true);
-          new_node1.initialize_empty(true, local_depth + 1, true);
+          new_node0.initialize_empty(true, local_depth + 1);
+          new_node1.initialize_empty(true, local_depth + 1);
           // split
           while (true) {
             for (uint32_t loc = 0; loc < node.num_keys(); loc++) {
@@ -492,14 +484,10 @@ struct gpu_linearhashtable {
             utils::memory::store<size_type, true, true>(d_directory_ + index, new_node_index);
           }
           d_global_state_->unlock(tile);
-          node_type::unlock(new_node0_index, tile, allocator);
-          node_type::unlock(new_node1_index, tile, allocator);
+          reclaimer.retire(head_index, tile);
         }
       }
       node_type::unlock(head_index, tile, allocator);
-      reclaimer.retire(head_index, tile);
-      // increment counter
-      d_global_state_->template increment_num_entries<1>(tile);
       return true;
     }
     assert(false);
@@ -555,8 +543,6 @@ struct gpu_linearhashtable {
           suffix_if_found.retire(reclaimer);
         }
         node_type::unlock(head_index, tile, allocator);
-        // decrement counter
-        d_global_state_->template increment_num_entries<-1>(tile);
         return true;
       }
       // not exists
@@ -578,12 +564,10 @@ struct gpu_linearhashtable {
   struct __align__(128) global_state {
     size_type mutex_;
     size_type directory_size_;
-    size_type num_entries_;
 
     DEVICE_QUALIFIER global_state(size_type initial_directory_size)
         : directory_size_(initial_directory_size)
-        , mutex_(0)
-        , num_entries_(0) {}
+        , mutex_(0) {}
     
     template <bool atomic, bool acquire = true>
     DEVICE_QUALIFIER size_type load_directory_size() {
@@ -592,21 +576,6 @@ struct gpu_linearhashtable {
     template <bool atomic, bool release = true>
     DEVICE_QUALIFIER void store_directory_size(size_type directory_size) {
       utils::memory::store<size_type, atomic, release>(&directory_size_, directory_size);
-    }
-    DEVICE_QUALIFIER size_type load_num_entries() {
-      return utils::memory::load<size_type, true, false>(&num_entries_);
-    }
-    template <int amount, typename tile_type>
-    DEVICE_QUALIFIER void increment_num_entries(const tile_type& tile) {
-      if (tile.thread_rank() == 0) {
-        cuda::atomic_ref<size_type, cuda::thread_scope_device> num_entries_ref(num_entries_);
-        if constexpr (amount >= 0) {
-          num_entries_ref.fetch_add(static_cast<size_type>(amount), cuda::memory_order_relaxed);
-        }
-        else {
-          num_entries_ref.fetch_sub(static_cast<size_type>(-amount), cuda::memory_order_relaxed);
-        }
-      }
     }
     template <typename tile_type>
     DEVICE_QUALIFIER bool try_lock(const tile_type& tile) {
@@ -972,13 +941,13 @@ struct gpu_linearhashtable {
     using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     // global state
     if (bucket_index == 0) {
-      *d_global_state_ = global_state(directory_delta);
+      *d_global_state_ = global_state(initial_directory_size);
     }
     // allocate node
     auto node_index = allocator.allocate(tile);
     auto node = node_type(node_index, tile, allocator);
     // initial local depth = initial global depth of initial directory size
-    node.initialize_empty(true, compute_global_depth(directory_delta));
+    node.initialize_empty(true, compute_global_depth(initial_directory_size));
     node.template store_to_allocator<false>();
     d_directory_[bucket_index] = node_index;
   }
@@ -998,7 +967,7 @@ struct gpu_linearhashtable {
   }
 
   void initialize() {
-    const uint32_t num_blocks = directory_delta;
+    const uint32_t num_blocks = initial_directory_size;
     const uint32_t block_size = cg_tile_size;
     kernel::GpuLinearHashtable::initialize_kernel<<<num_blocks, block_size>>>(*this);
     cuda_try(cudaDeviceSynchronize());

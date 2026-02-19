@@ -36,7 +36,7 @@ struct hashtable_node {
   {
     assert(tile_.size() == 2 * node_width);
   }
-  DEVICE_QUALIFIER void initialize_empty(bool is_head, size_type local_depth = 0, bool locked = false) {
+  DEVICE_QUALIFIER void initialize_empty(bool is_head, size_type local_depth = 0) {
     lane_elem_ = 0;
     metadata_ = (
       (0u << num_keys_offset_) |  // num_keys = 0;
@@ -45,7 +45,6 @@ struct hashtable_node {
     );
     if (is_head) { metadata_ |= head_bit_mask_; }
     metadata_ |= (local_depth << local_depth_bits_offset_);
-    if (locked) { metadata_ |= lock_bit_mask_; }
     write_metadata_to_registers();
   }
 

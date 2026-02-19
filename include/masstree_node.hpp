@@ -68,16 +68,16 @@ struct masstree_node {
 
   template <bool atomic, bool acquire = true>
   DEVICE_QUALIFIER void load() {
-    if constexpr (atomic) { tile_.sync(); }
     auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
+    if constexpr (atomic) { tile_.sync(); }
     lane_elem_ = utils::memory::load<elem_type, atomic, acquire>(node_ptr + tile_.thread_rank());
     if constexpr (atomic) { tile_.sync(); }
     read_metadata_from_registers();
   }
   template <bool atomic, bool release = true>
   DEVICE_QUALIFIER void store() {
-    if constexpr (atomic) { tile_.sync(); }
     auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
+    if constexpr (atomic) { tile_.sync(); }
     utils::memory::store<elem_type, atomic, release>(node_ptr + tile_.thread_rank(), lane_elem_);
     if constexpr (atomic) { tile_.sync(); }
   }
@@ -87,8 +87,8 @@ struct masstree_node {
     if (tile_.thread_rank() == metadata_lane_) {
       lane_elem_ &= ~lock_bit_mask_;
     }
-    tile_.sync();
     auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
+    tile_.sync();
     utils::memory::store<elem_type, true, true>(node_ptr + tile_.thread_rank(), lane_elem_);
     tile_.sync();
   }
