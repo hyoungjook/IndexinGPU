@@ -740,7 +740,7 @@ struct gpu_cuckoohashtable {
                                           const tile_type& tile) {
     using node_type = hashtable_node<tile_type>;
     auto node = node_type(d_table_ + (bucket_index * bucket_size), tile);
-    node.initialize_empty(true);
+    node.initialize_empty();
     node.template store<false>();
   }
 

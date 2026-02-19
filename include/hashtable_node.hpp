@@ -35,15 +35,25 @@ struct hashtable_node {
   {
     assert(tile_.size() == 2 * node_width);
   }
-  DEVICE_QUALIFIER void initialize_empty(bool is_head) {
+  DEVICE_QUALIFIER void initialize_empty() {
     lane_elem_ = 0;
     metadata_ = (
       (0u << num_keys_offset_) |  // num_keys = 0;
       (0u & lock_bit_mask_) |     // is_locked = false;
       (0u & next_bit_mask_) |     // has_next = false;
-      (0u & head_bit_mask_)       // is_head = false;
+      (0u & garbage_bit_mask_)    // is_garbage = false;
     );
-    if (is_head) { metadata_ |= head_bit_mask_; }
+    write_metadata_to_registers();
+  }
+  DEVICE_QUALIFIER void initialize_empty(size_type local_depth) {
+    lane_elem_ = 0;
+    metadata_ = (
+      (0u << num_keys_offset_) |  // num_keys = 0;
+      (0u & lock_bit_mask_) |     // is_locked = false;
+      (0u & next_bit_mask_) |     // has_next = false;
+      (0u & garbage_bit_mask_)    // is_garbage = false;
+    );
+    metadata_ |= (local_depth << local_depth_bits_offset_);
     write_metadata_to_registers();
   }
 
@@ -127,8 +137,19 @@ struct hashtable_node {
   DEVICE_QUALIFIER void set_next_index(const value_type& index) {
     if (tile_.thread_rank() == next_ptr_lane_) { lane_elem_ = index; }
   }
-  DEVICE_QUALIFIER bool is_head() const {
-    return static_cast<bool>(metadata_ & head_bit_mask_);
+  DEVICE_QUALIFIER bool is_garbage() const {
+    return static_cast<bool>(metadata_ & garbage_bit_mask_);
+  }
+  DEVICE_QUALIFIER void make_garbage() {
+    metadata_ |= garbage_bit_mask_;
+    write_metadata_to_registers();
+  }
+  DEVICE_QUALIFIER size_type get_local_depth() const {
+    return ((metadata_ & local_depth_bits_mask_) >> local_depth_bits_offset_);
+  }
+  DEVICE_QUALIFIER void set_local_depth(size_type local_depth) {
+    metadata_ |= (local_depth << local_depth_bits_offset_);
+    write_metadata_to_registers();
   }
 
   DEVICE_QUALIFIER elem_type* get_node_ptr() const { return node_ptr_; }
@@ -297,12 +318,15 @@ struct hashtable_node {
 
   // metadata is 32bits.
   //    (MSB)
-  //    [empty:10]
+  //    [empty:4]
+  //    [local_depth:6]
   //    [key_suffix_bits_per_key:15]
-  //    [is_head:1]
+  //    [is_garbage:1]
   //    [has_next:1][is_locked:1]
   //    [num_keys:4]
   //    (LSB)
+  //  - local_depth, is_garbage, is_locked are only valid for head nodes
+
   static_assert(sizeof(elem_type) == sizeof(uint32_t));
   static constexpr uint32_t metadata_lane_ = node_width - 1;
   static constexpr uint32_t next_ptr_lane_ = node_width * 2 - 1;
@@ -313,11 +337,14 @@ struct hashtable_node {
   static constexpr uint32_t lock_bit_mask_ = 1u << lock_bit_offset_;
   static constexpr uint32_t next_bit_offset_ = 5;
   static constexpr uint32_t next_bit_mask_ = 1u << next_bit_offset_;
-  static constexpr uint32_t head_bit_offset_ = 6;
-  static constexpr uint32_t head_bit_mask_ = 1u << head_bit_offset_;
+  static constexpr uint32_t garbage_bit_offset_ = 6;
+  static constexpr uint32_t garbage_bit_mask_ = 1u << garbage_bit_offset_;
   static constexpr uint32_t suffix_bits_offset_ = 7;
   static constexpr uint32_t suffix_bits_bits_ = 15;
   static constexpr uint32_t suffix_bits_mask_ = ((1u << suffix_bits_bits_) - 1) << suffix_bits_offset_;
+  static constexpr uint32_t local_depth_bits_offset_ = 22;
+  static constexpr uint32_t local_depth_bits_bits_ = 6;
+  static constexpr uint32_t local_depth_bits_mask_ = ((1u << local_depth_bits_bits_) - 1) << local_depth_bits_offset_;
   static constexpr uint32_t max_num_keys_ = node_width - 1;
   static_assert(num_keys_offset_ == 0); // this allows (metadata +/- N) equivalent to (num_keys +/- N) within range
   static_assert(max_num_keys_ == capacity);
