@@ -65,17 +65,17 @@ struct gpu_chainhashtable {
 
   gpu_chainhashtable() = delete;
   gpu_chainhashtable(const host_allocator_type& host_allocator,
-           const host_reclaimer_type& host_reclaimer,
-           size_type num_buckets)
+                     const host_reclaimer_type& host_reclaimer,
+                     size_type num_buckets)
       : allocator_(host_allocator.get_device_instance())
       , reclaimer_(host_reclaimer.get_device_instance())
       , num_buckets_(num_buckets) {
     allocate();
   }
   gpu_chainhashtable(const host_allocator_type& host_allocator,
-           const host_reclaimer_type& host_reclaimer,
-           std::size_t num_elements,
-           float fill_factor)
+                     const host_reclaimer_type& host_reclaimer,
+                     std::size_t num_elements,
+                     float fill_factor)
       : allocator_(host_allocator.get_device_instance())
       , reclaimer_(host_reclaimer.get_device_instance()) {
     num_buckets_ = std::max(static_cast<std::size_t>(static_cast<double>(num_elements) / fill_factor / 15), 1UL);

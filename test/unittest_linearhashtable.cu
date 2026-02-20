@@ -22,7 +22,8 @@
 #include <random>
 
 std::size_t num_keys;
-float fill_factor;
+uint32_t initial_directory_size;
+float resize_policy;
 
 namespace {
 using key_slice_type   = uint32_t;
@@ -43,7 +44,7 @@ class MapTest : public testing::Test {
   MapTest() {
     host_allocator_ = new typename map_data::host_allocator();
     host_reclaimer_ = new typename map_data::host_reclaimer();
-    map_ = new typename map_data::map(*host_allocator_, *host_reclaimer_);
+    map_ = new typename map_data::map(*host_allocator_, *host_reclaimer_, initial_directory_size, resize_policy);
   }
   ~MapTest() override {
     //host_allocator_->print_stats();
@@ -481,8 +482,9 @@ DECLARE_TESTS_FOR_KEY_LENGTHS(100, 800)
 int main(int argc, char** argv) {
   auto arguments = std::vector<std::string>(argv, argv + argc);
   num_keys       = get_arg_value<uint32_t>(arguments, "num-keys").value_or(1024);
-  fill_factor    = get_arg_value<float>(arguments, "fill-factor").value_or(1.0f);
-  std::cout << "Testing using " << num_keys << " keys, fill factor " << fill_factor << "\n";
+  initial_directory_size = get_arg_value<uint32_t>(arguments, "initial-directory-size").value_or(1024u * 1024u);
+  resize_policy = get_arg_value<float>(arguments, "resize-policy").value_or(2.0f);
+  std::cout << "Testing using " << num_keys << " keys, initial-directory-size " << initial_directory_size << ", resize-policy " << resize_policy << "\n";
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }

@@ -49,7 +49,9 @@ bench_rates bench_linearhashtable_insertion_erase(thrust::device_vector<key_slic
                                                   uint32_t num_keys,
                                                   uint32_t max_key_length,
                                                   float erase_ratio,
-                                                  std::size_t num_experiments) {
+                                                  std::size_t num_experiments,
+                                                  uint32_t initial_directory_size,
+                                                  float resize_policy) {
   cudaStream_t insertion_stream{0};
   cudaStream_t erase_stream{0};
   float average_insertion_seconds(0.0f);
@@ -58,7 +60,7 @@ bench_rates bench_linearhashtable_insertion_erase(thrust::device_vector<key_slic
   for (std::size_t exp = 0; exp < num_experiments; exp++) {
     typename linearhashtable_type::host_allocator_type host_alloc;
     typename linearhashtable_type::host_reclaimer_type host_reclaim;
-    linearhashtable_type table(host_alloc, host_reclaim);
+    linearhashtable_type table(host_alloc, host_reclaim, initial_directory_size, resize_policy);
     auto memory_usage = utils::compute_device_memory_usage();
     std::cout << "Using: " << double(memory_usage.used_bytes) / double(1 << 30) << " GiBs"
               << std::endl;
@@ -96,6 +98,8 @@ int main(int argc, char** argv) {
   auto arguments    = std::vector<std::string>(argv, argv + argc);
   uint32_t num_keys = get_arg_value<uint32_t>(arguments, "num-keys").value_or(1'000'000);
   int device_id     = get_arg_value<int>(arguments, "device").value_or(0);
+  uint32_t initial_directory_size = get_arg_value<uint32_t>(arguments, "initial-directory-size").value_or(1024u * 1024u);
+  float resize_policy = get_arg_value<float>(arguments, "resize-policy").value_or(2.0f);
   uint32_t min_key_length = get_arg_value<uint32_t>(arguments, "min-key-length").value_or(1u);
   uint32_t max_key_length = get_arg_value<uint32_t>(arguments, "max-key-length").value_or(1u);
   float common_prefix_ratio = get_arg_value<float>(arguments, "common-prefix-ratio").value_or(0.1f);
@@ -215,21 +219,21 @@ int main(int argc, char** argv) {
   std::cout << "Benchmarking linearhashtable_slab_reclaim_type no-merge prefix4longkey" << std::endl;
   bench_linearhashtable_insertion_erase<linearhashtable_slab_reclaim_type, false, false>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
-    num_keys, max_key_length, erase_ratio, num_experiments
+    num_keys, max_key_length, erase_ratio, num_experiments, initial_directory_size, resize_policy
   );
   std::cout << "Benchmarking linearhashtable_slab_reclaim_type merge prefix4longkey" << std::endl;
   bench_linearhashtable_insertion_erase<linearhashtable_slab_reclaim_type, true, false>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
-    num_keys, max_key_length, erase_ratio, num_experiments
+    num_keys, max_key_length, erase_ratio, num_experiments, initial_directory_size, resize_policy
   );
   std::cout << "Benchmarking linearhashtable_slab_reclaim_type no-merge hash4longkey" << std::endl;
   bench_linearhashtable_insertion_erase<linearhashtable_slab_reclaim_type, false, true>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
-    num_keys, max_key_length, erase_ratio, num_experiments
+    num_keys, max_key_length, erase_ratio, num_experiments, initial_directory_size, resize_policy
   );
   std::cout << "Benchmarking linearhashtable_slab_reclaim_type merge hash4longkey" << std::endl;
   bench_linearhashtable_insertion_erase<linearhashtable_slab_reclaim_type, true, true>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
-    num_keys, max_key_length, erase_ratio, num_experiments
+    num_keys, max_key_length, erase_ratio, num_experiments, initial_directory_size, resize_policy
   );
 }

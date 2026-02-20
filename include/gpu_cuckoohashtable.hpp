@@ -68,17 +68,17 @@ struct gpu_cuckoohashtable {
 
   gpu_cuckoohashtable() = delete;
   gpu_cuckoohashtable(const host_allocator_type& host_allocator,
-           const host_reclaimer_type& host_reclaimer,
-           size_type num_buckets_per_hf)
+                      const host_reclaimer_type& host_reclaimer,
+                      size_type num_buckets_per_hf)
       : allocator_(host_allocator.get_device_instance())
       , reclaimer_(host_reclaimer.get_device_instance())
       , num_buckets_per_hf_(num_buckets_per_hf) {
     allocate();
   }
   gpu_cuckoohashtable(const host_allocator_type& host_allocator,
-           const host_reclaimer_type& host_reclaimer,
-           std::size_t num_elements,
-           float fill_factor)
+                      const host_reclaimer_type& host_reclaimer,
+                      std::size_t num_elements,
+                      float fill_factor)
       : allocator_(host_allocator.get_device_instance())
       , reclaimer_(host_reclaimer.get_device_instance()) {
     if (fill_factor > max_fill_factor) {

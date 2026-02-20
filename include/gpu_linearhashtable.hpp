@@ -54,10 +54,7 @@ struct gpu_linearhashtable {
   using hashtable_type = gpu_linearhashtable<Allocator, Reclaimer>;
 
   static constexpr value_type invalid_value = std::numeric_limits<value_type>::max();
-
   static constexpr size_type max_directory_size = 128 * 1024 * 1024; // 0.5GB
-  static constexpr size_type initial_directory_size = 128 * 1024;
-  static constexpr size_type directory_delta = 128;
 
   using host_allocator_type = Allocator;
   using device_allocator_instance_type = typename host_allocator_type::device_instance_type;
@@ -68,10 +65,20 @@ struct gpu_linearhashtable {
   using device_reclaimer_context_type = device_reclaimer_context<host_reclaimer_type>;
 
   gpu_linearhashtable() = delete;
+  // resize_policy: if > 0, linear resizing by the amount (converted to int)
+  //                if < 0, exponential resizing by the amount
   gpu_linearhashtable(const host_allocator_type& host_allocator,
-           const host_reclaimer_type& host_reclaimer)
+                      const host_reclaimer_type& host_reclaimer,
+                      size_type initial_directory_size = 1024 * 1024,
+                      float resize_policy = 2.0f)
       : allocator_(host_allocator.get_device_instance())
-      , reclaimer_(host_reclaimer.get_device_instance()) {
+      , reclaimer_(host_reclaimer.get_device_instance())
+      , initial_directory_size_(initial_directory_size)
+      , resize_policy_(resize_policy) {
+    if (-1.0f < resize_policy_ && resize_policy_ <= 1.0f) {
+      fprintf(stderr, "Invalid resize_policy for GPULinearHT: Should be >1 or <=-1\n");
+      exit(1);
+    }
     allocate();
   }
 
@@ -80,6 +87,8 @@ struct gpu_linearhashtable {
       : d_directory_(other.d_directory_)
       , d_global_state_(other.d_global_state_)
       , is_owner_(false)
+      , initial_directory_size_(other.initial_directory_size_)
+      , resize_policy_(other.resize_policy_)
       , allocator_(other.allocator_)
       , reclaimer_(other.reclaimer_) {}
 
@@ -392,7 +401,9 @@ struct gpu_linearhashtable {
         // extend directory if not locked
         if (d_global_state_->try_lock(tile)) {
           directory_size = d_global_state_->template load_directory_size<true>();
-          auto new_directory_size = directory_size + directory_delta;
+          auto new_directory_size =
+            (resize_policy_ > 0) ? static_cast<size_type>(static_cast<float>(directory_size) * resize_policy_):
+                                   (directory_size + static_cast<size_type>(-resize_policy_));
           size_type copy_from = 1u << (compute_global_depth(new_directory_size) - 1);
           // copy pointers to new directory
           for (size_type bucket = directory_size; bucket < new_directory_size; bucket += 32) {
@@ -941,13 +952,13 @@ struct gpu_linearhashtable {
     using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     // global state
     if (bucket_index == 0) {
-      *d_global_state_ = global_state(initial_directory_size);
+      *d_global_state_ = global_state(initial_directory_size_);
     }
     // allocate node
     auto node_index = allocator.allocate(tile);
     auto node = node_type(node_index, tile, allocator);
     // initial local depth = initial global depth of initial directory size
-    node.initialize_empty(true, compute_global_depth(initial_directory_size));
+    node.initialize_empty(true, compute_global_depth(initial_directory_size_));
     node.template store_to_allocator<false>();
     d_directory_[bucket_index] = node_index;
   }
@@ -967,7 +978,7 @@ struct gpu_linearhashtable {
   }
 
   void initialize() {
-    const uint32_t num_blocks = initial_directory_size;
+    const uint32_t num_blocks = initial_directory_size_;
     const uint32_t block_size = cg_tile_size;
     kernel::GpuLinearHashtable::initialize_kernel<<<num_blocks, block_size>>>(*this);
     cuda_try(cudaDeviceSynchronize());
@@ -1014,6 +1025,8 @@ struct gpu_linearhashtable {
   size_type* d_directory_;
   global_state* d_global_state_;
   bool is_owner_;
+  size_type initial_directory_size_;
+  float resize_policy_;
   device_allocator_instance_type allocator_;
   device_reclaimer_instance_type reclaimer_;
 
