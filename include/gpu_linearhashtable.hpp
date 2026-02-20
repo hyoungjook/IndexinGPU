@@ -55,6 +55,8 @@ struct gpu_linearhashtable {
 
   static constexpr value_type invalid_value = std::numeric_limits<value_type>::max();
   static constexpr size_type max_directory_size = 128 * 1024 * 1024; // 0.5GB
+  static constexpr float load_factor_threshold = 1.0f;
+  static constexpr size_type check_load_factor_every = 128;
 
   using host_allocator_type = Allocator;
   using device_allocator_instance_type = typename host_allocator_type::device_instance_type;
@@ -344,6 +346,7 @@ struct gpu_linearhashtable {
       first_slice = key[0];
     }
     size_type directory_size = d_global_state_->template load_directory_size<true>();
+    const bool check_load_factor = (bucket_index_hash % check_load_factor_every == 0);
     suffix_type suffix_if_found(tile, allocator);
     while (true) {
       size_type bucket_index = get_bucket_index(bucket_index_hash, directory_size);
@@ -398,24 +401,6 @@ struct gpu_linearhashtable {
       node.template store_to_allocator<true>();
       // check if chain is too long (not one)
       if (!node.is_head()) {
-        // extend directory if not locked
-        if (d_global_state_->try_lock(tile)) {
-          directory_size = d_global_state_->template load_directory_size<true>();
-          auto new_directory_size =
-            (resize_policy_ > 0) ? static_cast<size_type>(static_cast<float>(directory_size) * resize_policy_):
-                                   (directory_size + static_cast<size_type>(-resize_policy_));
-          size_type copy_from = 1u << (compute_global_depth(new_directory_size) - 1);
-          // copy pointers to new directory
-          for (size_type bucket = directory_size; bucket < new_directory_size; bucket += 32) {
-            if (bucket + tile.thread_rank() < new_directory_size) {
-              d_directory_[bucket + tile.thread_rank()] = d_directory_[bucket - copy_from + tile.thread_rank()];
-            }
-          }
-          // publish new directory
-          directory_size = new_directory_size;
-          d_global_state_->template store_directory_size<true>(directory_size);
-          d_global_state_->unlock(tile);
-        }
         // check if split is possible
         auto local_depth = node.get_local_depth();
           // first bucket that points to this node
@@ -499,6 +484,34 @@ struct gpu_linearhashtable {
         }
       }
       node_type::unlock(head_index, tile, allocator);
+      // extend if load factor is too high
+      if (check_load_factor) {
+        auto num_entries = d_global_state_->template increment_num_entries<1>(tile);
+        if ((static_cast<float>(num_entries) / directory_size * (static_cast<float>(check_load_factor_every) / 15.0f)) > load_factor_threshold) {
+          if (d_global_state_->try_lock(tile)) {
+            auto curr_directory_size = d_global_state_->template load_directory_size<true>();
+            if (curr_directory_size == directory_size) {
+              auto new_directory_size =
+                (resize_policy_ > 0) ? static_cast<size_type>(static_cast<float>(directory_size) * resize_policy_):
+                                       (directory_size + static_cast<size_type>(-resize_policy_));
+              new_directory_size = (new_directory_size + cg_tile_size - 1) / cg_tile_size * cg_tile_size;  // should be multiple of 32
+              new_directory_size = min(new_directory_size, 1u << compute_global_depth(directory_size + 1)); // one depth at a time
+              size_type copy_from = 1u << (compute_global_depth(new_directory_size) - 1);
+              // copy pointers to new directory
+              for (size_type bucket = directory_size; bucket < new_directory_size; bucket += 32) {
+                d_directory_[bucket + tile.thread_rank()] = d_directory_[bucket - copy_from + tile.thread_rank()];
+              }
+              // publish new directory
+              directory_size = new_directory_size;
+              d_global_state_->template store_directory_size<true>(directory_size);
+            }
+            else {
+              directory_size = curr_directory_size;
+            }
+            d_global_state_->unlock(tile);
+          }
+        }
+      }
       return true;
     }
     assert(false);
@@ -524,6 +537,7 @@ struct gpu_linearhashtable {
       bucket_index_hash = compute_hash(key, key_length, tile);
       first_slice = key[0];
     }
+    const bool check_load_factor = (bucket_index_hash % check_load_factor_every == 0);
     suffix_type suffix_if_found(tile, allocator);
     size_type directory_size = d_global_state_->template load_directory_size<true>();
     while (true) {
@@ -554,6 +568,9 @@ struct gpu_linearhashtable {
           suffix_if_found.retire(reclaimer);
         }
         node_type::unlock(head_index, tile, allocator);
+        if (check_load_factor) {
+          d_global_state_->template increment_num_entries<-1>(tile);
+        }
         return true;
       }
       // not exists
@@ -575,6 +592,9 @@ struct gpu_linearhashtable {
   struct __align__(128) global_state {
     size_type mutex_;
     size_type directory_size_;
+    uint8_t _align_buf0[128 - 2 * sizeof(size_type)];
+    size_type num_entries_;
+    uint8_t _align_buf1[128 - sizeof(size_type)];
 
     DEVICE_QUALIFIER global_state(size_type initial_directory_size)
         : directory_size_(initial_directory_size)
@@ -609,6 +629,23 @@ struct gpu_linearhashtable {
         cuda::atomic_ref<size_type, cuda::thread_scope_device> mutex_ref(mutex_);
         mutex_ref.store(0, cuda::memory_order_release);
       }
+    }
+    DEVICE_QUALIFIER size_type get_num_entries() {
+      return utils::memory::load<size_type, true, false>(&num_entries_);
+    }
+    template <int amount, typename tile_type>
+    DEVICE_QUALIFIER size_type increment_num_entries(const tile_type& tile) {
+      size_type old;
+      if (tile.thread_rank() == 0) {
+        cuda::atomic_ref<size_type, cuda::thread_scope_device> num_entries_ref(num_entries_);
+        if constexpr (amount > 0) {
+          old = num_entries_ref.fetch_add(static_cast<size_type>(amount), cuda::memory_order_relaxed);
+        }
+        else {
+          old = num_entries_ref.fetch_sub(static_cast<size_type>(-amount), cuda::memory_order_relaxed);
+        }
+      }
+      return tile.shfl(old, 0);
     }
   };
   static DEVICE_QUALIFIER size_type compute_global_depth(size_type directory_size) {
