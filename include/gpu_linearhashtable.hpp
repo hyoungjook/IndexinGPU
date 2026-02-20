@@ -54,6 +54,7 @@ struct gpu_linearhashtable {
   using hashtable_type = gpu_linearhashtable<Allocator, Reclaimer>;
 
   static constexpr value_type invalid_value = std::numeric_limits<value_type>::max();
+  static constexpr size_type invalid_pointer = std::numeric_limits<size_type>::max();
   static constexpr size_type max_directory_size = 128 * 1024 * 1024; // 0.5GB
   static constexpr float load_factor_threshold = 1.0f;
   static constexpr size_type check_load_factor_every = 128;
@@ -71,14 +72,18 @@ struct gpu_linearhashtable {
   //                if < 0, exponential resizing by the amount
   gpu_linearhashtable(const host_allocator_type& host_allocator,
                       const host_reclaimer_type& host_reclaimer,
-                      size_type initial_directory_size = 1024 * 1024,
-                      float resize_policy = 2.0f)
+                      size_type initial_directory_size,
+                      float resize_policy)
       : allocator_(host_allocator.get_device_instance())
       , reclaimer_(host_reclaimer.get_device_instance())
       , initial_directory_size_(initial_directory_size)
       , resize_policy_(resize_policy) {
-    if (-1.0f < resize_policy_ && resize_policy_ <= 1.0f) {
-      fprintf(stderr, "Invalid resize_policy for GPULinearHT: Should be >1 or <=-1\n");
+    if ((resize_policy >= 0 && (resize_policy > 2.0f || resize_policy <= 1.0f)) ||
+        (resize_policy < 0 && (static_cast<size_type>(-resize_policy) % cg_tile_size != 0))) {
+      fprintf(stderr, "Invalid resize_policy %f for GPULinearHT: "
+                      "If >0 (exponential), should be in (1, 2], "
+                      "If <0 (linear), should be multiple of %u\n",
+                      resize_policy, cg_tile_size);
       exit(1);
     }
     allocate();
@@ -291,35 +296,23 @@ struct gpu_linearhashtable {
       bucket_index_hash = compute_hash(key, key_length, tile);
       first_slice = key[0];
     }
+    size_type directory_size = d_global_state_->template load_directory_size<concurrent>();
+    // find the bucket
+    node_type node(tile, allocator);
+    find_valid_bucket<concurrent>(node, bucket_index_hash, directory_size, tile, allocator);
+    // search bucket
     suffix_type suffix_if_found(tile, allocator);
-    size_type bucket_index = get_bucket_index(
-        bucket_index_hash, d_global_state_->template load_directory_size<concurrent>());
-    while (true) {
-      auto head_index = utils::memory::load<size_type, concurrent, true>(d_directory_ + bucket_index);
-      auto node = node_type(head_index, tile, allocator);
-      node.template load_from_allocator<concurrent>();
-      int location_if_found = coop_traverse_until_found<concurrent, use_hash_for_longkey>(
-          node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator);
-      if (location_if_found >= 0) { // found
-        if (more_key) {
-          return suffix_if_found.get_value();
-        }
-        else {
-          return node.get_value_from_location(location_if_found);
-        }
+    int location_if_found = coop_traverse_until_found<concurrent, use_hash_for_longkey>(
+        node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator);
+    if (location_if_found >= 0) { // found
+      if (more_key) {
+        return suffix_if_found.get_value();
       }
-      // not found
-      if constexpr (concurrent) {
-        auto retry_bucket_index = get_bucket_index(
-          bucket_index_hash, d_global_state_->template load_directory_size<concurrent>());
-        if (bucket_index != retry_bucket_index) {
-          // If bucket index changed, retry
-          bucket_index = retry_bucket_index;
-          continue;
-        }
+      else {
+        return node.get_value_from_location(location_if_found);
       }
-      break;
     }
+    // not found
     return invalid_value;
   }
 
@@ -347,19 +340,19 @@ struct gpu_linearhashtable {
     }
     size_type directory_size = d_global_state_->template load_directory_size<true>();
     const bool check_load_factor = (bucket_index_hash % check_load_factor_every == 0);
-    suffix_type suffix_if_found(tile, allocator);
     while (true) {
-      size_type bucket_index = get_bucket_index(bucket_index_hash, directory_size);
-      size_type head_index = utils::memory::load<size_type, true, true>(d_directory_ + bucket_index);
-      auto node = node_type(head_index, tile, allocator);
+      // find the bucket
+      node_type node(tile, allocator);
+      bool met_invalid_pointer = find_valid_bucket<true>(node, bucket_index_hash, directory_size, tile, allocator);
+      auto head_index = node.get_node_index();
       node_type::lock(head_index, tile, allocator);
       node.template load_from_allocator<true>();
       if (node.is_garbage()) {
         // this bucket just splitted by other thread; retry
         node_type::unlock(head_index, tile, allocator);
-        directory_size = d_global_state_->template load_directory_size<true>();
         continue;
       }
+      suffix_type suffix_if_found(tile, allocator);
       int location_if_found = coop_traverse_until_found<true, use_hash_for_longkey>(
         node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator);
       if (location_if_found >= 0) { // already exists
@@ -404,7 +397,7 @@ struct gpu_linearhashtable {
         // check if split is possible
         auto local_depth = node.get_local_depth();
           // first bucket that points to this node
-        auto first_bucket_index = bucket_index & ((1u << local_depth) - 1);
+        auto first_bucket_index = bucket_index_hash & ((1u << local_depth) - 1);
         if ((first_bucket_index ^ (1u << local_depth)) < directory_size) {
           // do split!
           node = node_type(head_index, tile, allocator);
@@ -473,14 +466,23 @@ struct gpu_linearhashtable {
           new_node1.template store_to_allocator<true>();
           // publish new buckets: 
           auto local_depth_mask = (1u << local_depth);
-          d_global_state_->lock(tile);
           directory_size = d_global_state_->template load_directory_size<true>();
           for (size_type index = first_bucket_index; index < directory_size; index += local_depth_mask) {
             auto new_node_index = (index & local_depth_mask) == 0 ? new_node0_index : new_node1_index;
-            utils::memory::store<size_type, true, true>(d_directory_ + index, new_node_index);
+            d_directory_[index] = new_node_index;
           }
-          d_global_state_->unlock(tile);
           reclaimer.retire(head_index, tile);
+          met_invalid_pointer = false;
+        }
+      }
+      if (met_invalid_pointer) {
+        // copy pointers
+        auto local_depth = node.get_local_depth();
+        auto first_bucket_index = bucket_index_hash & ((1u << local_depth) - 1);
+        auto local_depth_mask = (1u << local_depth);
+        directory_size = d_global_state_->template load_directory_size<true>();
+        for (size_type index = first_bucket_index; index < directory_size; index += local_depth_mask) {
+          d_directory_[index] = head_index;
         }
       }
       node_type::unlock(head_index, tile, allocator);
@@ -495,11 +497,9 @@ struct gpu_linearhashtable {
                 (resize_policy_ > 0) ? static_cast<size_type>(static_cast<float>(directory_size) * resize_policy_):
                                        (directory_size + static_cast<size_type>(-resize_policy_));
               new_directory_size = (new_directory_size + cg_tile_size - 1) / cg_tile_size * cg_tile_size;  // should be multiple of 32
-              new_directory_size = min(new_directory_size, 1u << compute_global_depth(directory_size + 1)); // one depth at a time
-              size_type copy_from = 1u << (compute_global_depth(new_directory_size) - 1);
-              // copy pointers to new directory
+              // invalidate new pointers
               for (size_type bucket = directory_size; bucket < new_directory_size; bucket += 32) {
-                d_directory_[bucket + tile.thread_rank()] = d_directory_[bucket - copy_from + tile.thread_rank()];
+                d_directory_[bucket + tile.thread_rank()] = invalid_pointer;
               }
               // publish new directory
               directory_size = new_directory_size;
@@ -537,13 +537,13 @@ struct gpu_linearhashtable {
       bucket_index_hash = compute_hash(key, key_length, tile);
       first_slice = key[0];
     }
-    const bool check_load_factor = (bucket_index_hash % check_load_factor_every == 0);
-    suffix_type suffix_if_found(tile, allocator);
     size_type directory_size = d_global_state_->template load_directory_size<true>();
+    const bool check_load_factor = (bucket_index_hash % check_load_factor_every == 0);
     while (true) {
-      size_type bucket_index = get_bucket_index(bucket_index_hash, directory_size);
-      size_type head_index = utils::memory::load<size_type, true, true>(d_directory_ + bucket_index);
-      auto node = node_type(head_index, tile, allocator);
+      // find the bucket
+      node_type node(tile, allocator);
+      find_valid_bucket<true>(node, bucket_index_hash, directory_size, tile, allocator);
+      auto head_index = node.get_node_index();
       node_type::lock(head_index, tile, allocator);
       node.template load_from_allocator<true>();
       if (node.is_garbage()) {
@@ -553,6 +553,7 @@ struct gpu_linearhashtable {
         continue;
       }
       int location_if_found;
+      suffix_type suffix_if_found(tile, allocator);
       if constexpr (do_merge) {
         location_if_found = coop_traverse_until_found_merge<use_hash_for_longkey>(
           node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator, reclaimer);
@@ -569,22 +570,17 @@ struct gpu_linearhashtable {
         }
         node_type::unlock(head_index, tile, allocator);
         if (check_load_factor) {
+          // Since we decrement only on successful erase,
+          //  and check_load_factor is computed in the same way with insertion,
+          //  this never goes to negative value even though we do random sampling
           d_global_state_->template increment_num_entries<-1>(tile);
         }
         return true;
       }
       // not exists
       node_type::unlock(head_index, tile, allocator);
-      auto retry_bucket_index = get_bucket_index(
-        bucket_index_hash, d_global_state_->template load_directory_size<true>());
-      if (bucket_index != retry_bucket_index) {
-        // If bucket index changed, retry
-        bucket_index = retry_bucket_index;
-        continue;
-      }
-      break;
+      return false;
     }
-    return false;
   }
 
  private:
@@ -648,18 +644,50 @@ struct gpu_linearhashtable {
       return tile.shfl(old, 0);
     }
   };
+
   static DEVICE_QUALIFIER size_type compute_global_depth(size_type directory_size) {
     // smallest n of (2^n >= directory_size)
     return utils::bits::bfind(directory_size - 1) + 1;
   }
-  DEVICE_QUALIFIER size_type get_bucket_index(size_type hash, size_type directory_size) {
+
+  template <bool concurrent, typename tile_type>
+  DEVICE_QUALIFIER bool find_valid_bucket(hashtable_node<tile_type, device_allocator_context_type>& node,
+                                          size_type bucket_index_hash,
+                                          size_type& directory_size,
+                                          const tile_type& tile,
+                                          device_allocator_context_type& allocator) {
+    using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     size_type global_depth = compute_global_depth(directory_size);
-    size_type masked_hash = hash & ((1u << global_depth) - 1);
-    if (masked_hash >= directory_size) {
-      masked_hash ^= (1u << (global_depth - 1));
+    size_type bucket_index = bucket_index_hash & ((1u << global_depth) - 1);
+    if (bucket_index >= directory_size) {
+      bucket_index ^= (1u << (global_depth - 1));
+      assert(bucket_index < directory_size);
     }
-    assert(masked_hash < directory_size);
-    return masked_hash;
+    bool met_invalid_pointer = false;
+    while (true) {
+      size_type head_index = utils::memory::load<size_type, concurrent, true>(d_directory_ + bucket_index);
+      if (head_index == invalid_pointer) {
+        // retry after unsetting MSB 1
+        assert(bucket_index != 0);
+        bucket_index ^= (1u << utils::bits::bfind(bucket_index));
+        met_invalid_pointer = true;
+        continue;
+      }
+      node = node_type(head_index, tile, allocator);
+      node.template load_from_allocator<concurrent>();
+      auto expected_bucket_index = bucket_index_hash & ((1u << node.get_local_depth()) - 1);
+      if (bucket_index != expected_bucket_index) {
+        // other warp splitted meanwhile, retry with re-setting MSB 1
+        bucket_index = expected_bucket_index;
+        if (bucket_index >= directory_size) {
+          // other warp extended directory meanwhile
+          directory_size = d_global_state_->template load_directory_size<concurrent>();
+          assert(bucket_index < directory_size);
+        }
+        continue;
+      }
+      return met_invalid_pointer;
+    }
   }
 
   template <bool concurrent, bool use_hash_for_longkey, typename tile_type>
@@ -889,6 +917,7 @@ struct gpu_linearhashtable {
     auto global_depth = compute_global_depth(directory_size);
     for (size_type bucket_index = 0; bucket_index < directory_size; bucket_index++) {
       auto node_index = d_directory_[bucket_index];
+      if (node_index == invalid_pointer) continue;
       auto node = node_type(node_index, tile, allocator);
       node.template load_from_allocator<false>();
       // Check if this is the first pointer to this node
