@@ -23,3 +23,4 @@ struct device_reclaimer_context {};
 #include "gpu_masstree.hpp"
 #include "gpu_chainhashtable.hpp"
 #include "gpu_cuckoohashtable.hpp"
+#include "gpu_linearhashtable.hpp"

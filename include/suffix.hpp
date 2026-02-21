@@ -25,9 +25,8 @@ struct suffix_node {
   using size_type = uint32_t;
   static constexpr int node_width = 32;
   DEVICE_QUALIFIER suffix_node(const tile_type& tile, allocator_type& allocator): tile_(tile), allocator_(allocator) {}
-  DEVICE_QUALIFIER suffix_node(elem_type* ptr, const size_type index, const tile_type& tile, allocator_type& allocator)
-      : node_ptr_(ptr)
-      , node_index_(index)
+  DEVICE_QUALIFIER suffix_node(size_type index, const tile_type& tile, allocator_type& allocator)
+      : node_index_(index)
       , tile_(tile)
       , allocator_(allocator) {}
   
@@ -35,10 +34,12 @@ struct suffix_node {
   //  - suffix loads are done with the pointer in tree/bucket node, which is loaded with memory_order_acquire
   //  - suffix stores are protected by tree/bucket node's locks, which includes threadfence with memory_order_release
   DEVICE_QUALIFIER void load_head() {
-    lane_elem_ = utils::memory::load<elem_type, false>(node_ptr_ + tile_.thread_rank());
+    auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
+    lane_elem_ = utils::memory::load<elem_type, false>(node_ptr + tile_.thread_rank());
   }
   DEVICE_QUALIFIER void store_head() {
-    utils::memory::store<elem_type, false>(node_ptr_ + tile_.thread_rank(), lane_elem_);
+    auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
+    utils::memory::store<elem_type, false>(node_ptr + tile_.thread_rank(), lane_elem_);
   }
 
   DEVICE_QUALIFIER size_type get_node_index() const {
@@ -147,8 +148,56 @@ struct suffix_node {
     assert(false);
   }
 
+  template <uint32_t prime0>
+  DEVICE_QUALIFIER uint32_t compute_polynomial() const {
+    // compute (1 * s[0]) + (p * s[1]) + (p^2 * s[2]) + ... + (p^(l-1) * s[l-1])
+    // 1. exponent = [1, p, p^2, ..., p^31]
+    uint32_t exponent0 = (tile_.thread_rank() == 0) ? 1 : prime0;
+    for (uint32_t offset = 1; offset < node_width; offset <<= 1) {
+      auto up_exponent0 = tile_.shfl_up(exponent0, offset);
+      if (tile_.thread_rank() >= offset) {
+        exponent0 *= up_exponent0;
+      }
+    }
+    // prime_multiplier = p^31
+    static constexpr uint32_t prime0_multiplier = utils::constexpr_pow(prime0, node_max_len_);
+    // 2. compute per-lane value
+    auto this_length = get_key_length();
+    uint32_t hash = 0;
+    // ignore first two elements in head;
+    //  also make exponent [p^29, p^30, 1, p, p^2, ..., p^28, x]
+    {
+      auto shifted_exponent = tile_.shfl_down(exponent0, node_max_len_ -2);
+      exponent0 = tile_.shfl_up(exponent0, 2);
+      if (tile_.thread_rank() < 2) { exponent0 = shifted_exponent; }
+    }
+    this_length += 2;
+    uint32_t skip_elems = 2;
+    auto elem = lane_elem_;
+    while (true) {
+      if (skip_elems <= tile_.thread_rank() &&
+          tile_.thread_rank() < node_max_len_ &&
+          tile_.thread_rank() < this_length) {
+        hash += exponent0 * elem;
+      }
+      if (this_length <= node_max_len_) { break; }
+      this_length -= node_max_len_;
+      auto next_index = tile_.shfl(elem, next_lane_);
+      auto* next_ptr = reinterpret_cast<elem_type*>(allocator_.address(next_index));
+      elem = utils::memory::load<elem_type, false>(next_ptr + tile_.thread_rank());
+      if (skip_elems <= tile_.thread_rank()) {
+        exponent0 *= prime0_multiplier;
+      }
+      skip_elems = 0;
+    }
+    // 3. reduce sum
+    for (uint32_t offset = (node_width / 2); offset != 0; offset >>= 1) {
+      hash += tile_.shfl_down(hash, offset);
+    }
+    return tile_.shfl(hash, 0);
+  }
   template <uint32_t prime0, uint32_t prime1>
-  DEVICE_QUALIFIER uint2 compute_polynomial() const {
+  DEVICE_QUALIFIER uint2 compute_polynomialx2() const {
     // compute (1 * s[0]) + (p * s[1]) + (p^2 * s[2]) + ... + (p^(l-1) * s[l-1])
     // 1. exponent = [1, p, p^2, ..., p^31]
     uint32_t exponent0 = (tile_.thread_rank() == 0) ? 1 : prime0;
@@ -276,7 +325,6 @@ struct suffix_node {
     reclaimer.retire(src.get_node_index(), tile_);
     while (offset >= node_max_len_) {
       src.node_index_ = src.get_next();
-      src.node_ptr_ = reinterpret_cast<elem_type*>(allocator_.address(src.node_index_));
       src.load_head();
       reclaimer.retire(src.node_index_, tile_);
       offset -= node_max_len_;
@@ -298,7 +346,6 @@ struct suffix_node {
       if (new_length == 0) { break; }
       // phase 2. copy src.next[0:offset) -> dst[node_max_len-offset:node_max_len)
       src.node_index_ = src.get_next();
-      src.node_ptr_ = reinterpret_cast<elem_type*>(allocator_.address(src.node_index_));
       src.load_head();
       reclaimer.retire(src.node_index_, tile_);
       if (offset > 0) {
@@ -362,7 +409,6 @@ struct suffix_node {
 
   DEVICE_QUALIFIER suffix_node<tile_type, allocator_type>& operator=(
       const suffix_node<tile_type, allocator_type>& other) {
-    node_ptr_ = other.node_ptr_;
     node_index_ = other.node_index_;
     lane_elem_ = other.lane_elem_;
     return *this;
@@ -407,7 +453,6 @@ struct suffix_node {
   }
 
  private:
-  elem_type* node_ptr_;
   size_type node_index_;
   elem_type lane_elem_;
   const tile_type& tile_;

@@ -13,7 +13,8 @@ CPMAddPackage(
 
 set(GTEST_TESTS
     unittest_masstree
-    unittest_hashtable
+    unittest_linearhashtable
+    unittest_fixedhashtable
 )
 foreach(TEST ${GTEST_TESTS})
     add_executable(${TEST} ${TEST}.cu)

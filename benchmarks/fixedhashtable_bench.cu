@@ -36,54 +36,72 @@ using key_slice_type = uint32_t;
 using value_type = uint32_t;
 using size_type = uint32_t;
 
-struct bench_rates {
-  float insertion_rate;
-  float find_rate;
-};
-template <typename masstree_type, bool concurrent_find, bool enable_suffix>
-bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>& d_keys,
-                                          thrust::device_vector<size_type>& d_lengths,
-                                          thrust::device_vector<value_type>& d_values,
-                                          thrust::device_vector<key_slice_type>& d_query_keys,
-                                          thrust::device_vector<size_type>& d_query_lengths,
-                                          thrust::device_vector<value_type>& d_query_results,
-                                          uint32_t num_keys,
-                                          uint32_t max_key_length,
-                                          std::size_t num_experiments,
-                                          bool validate_result = false,
-                                          bool validate_index = false) {
-  cudaStream_t insertion_stream{0};
-  cudaStream_t find_stream{0};
-  float average_insertion_seconds(0.0f);
-  float average_find_seconds(0.0f);
+template <typename hashtable_type,
+          bool use_hash_tag = true,
+          bool find_concurrent = false,
+          bool erase_merge = true>
+void bench_hashtable(thrust::device_vector<key_slice_type>& d_keys,
+                     thrust::device_vector<size_type>& d_lengths,
+                     thrust::device_vector<value_type>& d_values,
+                     thrust::device_vector<key_slice_type>& d_query_keys,
+                     thrust::device_vector<size_type>& d_query_lengths,
+                     thrust::device_vector<value_type>& d_query_results,
+                     uint32_t num_keys,
+                     uint32_t max_key_length,
+                     std::size_t num_experiments,
+                     bool erase_ratio,
+                     float fill_factor,
+                     bool validate_result = false,
+                     bool validate_index = false,
+                     bool verbose = false) {
+  float average_insert_seconds = 0.f;
+  float average_find_seconds = 0.f;
+  float average_erase_seconds = 0.f;
   std::size_t valid_count = 0;
 
   for (std::size_t exp = 0; exp < num_experiments; exp++) {
-    typename masstree_type::host_allocator_type host_alloc;
-    typename masstree_type::host_reclaimer_type host_reclaim;
-    masstree_type tree(host_alloc, host_reclaim);
-    auto memory_usage = utils::compute_device_memory_usage();
-    std::cout << "Using: " << double(memory_usage.used_bytes) / double(1 << 30) << " GiBs"
-              << std::endl;
-    gpu_timer insert_timer(insertion_stream);
+    typename hashtable_type::host_allocator_type host_alloc;
+    typename hashtable_type::host_reclaimer_type host_reclaim;
+    hashtable_type table(host_alloc, host_reclaim, num_keys, fill_factor);
+    if (verbose) {
+      auto memory_usage = utils::compute_device_memory_usage();
+      std::cout << "Using: " << double(memory_usage.used_bytes) / double(1 << 30) << " GiBs"
+                << std::endl;
+    }
+    gpu_timer insert_timer;
     insert_timer.start_timer();
-    tree.insert(d_keys.data().get(), max_key_length, d_lengths.data().get(), d_values.data().get(), num_keys, insertion_stream, false, enable_suffix);
+    table.template insert<use_hash_tag>(
+      d_keys.data().get(), max_key_length, d_lengths.data().get(), d_values.data().get(), num_keys);
     insert_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
-    auto insertion_elapsed = insert_timer.get_elapsed_s();
-    average_insertion_seconds += insertion_elapsed;
+    float insert_elapsed = insert_timer.get_elapsed_s();
+    average_insert_seconds += insert_elapsed;
 
-    gpu_timer find_timer(find_stream);
+    gpu_timer find_timer;
     find_timer.start_timer();
-    tree.find(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), d_query_results.data().get(), num_keys, find_stream, concurrent_find);
+    table.template find<find_concurrent, use_hash_tag>(
+      d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), d_query_results.data().get(), num_keys);
     find_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
-    auto find_elapsed = find_timer.get_elapsed_s();
+    float find_elapsed = find_timer.get_elapsed_s();
     average_find_seconds += find_elapsed;
-    std::cout << exp << std::setw(6) << '\t';
-    std::cout << insertion_elapsed << std::setw(6) << '\t';
-    std::cout << find_elapsed << std::setw(6) << '\n';
 
+    gpu_timer erase_timer;
+    uint32_t num_erase = (uint32_t)(((float)num_keys) * erase_ratio);
+    erase_timer.start_timer();
+    table.template erase<use_hash_tag, erase_merge>(
+      d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), num_erase);
+    erase_timer.stop_timer();
+    cuda_try(cudaDeviceSynchronize());
+    float erase_elapsed = erase_timer.get_elapsed_s();
+    average_erase_seconds += erase_elapsed;
+
+    if (verbose) {
+      std::cout << exp << " "
+                << insert_elapsed << " "
+                << find_elapsed << " "
+                << erase_elapsed << std::endl;
+    }
     if (validate_result) {
       thrust::device_vector<bool> cmp_result(num_keys);
       thrust::transform(d_values.begin(), d_values.end(), d_query_results.begin(), cmp_result.begin(), thrust::equal_to<value_type>());
@@ -96,16 +114,19 @@ bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>&
       }
     }
     if (validate_index) {
-      tree.validate();
+      table.validate();
     }
   }
 
-  average_insertion_seconds /= float(num_experiments);
+  average_insert_seconds /= float(num_experiments);
   average_find_seconds /= float(num_experiments);
-  float insertion_rate = float(d_lengths.size()) / 1e6 / average_insertion_seconds;
-  float find_rate      = float(d_query_lengths.size()) / 1e6 / average_find_seconds;
-  std::cout << "insertion_rate: " << insertion_rate << '\n';
-  std::cout << "find_rate: " << find_rate << std::endl;
+  average_erase_seconds /= float(num_experiments);
+  float insertion_rate = float(d_lengths.size()) / 1e6 / average_insert_seconds;
+  float find_rate = float(d_query_lengths.size()) / 1e6 / average_find_seconds;
+  float erase_rate      = float(d_query_lengths.size()) * erase_ratio / 1e6 / average_erase_seconds;
+  std::cout << "insert: " << insertion_rate << " Mop/s" << std::endl;
+  std::cout << "find: " << find_rate << " Mop/s" << std::endl;
+  std::cout << "erase: " << erase_rate << " Mop/s" << std::endl;
   if (validate_result) {
     if (valid_count == num_experiments) {
       std::cout << "all results valid" << std::endl;
@@ -114,18 +135,21 @@ bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>&
       std::cout << "validation: " << valid_count << "/" << num_experiments << " valid" << std::endl;
     }
   }
-  return {insertion_rate, find_rate};
 }
 
 int main(int argc, char** argv) {
   auto arguments    = std::vector<std::string>(argv, argv + argc);
   uint32_t num_keys = get_arg_value<uint32_t>(arguments, "num-keys").value_or(1'000'000);
   int device_id     = get_arg_value<int>(arguments, "device").value_or(0);
+  float chain_fill_factor = get_arg_value<float>(arguments, "chain-fill-factor").value_or(1.0f);
+  float cuckoo_fill_factor = get_arg_value<float>(arguments, "cuckoo-fill-factor").value_or(0.9f);
   uint32_t min_key_length = get_arg_value<uint32_t>(arguments, "min-key-length").value_or(1u);
   uint32_t max_key_length = get_arg_value<uint32_t>(arguments, "max-key-length").value_or(1u);
   float common_prefix_ratio = get_arg_value<float>(arguments, "common-prefix-ratio").value_or(0.1f);
+  float erase_ratio = get_arg_value<float>(arguments, "erase-ratio").value_or(0.1f);
   bool validate_result   = get_arg_value<bool>(arguments, "validate-result").value_or(false);
   bool validate_index   = get_arg_value<bool>(arguments, "validate-index").value_or(false);
+  bool verbose   = get_arg_value<bool>(arguments, "verbose").value_or(false);
   std::string dataset_file = get_arg_value<std::string>(arguments, "dataset-file").value_or("");
   std::size_t num_experiments =
       get_arg_value<std::size_t>(arguments, "num-experiments").value_or(1llu);
@@ -229,35 +253,27 @@ int main(int argc, char** argv) {
 
   std::cout << "Benchmarking...\n";
   std::cout << "num_keys = " << num_keys << ", ";
+  std::cout << "chain_fill_factor = " << chain_fill_factor << ", ";
+  std::cout << "cuckoo_fill_factor = " << cuckoo_fill_factor << ", ";
   std::cout << "min_key_length = " << min_key_length << ", ";
   std::cout << "max_key_length = " << max_key_length << ", ";
   std::cout << "common_prefix_ratio = " << common_prefix_ratio << std::endl;
-  using simple_bump_alloc_type = simple_bump_allocator<128>;
   using simple_slab_alloc_type = simple_slab_allocator<128>;
-  using simple_dummy_reclaim_type = simple_dummy_reclaimer;
   using simple_debra_reclaim_type = simple_debra_reclaimer<>;
-  using masstree_slab_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_dummy_reclaim_type>;
-  using masstree_slab_reclaim_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type>;
+  using chainhashtable_type = GpuHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_debra_reclaim_type>;
+  using cuckoohashtable_type = GpuHashtable::gpu_cuckoohashtable<simple_slab_alloc_type, simple_debra_reclaim_type>;
 
-  std::cout << "Benchmarking masstree_slab_reclaim_type readonlyfind no-suffix" << std::endl;
-  bench_masstree_insertion_find<masstree_slab_reclaim_type, false, false>(
+  std::cout << "Benchmarking chainhashtable_type" << std::endl;
+  bench_hashtable<chainhashtable_type>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-    num_keys, max_key_length, num_experiments, validate_result, validate_index
+    num_keys, max_key_length, num_experiments, erase_ratio, chain_fill_factor,
+    validate_result, validate_index, verbose
   );
-  std::cout << "Benchmarking masstree_slab_reclaim_type concurrentfind no-suffix" << std::endl;
-  bench_masstree_insertion_find<masstree_slab_reclaim_type, true, false>(
+  std::cout << "Benchmarking cuckoohashtable_type" << std::endl;
+  bench_hashtable<cuckoohashtable_type>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-    num_keys, max_key_length, num_experiments, validate_result, validate_index
-  );
-  std::cout << "Benchmarking masstree_slab_reclaim_type readonlyfind suffix" << std::endl;
-  bench_masstree_insertion_find<masstree_slab_reclaim_type, false, true>(
-    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-    num_keys, max_key_length, num_experiments, validate_result, validate_index
-  );
-  std::cout << "Benchmarking masstree_slab_reclaim_type concurrentfind suffix" << std::endl;
-  bench_masstree_insertion_find<masstree_slab_reclaim_type, true, true>(
-    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-    num_keys, max_key_length, num_experiments, validate_result, validate_index
+    num_keys, max_key_length, num_experiments, erase_ratio, cuckoo_fill_factor,
+    validate_result, validate_index, verbose
   );
   
 }
