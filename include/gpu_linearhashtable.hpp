@@ -133,13 +133,14 @@ struct gpu_linearhashtable {
 
   template <bool use_hash_tag = true,
             bool tag_use_same_hash = true,
+            bool do_merge_buckets = true,
             bool do_merge_chains = true>
   void erase(const key_slice_type* keys,
              const size_type max_key_length,
              const size_type* key_lengths,
              const size_type num_keys,
              cudaStream_t stream = 0) {
-    kernel::GpuLinearHashtable::erase_device_func<use_hash_tag, tag_use_same_hash, do_merge_chains, key_slice_type, size_type, value_type>
+    kernel::GpuLinearHashtable::erase_device_func<use_hash_tag, tag_use_same_hash, do_merge_chains, do_merge_buckets, key_slice_type, size_type, value_type>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths};
     kernel::launch_batch_kernel(*this, func, num_keys, stream);
   }
@@ -156,7 +157,7 @@ struct gpu_linearhashtable {
                                     bool insert_update_if_exists = false) {
     kernel::GpuLinearHashtable::insert_device_func<true, true, key_slice_type, size_type, value_type>
       insert_func{.d_keys = insert_keys, .max_key_length = max_key_length, .d_key_lengths = insert_key_lengths, .d_values = insert_values, .update_if_exists = insert_update_if_exists};
-    kernel::GpuLinearHashtable::erase_device_func<true, true, true, key_slice_type, size_type, value_type>
+    kernel::GpuLinearHashtable::erase_device_func<true, true, true, true, key_slice_type, size_type, value_type>
       erase_func{.d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths};
     kernel::launch_batch_concurrent_two_funcs_kernel(*this, insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
   }
@@ -188,7 +189,7 @@ struct gpu_linearhashtable {
                                   const size_type find_num_keys,
                                   const size_type max_key_length,
                                   cudaStream_t stream = 0) {
-    kernel::GpuLinearHashtable::erase_device_func<true, true, true, key_slice_type, size_type, value_type>
+    kernel::GpuLinearHashtable::erase_device_func<true, true, true, true, key_slice_type, size_type, value_type>
       erase_func{.d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths};
     kernel::GpuLinearHashtable::find_device_func<true, true, true, key_slice_type, size_type, value_type>
       find_func{.d_keys = find_keys, .max_key_length = max_key_length, .d_key_lengths = find_key_lengths, .d_values = find_values};
@@ -444,7 +445,7 @@ struct gpu_linearhashtable {
     assert(false);
   }
 
-  template <bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains, typename tile_type>
+  template <bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains, bool do_merge_buckets, typename tile_type>
   DEVICE_QUALIFIER bool cooperative_erase(const key_slice_type* key,
                                           const size_type key_length,
                                           const tile_type& tile,
@@ -501,6 +502,64 @@ struct gpu_linearhashtable {
           //  and check_load_factor is computed in the same way with insertion,
           //  this never goes to negative value even though we do random sampling
           d_global_state_->template increment_num_entries<-1>(tile);
+        }
+        if constexpr (do_merge_buckets) {
+          if (node.num_keys() == 0 && !node.has_next()) {
+            // bucket was empty, try merge with sibling
+            auto local_depth = node.get_local_depth();
+            auto bucket_index = bucket_index_hash & ((1u << local_depth) - 1);
+            while (local_depth > compute_global_depth(initial_directory_size_)) {
+              // find sibling buckets
+              auto sibling_bucket_index = bucket_index ^ (1u << (local_depth - 1));
+              if (sibling_bucket_index >= directory_size) { break; }
+              auto head0_index = utils::memory::load<size_type, true, true>(&directory_entry_at(bucket_index, allocator));
+              auto head1_index = utils::memory::load<size_type, true, true>(&directory_entry_at(sibling_bucket_index, allocator));
+              if (head0_index == invalid_pointer ||
+                  head1_index == invalid_pointer ||
+                  head0_index == head1_index) { break; }
+              // lock the nodes in global order
+              if (head0_index < head1_index) {
+                node_type::lock(head0_index, tile, allocator);
+                node_type::lock(head1_index, tile, allocator);
+              }
+              else {
+                node_type::lock(head1_index, tile, allocator);
+                node_type::lock(head0_index, tile, allocator);
+              }
+              // node is the one we observed empty
+              node = node_type(head0_index, tile, allocator);
+              node.template load_from_allocator<true>();
+              bool cascade_merge = false;
+              if (!node.is_garbage() && node.get_local_depth() == local_depth &&
+                  node.num_keys() == 0 && !node.has_next()) {
+                auto node1 = node_type(head1_index, tile, allocator);
+                node1.template load_from_allocator<true>();
+                if (!node1.is_garbage() && node1.get_local_depth() == local_depth) {
+                  // do merge!
+                  // order: decrement local depth -> update pointers
+                  node1.set_local_depth(local_depth - 1);
+                  node1.template store_to_allocator<true>();
+                  auto local_depth_mask = (1u << local_depth);
+                  directory_size = d_global_state_->template load_directory_size<true>();
+                  for (size_type index = bucket_index; index < directory_size; index += local_depth_mask) {
+                    directory_entry_at(index, allocator) = head1_index;
+                  }
+                  node.make_garbage();
+                  node.template store_to_allocator<false>();
+                  reclaimer.retire(head0_index, tile);
+                  cascade_merge = (node1.num_keys() == 0 && !node1.has_next());
+                }
+              }
+              node_type::unlock(head0_index, tile, allocator);
+              node_type::unlock(head1_index, tile, allocator);
+              // if cascading
+              if (cascade_merge) {
+                local_depth--;
+                bucket_index = sibling_bucket_index & ((1u << local_depth) - 1);
+              }
+              else { break; }
+            }
+          }
         }
         return true;
       }
@@ -608,10 +667,11 @@ struct gpu_linearhashtable {
       }
       node = node_type(head_index, tile, allocator);
       node.template load_from_allocator<concurrent>();
-      auto expected_bucket_index = bucket_index_hash & ((1u << node.get_local_depth()) - 1);
-      if (bucket_index != expected_bucket_index) {
-        // other warp splitted meanwhile, retry with re-setting MSB 1
-        bucket_index = expected_bucket_index;
+      // local_depth-masked bucket index should match with the hash
+      size_type local_depth_mask = (1u << node.get_local_depth()) - 1;
+      if (((bucket_index_hash ^ bucket_index) & local_depth_mask) != 0) {
+        // else: other warp splitted meanwhile, retry with larger local_depth
+        bucket_index = bucket_index_hash & local_depth_mask;
         if (bucket_index >= directory_size) {
           // other warp extended directory meanwhile
           directory_size = d_global_state_->template load_directory_size<concurrent>();
@@ -882,7 +942,7 @@ struct gpu_linearhashtable {
     template <typename node_type, typename tile_type>
     DEVICE_QUALIFIER void exec(const node_type& node, int head_index, const tile_type& tile, device_allocator_context_type& allocator) {
       if (head_index >= 0 && tile.thread_rank() == 0) printf("HEAD[%d] ", head_index);
-      node.print(allocator);
+      node.print();
     }
     template <typename tile_type>
     DEVICE_QUALIFIER void fini(const tile_type& tile) {}

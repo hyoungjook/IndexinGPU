@@ -169,6 +169,7 @@ struct hashtable_node {
     return ((metadata_ & local_depth_bits_mask_) >> local_depth_bits_offset_);
   }
   DEVICE_QUALIFIER void set_local_depth(size_type local_depth) {
+    metadata_ &= ~local_depth_bits_mask_;
     metadata_ |= (local_depth << local_depth_bits_offset_);
     write_metadata_to_registers();
   }

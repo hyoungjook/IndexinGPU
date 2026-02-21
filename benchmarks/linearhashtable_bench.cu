@@ -40,6 +40,7 @@ template <typename linearhashtable_type,
           bool use_hash_tag = true,
           bool tag_use_same_hash = true,
           bool find_concurrent = false,
+          bool erase_merge_buckets = true,
           bool erase_merge_chains = true>
 void bench_linearhashtable(thrust::device_vector<key_slice_type>& d_keys,
                            thrust::device_vector<size_type>& d_lengths,
@@ -91,7 +92,9 @@ void bench_linearhashtable(thrust::device_vector<key_slice_type>& d_keys,
     gpu_timer erase_timer;
     uint32_t num_erase = (uint32_t)(((float)num_keys) * erase_ratio);
     erase_timer.start_timer();
-    table.template erase<use_hash_tag, tag_use_same_hash, erase_merge_chains>(
+    table.template erase<use_hash_tag, tag_use_same_hash,
+                         erase_merge_buckets,
+                         erase_merge_chains || erase_merge_buckets>(
       d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), num_erase);
     erase_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
