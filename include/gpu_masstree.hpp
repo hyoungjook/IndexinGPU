@@ -50,7 +50,6 @@ struct gpu_masstree {
   using value_type = elem_type;
   static auto constexpr branching_factor = 16;
   static auto constexpr cg_tile_size = 2 * branching_factor;
-  using masstree_type = gpu_masstree<Allocator, Reclaimer>;
 
   static constexpr value_type invalid_value = std::numeric_limits<value_type>::max();
 
@@ -83,85 +82,47 @@ struct gpu_masstree {
 
   // host-side APIs
   // if key_lengths == NULL, we use max_key_length as a fixed length
+  template <bool concurrent = false>
   void find(const key_slice_type* keys,
             const size_type max_key_length,
             const size_type* key_lengths,
             value_type* values,
             const size_type num_keys,
-            cudaStream_t stream = 0,
-            bool concurrent = false) {
-    using find_concurrent = kernel::GpuMasstree::find_device_func<true, key_slice_type, size_type, value_type>;
-    using find_readonly = kernel::GpuMasstree::find_device_func<false, key_slice_type, size_type, value_type>;
-    #define find_args .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values
-    if (concurrent) {
-      find_concurrent func{find_args};
-      launch_batch_kernel(func, num_keys, stream);
-    }
-    else {
-      find_readonly func{find_args};
-      launch_batch_kernel(func, num_keys, stream);
-    }
+            cudaStream_t stream = 0) {
+    kernel::GpuMasstree::find_device_func<concurrent, key_slice_type, size_type, value_type>
+      func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values};
+    kernel::launch_batch_kernel(*this, func, num_keys, stream);
     #undef find_args
   }
 
+  template <bool enable_suffix = true>
   void insert(const key_slice_type* keys,
               const size_type max_key_length,
               const size_type* key_lengths,
               const value_type* values,
               const size_type num_keys,
               cudaStream_t stream = 0,
-              bool update_if_exists = false,
-              bool enable_suffix = true) {
-    using insert_suffix = kernel::GpuMasstree::insert_device_func<true, key_slice_type, size_type, value_type>;
-    using insert_nosuffix = kernel::GpuMasstree::insert_device_func<false, key_slice_type, size_type, value_type>;
-    #define insert_args .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .update_if_exists = update_if_exists
-    if (enable_suffix) {
-      insert_suffix func{insert_args};
-      launch_batch_kernel(func, num_keys, stream);
-    }
-    else {
-      insert_nosuffix func{insert_args};
-      launch_batch_kernel(func, num_keys, stream);
-    }
-    #undef insert_args
+              bool update_if_exists = false) {
+    kernel::GpuMasstree::insert_device_func<enable_suffix, key_slice_type, size_type, value_type>
+      func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .update_if_exists = update_if_exists};
+    kernel::launch_batch_kernel(*this, func, num_keys, stream);
   }
 
+  template <bool do_remove_empty_root = true,
+            bool do_merge = true,
+            bool concurrent = true>
   void erase(const key_slice_type* keys,
              const size_type max_key_length,
              const size_type* key_lengths,
              const size_type num_keys,
-             cudaStream_t stream = 0,
-             bool do_remove_empty_root = true,
-             bool do_merge = true,
-             bool concurrent = true) {
-    using erase_readonly = kernel::GpuMasstree::erase_device_func<false, false, false, key_slice_type, size_type, value_type>;
-    using erase_concurrent = kernel::GpuMasstree::erase_device_func<true, false, false, key_slice_type, size_type, value_type>;
-    using erase_merge = kernel::GpuMasstree::erase_device_func<true, true, false, key_slice_type, size_type, value_type>;
-    using erase_rmroot = kernel::GpuMasstree::erase_device_func<true, true, true, key_slice_type, size_type, value_type>;
-    #define erase_args .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths
-    if (do_remove_empty_root) {
-      erase_rmroot func{erase_args};
-      launch_batch_kernel(func, num_keys, stream);
-    }
-    else {
-      if (do_merge) {
-        erase_merge func{erase_args};
-        launch_batch_kernel(func, num_keys, stream);
-      }
-      else {
-        if (concurrent) {
-          erase_concurrent func{erase_args};
-          launch_batch_kernel(func, num_keys, stream);
-        }
-        else {
-          erase_readonly func{erase_args};
-          launch_batch_kernel(func, num_keys, stream);
-        }
-      }
-    }
-    #undef erase_args
+             cudaStream_t stream = 0) {
+    kernel::GpuMasstree::erase_device_func<concurrent, do_merge, do_remove_empty_root, key_slice_type, size_type, value_type>
+      func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths};
+    kernel::launch_batch_kernel(*this, func, num_keys, stream);
   }
 
+  template <bool use_upper_key = true,
+            bool concurrent = false>
   void scan(const key_slice_type* lower_keys,
             const size_type* lower_key_lengths,
             const size_type max_key_length,
@@ -173,37 +134,13 @@ struct gpu_masstree {
             value_type* values = nullptr,
             key_slice_type* out_keys = nullptr,
             size_type* out_key_lengths = nullptr,
-            cudaStream_t stream = 0,
-            bool concurrent = false) {
-    using scan_bothbound_concurrent = kernel::GpuMasstree::scan_device_func<true, true, key_slice_type, size_type, value_type>;
-    using scan_bothbound_readonly = kernel::GpuMasstree::scan_device_func<true, false, key_slice_type, size_type, value_type>;
-    using scan_loweronly_concurrent = kernel::GpuMasstree::scan_device_func<false, true, key_slice_type, size_type, value_type>;
-    using scan_loweronly_readonly = kernel::GpuMasstree::scan_device_func<false, false, key_slice_type, size_type, value_type>;
-    #define scan_args .d_lower_keys = lower_keys, .d_lower_key_lengths = lower_key_lengths,  \
-                       .max_key_length = max_key_length, .max_count_per_query = max_count_per_query,  \
-                       .d_upper_keys = upper_keys, .d_upper_key_lengths = upper_key_lengths, \
-                       .d_counts = counts, .d_values = values, .d_out_keys = out_keys, .d_out_key_lengths = out_key_lengths
-    if (upper_keys) {
-      if (concurrent) {
-        scan_bothbound_concurrent func{scan_args};
-        launch_batch_kernel(func, num_queries, stream);
-      }
-      else {
-        scan_bothbound_readonly func{scan_args};
-        launch_batch_kernel(func, num_queries, stream);
-      }
-    }
-    else {
-      if (concurrent) {
-        scan_loweronly_concurrent func{scan_args};
-        launch_batch_kernel(func, num_queries, stream);
-      }
-      else {
-        scan_loweronly_readonly func{scan_args};
-        launch_batch_kernel(func, num_queries, stream);
-      }
-    }
-    #undef scan_args
+            cudaStream_t stream = 0) {
+    kernel::GpuMasstree::scan_device_func<use_upper_key, concurrent, key_slice_type, size_type, value_type>
+      func{.d_lower_keys = lower_keys, .d_lower_key_lengths = lower_key_lengths,
+           .max_key_length = max_key_length, .max_count_per_query = max_count_per_query,
+           .d_upper_keys = upper_keys, .d_upper_key_lengths = upper_key_lengths,
+           .d_counts = counts, .d_values = values, .d_out_keys = out_keys, .d_out_key_lengths = out_key_lengths};
+    kernel::launch_batch_kernel(*this, func, num_queries, stream);
   }
 
   void test_concurrent_insert_erase(const key_slice_type* insert_keys,
@@ -216,15 +153,11 @@ struct gpu_masstree {
                                     const size_type max_key_length,
                                     cudaStream_t stream = 0,
                                     bool insert_update_if_exists = false) {
-    using insert_suffix = kernel::GpuMasstree::insert_device_func<true, key_slice_type, size_type, value_type>;
-    using erase_rmroot = kernel::GpuMasstree::erase_device_func<true, true, true, key_slice_type, size_type, value_type>;
-    #define insert_args .d_keys = insert_keys, .max_key_length = max_key_length, .d_key_lengths = insert_key_lengths, .d_values = insert_values, .update_if_exists = insert_update_if_exists
-    #define erase_args .d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths
-    insert_suffix insert_func{insert_args};
-    erase_rmroot erase_func{erase_args};
-    launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
-    #undef insert_args
-    #undef erase_args
+    kernel::GpuMasstree::insert_device_func<true, key_slice_type, size_type, value_type>
+      insert_func{.d_keys = insert_keys, .max_key_length = max_key_length, .d_key_lengths = insert_key_lengths, .d_values = insert_values, .update_if_exists = insert_update_if_exists};
+    kernel::GpuMasstree::erase_device_func<true, true, true, key_slice_type, size_type, value_type>
+      erase_func{.d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths};
+    kernel::launch_batch_concurrent_two_funcs_kernel(*this, insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
   }
 
   void test_concurrent_insert_find(const key_slice_type* insert_keys,
@@ -238,15 +171,11 @@ struct gpu_masstree {
                                    const size_type max_key_length,
                                    cudaStream_t stream = 0,
                                    bool insert_update_if_exists = false) {
-    using insert_suffix = kernel::GpuMasstree::insert_device_func<true, key_slice_type, size_type, value_type>;
-    using find_concurrent = kernel::GpuMasstree::find_device_func<true, key_slice_type, size_type, value_type>;
-    #define insert_args .d_keys = insert_keys, .max_key_length = max_key_length, .d_key_lengths = insert_key_lengths, .d_values = insert_values, .update_if_exists = insert_update_if_exists
-    #define find_args .d_keys = find_keys, .max_key_length = max_key_length, .d_key_lengths = find_key_lengths, .d_values = find_values
-    insert_suffix insert_func{insert_args};
-    find_concurrent find_func{find_args};
-    launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, find_func, find_num_keys, stream);
-    #undef insert_args
-    #undef find_args
+    kernel::GpuMasstree::insert_device_func<true, key_slice_type, size_type, value_type>
+      insert_func{.d_keys = insert_keys, .max_key_length = max_key_length, .d_key_lengths = insert_key_lengths, .d_values = insert_values, .update_if_exists = insert_update_if_exists};
+    kernel::GpuMasstree::find_device_func<true, key_slice_type, size_type, value_type>
+      find_func{.d_keys = find_keys, .max_key_length = max_key_length, .d_key_lengths = find_key_lengths, .d_values = find_values};
+    kernel::launch_batch_concurrent_two_funcs_kernel(*this, insert_func, insert_num_keys, find_func, find_num_keys, stream);
   }
 
   void test_concurrent_erase_find(const key_slice_type* erase_keys,
@@ -258,15 +187,11 @@ struct gpu_masstree {
                                   const size_type find_num_keys,
                                   const size_type max_key_length,
                                   cudaStream_t stream = 0) {
-    using erase_rmroot = kernel::GpuMasstree::erase_device_func<true, true, true, key_slice_type, size_type, value_type>;
-    using find_concurrent = kernel::GpuMasstree::find_device_func<true, key_slice_type, size_type, value_type>;
-    #define erase_args .d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths
-    #define find_args .d_keys = find_keys, .max_key_length = max_key_length, .d_key_lengths = find_key_lengths, .d_values = find_values
-    erase_rmroot erase_func{erase_args};
-    find_concurrent find_func{find_args};
-    launch_batch_concurrent_two_funcs_kernel(erase_func, erase_num_keys, find_func, find_num_keys, stream);
-    #undef erase_args
-    #undef find_args
+    kernel::GpuMasstree::erase_device_func<true, true, true, key_slice_type, size_type, value_type>
+      erase_func{.d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths};
+    kernel::GpuMasstree::find_device_func<true, key_slice_type, size_type, value_type>
+      find_func{.d_keys = find_keys, .max_key_length = max_key_length, .d_key_lengths = find_key_lengths, .d_values = find_values};
+    kernel::launch_batch_concurrent_two_funcs_kernel(*this, erase_func, erase_num_keys, find_func, find_num_keys, stream);
   }
 
   // device-side APIs
@@ -1388,44 +1313,6 @@ struct gpu_masstree {
     const uint32_t block_size = cg_tile_size;
     kernel::GpuMasstree::initialize_kernel<<<num_blocks, block_size>>>(*this);
     cuda_try(cudaDeviceSynchronize());
-  }
-
-  template <typename device_func>
-  void launch_batch_kernel(const device_func& func, uint32_t num_requests, cudaStream_t stream) {
-    static constexpr bool do_reclaim = device_func::reclaim_required;
-    int block_size = host_reclaimer_type::block_size_;
-    std::size_t shmem_size = sizeof(uint32_t) * device_reclaimer_context_type::required_shmem_size();
-    int num_blocks_per_sm;
-    cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-      &num_blocks_per_sm,
-      kernel::batch_kernel<do_reclaim, device_func, masstree_type>,
-      block_size,
-      shmem_size);
-    cudaDeviceProp device_prop;
-    cudaGetDeviceProperties(&device_prop, 0);
-    uint32_t num_blocks = num_blocks_per_sm * device_prop.multiProcessorCount;
-
-    kernel::batch_kernel<do_reclaim><<<num_blocks, block_size, shmem_size, stream>>>(
-        *this, func, num_requests);
-  }
-
-  template <typename device_func0, typename device_func1>
-  void launch_batch_concurrent_two_funcs_kernel(const device_func0& func0, uint32_t num_requests0, const device_func1& func1, uint32_t num_requests1, cudaStream_t stream) {
-    static constexpr bool do_reclaim = device_func0::reclaim_required || device_func1::reclaim_required;
-    int block_size = host_reclaimer_type::block_size_;
-    std::size_t shmem_size = sizeof(uint32_t) * device_reclaimer_context_type::required_shmem_size();
-    int num_blocks_per_sm;
-    cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-      &num_blocks_per_sm,
-      kernel::batch_concurrent_two_funcs_kernel<do_reclaim, device_func0, device_func1, masstree_type>,
-      block_size,
-      shmem_size);
-    cudaDeviceProp device_prop;
-    cudaGetDeviceProperties(&device_prop, 0);
-    uint32_t num_blocks = num_blocks_per_sm * device_prop.multiProcessorCount;
-    
-    kernel::batch_concurrent_two_funcs_kernel<do_reclaim><<<num_blocks, block_size, shmem_size, stream>>>(
-        *this, func0, num_requests0, func1, num_requests1);
   }
 
   size_type* d_root_index_;

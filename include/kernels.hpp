@@ -132,6 +132,44 @@ __global__ void batch_concurrent_two_funcs_kernel(index_type index,
   if constexpr (do_reclaim) { reclaimer.drain_all(block_wide_tile, tile, allocator); }
 }
 
+template <typename index_type, typename device_func>
+void launch_batch_kernel(index_type& index, const device_func& func, uint32_t num_requests, cudaStream_t stream) {
+  static constexpr bool do_reclaim = device_func::reclaim_required;
+  int block_size = index_type::host_reclaimer_type::block_size_;
+  std::size_t shmem_size = sizeof(uint32_t) * index_type::device_reclaimer_context_type::required_shmem_size();
+  int num_blocks_per_sm;
+  cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+    &num_blocks_per_sm,
+    kernel::batch_kernel<do_reclaim, device_func, index_type>,
+    block_size,
+    shmem_size);
+  cudaDeviceProp device_prop;
+  cudaGetDeviceProperties(&device_prop, 0);
+  uint32_t num_blocks = num_blocks_per_sm * device_prop.multiProcessorCount;
+
+  kernel::batch_kernel<do_reclaim><<<num_blocks, block_size, shmem_size, stream>>>(
+      index, func, num_requests);
+}
+
+template <typename index_type, typename device_func0, typename device_func1>
+void launch_batch_concurrent_two_funcs_kernel(index_type& index,const device_func0& func0, uint32_t num_requests0, const device_func1& func1, uint32_t num_requests1, cudaStream_t stream) {
+  static constexpr bool do_reclaim = device_func0::reclaim_required || device_func1::reclaim_required;
+  int block_size = index_type::host_reclaimer_type::block_size_;
+  std::size_t shmem_size = sizeof(uint32_t) * index_type::device_reclaimer_context_type::required_shmem_size();
+  int num_blocks_per_sm;
+  cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+    &num_blocks_per_sm,
+    kernel::batch_concurrent_two_funcs_kernel<do_reclaim, device_func0, device_func1, index_type>,
+    block_size,
+    shmem_size);
+  cudaDeviceProp device_prop;
+  cudaGetDeviceProperties(&device_prop, 0);
+  uint32_t num_blocks = num_blocks_per_sm * device_prop.multiProcessorCount;
+    
+  kernel::batch_concurrent_two_funcs_kernel<do_reclaim><<<num_blocks, block_size, shmem_size, stream>>>(
+      index, func0, num_requests0, func1, num_requests1);
+}
+
 namespace GpuMasstree {
 
 template <typename masstree>
@@ -397,7 +435,7 @@ struct find_device_func {
   }
 };
 
-template <bool do_merge, bool use_hash_tag, typename key_slice_type, typename size_type, typename value_type>
+template <bool use_hash_tag, bool do_merge, typename key_slice_type, typename size_type, typename value_type>
 struct erase_device_func {
   static constexpr bool reclaim_required = true;
   // kernel args
@@ -421,7 +459,7 @@ struct erase_device_func {
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    table.template cooperative_erase<do_merge, use_hash_tag>(cur_key, cur_key_length, tile, allocator, reclaimer);
+    table.template cooperative_erase<use_hash_tag, do_merge>(cur_key, cur_key_length, tile, allocator, reclaimer);
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
@@ -522,7 +560,7 @@ struct find_device_func {
   }
 };
 
-template <bool do_merge, bool use_hash_tag, bool tag_use_same_hash, typename key_slice_type, typename size_type, typename value_type>
+template <bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains, typename key_slice_type, typename size_type, typename value_type>
 struct erase_device_func {
   static constexpr bool reclaim_required = true;
   // kernel args
@@ -546,7 +584,7 @@ struct erase_device_func {
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    table.template cooperative_erase<do_merge, use_hash_tag, tag_use_same_hash>(cur_key, cur_key_length, tile, allocator, reclaimer);
+    table.template cooperative_erase<use_hash_tag, tag_use_same_hash, do_merge_chains>(cur_key, cur_key_length, tile, allocator, reclaimer);
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
