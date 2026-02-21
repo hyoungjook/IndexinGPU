@@ -215,55 +215,14 @@ struct gpu_masstree {
                                     const size_type erase_num_keys,
                                     const size_type max_key_length,
                                     cudaStream_t stream = 0,
-                                    bool insert_update_if_exists = false,
-                                    bool insert_enable_suffix = true,
-                                    bool erase_do_remove_empty_root = true,
-                                    bool erase_do_merge = true) {
+                                    bool insert_update_if_exists = false) {
     using insert_suffix = kernel::GpuMasstree::insert_device_func<true, key_slice_type, size_type, value_type>;
-    using insert_nosuffix = kernel::GpuMasstree::insert_device_func<false, key_slice_type, size_type, value_type>;
-    using erase_concurrent = kernel::GpuMasstree::erase_device_func<true, false, false, key_slice_type, size_type, value_type>;
-    using erase_merge = kernel::GpuMasstree::erase_device_func<true, true, false, key_slice_type, size_type, value_type>;
     using erase_rmroot = kernel::GpuMasstree::erase_device_func<true, true, true, key_slice_type, size_type, value_type>;
     #define insert_args .d_keys = insert_keys, .max_key_length = max_key_length, .d_key_lengths = insert_key_lengths, .d_values = insert_values, .update_if_exists = insert_update_if_exists
     #define erase_args .d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths
-    if (erase_do_remove_empty_root) {
-      if (insert_enable_suffix) {
-        insert_suffix insert_func{insert_args};
-        erase_rmroot erase_func{erase_args};
-        launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
-      }
-      else {
-        insert_nosuffix insert_func{insert_args};
-        erase_rmroot erase_func{erase_args};
-        launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
-      }
-    }
-    else {
-      if (erase_do_merge) {
-        if (insert_enable_suffix) {
-          insert_suffix insert_func{insert_args};
-          erase_merge erase_func{erase_args};
-          launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
-        }
-        else {
-          insert_nosuffix insert_func{insert_args};
-          erase_merge erase_func{erase_args};
-          launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
-        }
-      }
-      else {
-        if (insert_enable_suffix) {
-          insert_suffix insert_func{insert_args};
-          erase_concurrent erase_func{erase_args};
-          launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
-        }
-        else {
-          insert_nosuffix insert_func{insert_args};
-          erase_concurrent erase_func{erase_args};
-          launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
-        }
-      }
-    }
+    insert_suffix insert_func{insert_args};
+    erase_rmroot erase_func{erase_args};
+    launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
     #undef insert_args
     #undef erase_args
   }
@@ -278,24 +237,35 @@ struct gpu_masstree {
                                    const size_type find_num_keys,
                                    const size_type max_key_length,
                                    cudaStream_t stream = 0,
-                                   bool insert_update_if_exists = false,
-                                   bool enable_suffix = true) {
+                                   bool insert_update_if_exists = false) {
     using insert_suffix = kernel::GpuMasstree::insert_device_func<true, key_slice_type, size_type, value_type>;
-    using insert_nosuffix = kernel::GpuMasstree::insert_device_func<false, key_slice_type, size_type, value_type>;
     using find_concurrent = kernel::GpuMasstree::find_device_func<true, key_slice_type, size_type, value_type>;
     #define insert_args .d_keys = insert_keys, .max_key_length = max_key_length, .d_key_lengths = insert_key_lengths, .d_values = insert_values, .update_if_exists = insert_update_if_exists
     #define find_args .d_keys = find_keys, .max_key_length = max_key_length, .d_key_lengths = find_key_lengths, .d_values = find_values
-    if (enable_suffix) {
-      insert_suffix insert_func{insert_args};
-      find_concurrent find_func{find_args};
-      launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, find_func, find_num_keys, stream);
-    }
-    else {
-      insert_nosuffix insert_func{insert_args};
-      find_concurrent find_func{find_args};
-      launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, find_func, find_num_keys, stream);
-    }
+    insert_suffix insert_func{insert_args};
+    find_concurrent find_func{find_args};
+    launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, find_func, find_num_keys, stream);
     #undef insert_args
+    #undef find_args
+  }
+
+  void test_concurrent_erase_find(const key_slice_type* erase_keys,
+                                  const size_type* erase_key_lengths,
+                                  const size_type erase_num_keys,
+                                  const key_slice_type* find_keys,
+                                  const size_type* find_key_lengths,
+                                  value_type* find_values,
+                                  const size_type find_num_keys,
+                                  const size_type max_key_length,
+                                  cudaStream_t stream = 0) {
+    using erase_rmroot = kernel::GpuMasstree::erase_device_func<true, true, true, key_slice_type, size_type, value_type>;
+    using find_concurrent = kernel::GpuMasstree::find_device_func<true, key_slice_type, size_type, value_type>;
+    #define erase_args .d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths
+    #define find_args .d_keys = find_keys, .max_key_length = max_key_length, .d_key_lengths = find_key_lengths, .d_values = find_values
+    erase_rmroot erase_func{erase_args};
+    find_concurrent find_func{find_args};
+    launch_batch_concurrent_two_funcs_kernel(erase_func, erase_num_keys, find_func, find_num_keys, stream);
+    #undef erase_args
     #undef find_args
   }
 

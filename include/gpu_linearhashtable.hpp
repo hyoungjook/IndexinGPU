@@ -244,56 +244,14 @@ struct gpu_linearhashtable {
                                     const size_type erase_num_keys,
                                     const size_type max_key_length,
                                     cudaStream_t stream = 0,
-                                    bool insert_update_if_exists = false,
-                                    bool erase_do_merge = true,
-                                    bool use_hash_tag = true,
-                                    bool tag_use_same_hash = true) {
+                                    bool insert_update_if_exists = false) {
     using insert_samehash4long = kernel::GpuLinearHashtable::insert_device_func<true, true, key_slice_type, size_type, value_type>;
-    using insert_hash4long = kernel::GpuLinearHashtable::insert_device_func<true, false, key_slice_type, size_type, value_type>;
-    using insert_prfx4long = kernel::GpuLinearHashtable::insert_device_func<false, false, key_slice_type, size_type, value_type>;
     using erase_merge_samehash4long = kernel::GpuLinearHashtable::erase_device_func<true, true, true, key_slice_type, size_type, value_type>;
-    using erase_merge_hash4long = kernel::GpuLinearHashtable::erase_device_func<true, true, false, key_slice_type, size_type, value_type>;
-    using erase_merge_prfx4long = kernel::GpuLinearHashtable::erase_device_func<true, false, false, key_slice_type, size_type, value_type>;
-    using erase_nomerge_samehash4long = kernel::GpuLinearHashtable::erase_device_func<false, true, true, key_slice_type, size_type, value_type>;
-    using erase_nomerge_hash4long = kernel::GpuLinearHashtable::erase_device_func<false, true, false, key_slice_type, size_type, value_type>;
-    using erase_nomerge_prfx4long = kernel::GpuLinearHashtable::erase_device_func<false, false, false, key_slice_type, size_type, value_type>;
     #define insert_args .d_keys = insert_keys, .max_key_length = max_key_length, .d_key_lengths = insert_key_lengths, .d_values = insert_values, .update_if_exists = insert_update_if_exists
     #define erase_args .d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths
-    if (use_hash_tag) {
-      if (tag_use_same_hash) {
-        insert_samehash4long insert_func{insert_args};
-        if (erase_do_merge) {
-          erase_merge_samehash4long erase_func{erase_args};
-          launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
-        }
-        else {
-          erase_nomerge_samehash4long erase_func{erase_args};
-          launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
-        }
-      }
-      else {
-        insert_hash4long insert_func{insert_args};
-        if (erase_do_merge) {
-          erase_merge_hash4long erase_func{erase_args};
-          launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
-        }
-        else {
-          erase_nomerge_hash4long erase_func{erase_args};
-          launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
-        }
-      }
-    }
-    else {
-      insert_prfx4long insert_func{insert_args};
-      if (erase_do_merge) {
-        erase_merge_prfx4long erase_func{erase_args};
-        launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
-      }
-      else {
-        erase_nomerge_prfx4long erase_func{erase_args};
-        launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
-      }
-    }
+    insert_samehash4long insert_func{insert_args};
+    erase_merge_samehash4long erase_func{erase_args};
+    launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
     #undef insert_args
     #undef erase_args
   }
@@ -308,35 +266,35 @@ struct gpu_linearhashtable {
                                    const size_type find_num_keys,
                                    const size_type max_key_length,
                                    cudaStream_t stream = 0,
-                                   bool insert_update_if_exists = false,
-                                   bool use_hash_tag = true,
-                                   bool tag_use_same_hash = true) {
+                                   bool insert_update_if_exists = false) {
     using insert_samehash4long = kernel::GpuLinearHashtable::insert_device_func<true, true, key_slice_type, size_type, value_type>;
-    using insert_hash4long = kernel::GpuLinearHashtable::insert_device_func<true, false, key_slice_type, size_type, value_type>;
-    using insert_prfx4long = kernel::GpuLinearHashtable::insert_device_func<false, false, key_slice_type, size_type, value_type>;
     using find_concurrent_samehash4long = kernel::GpuLinearHashtable::find_device_func<true, true, true, key_slice_type, size_type, value_type>;
-    using find_concurrent_hash4long = kernel::GpuLinearHashtable::find_device_func<true, true, false, key_slice_type, size_type, value_type>;
-    using find_concurrent_prfx4long = kernel::GpuLinearHashtable::find_device_func<true, false, false, key_slice_type, size_type, value_type>;
     #define insert_args .d_keys = insert_keys, .max_key_length = max_key_length, .d_key_lengths = insert_key_lengths, .d_values = insert_values, .update_if_exists = insert_update_if_exists
     #define find_args .d_keys = find_keys, .max_key_length = max_key_length, .d_key_lengths = find_key_lengths, .d_values = find_values
-    if (use_hash_tag) {
-      if (tag_use_same_hash) {
-        insert_samehash4long insert_func{insert_args};
-        find_concurrent_samehash4long find_func{find_args};
-        launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, find_func, find_num_keys, stream);
-      }
-      else {
-        insert_hash4long insert_func{insert_args};
-        find_concurrent_hash4long find_func{find_args};
-        launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, find_func, find_num_keys, stream);
-      }
-    }
-    else {
-      insert_prfx4long insert_func{insert_args};
-      find_concurrent_prfx4long find_func{find_args};
-      launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, find_func, find_num_keys, stream);
-    }
+    insert_samehash4long insert_func{insert_args};
+    find_concurrent_samehash4long find_func{find_args};
+    launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, find_func, find_num_keys, stream);
     #undef insert_args
+    #undef find_args
+  }
+
+  void test_concurrent_erase_find(const key_slice_type* erase_keys,
+                                  const size_type* erase_key_lengths,
+                                  const size_type erase_num_keys,
+                                  const key_slice_type* find_keys,
+                                  const size_type* find_key_lengths,
+                                  value_type* find_values,
+                                  const size_type find_num_keys,
+                                  const size_type max_key_length,
+                                  cudaStream_t stream = 0) {
+    using erase_merge_samehash4long = kernel::GpuLinearHashtable::erase_device_func<true, true, true, key_slice_type, size_type, value_type>;
+    using find_concurrent_samehash4long = kernel::GpuLinearHashtable::find_device_func<true, true, true, key_slice_type, size_type, value_type>;
+    #define erase_args .d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths
+    #define find_args .d_keys = find_keys, .max_key_length = max_key_length, .d_key_lengths = find_key_lengths, .d_values = find_values
+    erase_merge_samehash4long erase_func{erase_args};
+    find_concurrent_samehash4long find_func{find_args};
+    launch_batch_concurrent_two_funcs_kernel(erase_func, erase_num_keys, find_func, find_num_keys, stream);
+    #undef erase_args
     #undef find_args
   }
 

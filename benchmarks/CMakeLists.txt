@@ -4,8 +4,8 @@ set(BENCHMARKS
     masstree_insert_find_bench
     masstree_erase_bench
     masstree_scan_bench
-    hashtable_insert_find_bench
-    hashtable_erase_bench
+    fixedhashtable_insert_find_bench
+    fixedhashtable_erase_bench
     linearhashtable_insert_find_bench
     linearhashtable_erase_bench
 )
