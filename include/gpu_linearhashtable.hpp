@@ -147,8 +147,8 @@ struct gpu_linearhashtable {
 
   template <bool use_hash_tag = true,
             bool tag_use_same_hash = true,
-            bool erase_do_merge_chains = true,
-            bool erase_do_merge_buckets = true>
+            bool erase_do_merge_buckets = true,
+            bool erase_do_merge_chains = true>
   void mixed_batch(const kernels::request_type* request_types,
                    const key_slice_type* keys,
                    const size_type max_key_length,
