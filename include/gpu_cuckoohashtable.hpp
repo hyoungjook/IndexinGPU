@@ -141,6 +141,21 @@ struct gpu_cuckoohashtable {
     kernels::launch_batch_kernel(*this, func, num_keys, stream);
   }
 
+  template <bool use_hash_tag = true, bool _ = true>
+  void mixed_batch(const kernels::request_type* request_types,
+                   const key_slice_type* keys,
+                   const size_type max_key_length,
+                   const size_type* key_lengths,
+                   value_type* values,
+                   bool* results,
+                   const size_type num_requests,
+                   cudaStream_t stream = 0,
+                   bool insert_update_if_exists = false) {
+    kernels::GpuHashtable::mixed_device_func<use_hash_tag, true, key_slice_type, size_type, value_type>
+      func{.d_types = request_types, .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .d_results = results, .insert_update_if_exists = insert_update_if_exists};
+    kernels::launch_batch_kernel(*this, func, num_requests, stream);
+  }
+
   void test_concurrent_insert_erase(const key_slice_type* insert_keys,
                                     const size_type* insert_key_lengths,
                                     const value_type* insert_values,

@@ -536,6 +536,71 @@ struct erase_device_func {
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
 
+template <bool use_hash_tag,
+          bool erase_do_merge,
+          typename key_slice_type,
+          typename size_type,
+          typename value_type>
+struct mixed_device_func {
+  static constexpr bool reclaim_required = true;
+  // kernel args
+  const request_type* d_types;
+  const key_slice_type* d_keys;
+  size_type max_key_length;
+  const size_type* d_key_lengths;
+  value_type* d_values;
+  bool* d_results;
+  bool insert_update_if_exists;
+  // device-side registers
+  struct dev_regs {
+    request_type type;
+    const key_slice_type* key;
+    size_type key_length;
+    value_type value;
+    bool result;
+  };
+  // device-side functions
+  template <typename tile_type>
+  DEVICE_QUALIFIER dev_regs load(uint32_t thread_id, tile_type& tile) const {
+    return dev_regs{
+      .type = d_types[thread_id],
+      .key = &d_keys[max_key_length * thread_id],
+      .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length,
+      .value = d_values[thread_id]
+    };
+  }
+  template <typename hashtable, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
+    auto cur_type = tile.shfl(regs.type, cur_rank);
+    auto cur_key = tile.shfl(regs.key, cur_rank);
+    auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
+    if (cur_type == request_type_insert) {
+      auto cur_value = tile.shfl(regs.value, cur_rank);
+      auto cur_result = table.template cooperative_insert<use_hash_tag>(cur_key, cur_key_length, cur_value, tile, allocator, insert_update_if_exists);
+      if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
+    }
+    else if (cur_type == request_type_find) {
+      auto cur_value = table.template cooperative_find<true, use_hash_tag>(cur_key, cur_key_length, tile, allocator);
+      if (tile.thread_rank() == cur_rank) { regs.value = cur_value; }
+    }
+    else if (cur_type == request_type_erase) {
+      auto cur_result = table.template cooperative_erase<use_hash_tag, erase_do_merge>(cur_key, cur_key_length, tile, allocator, reclaimer);
+      if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
+    }
+    else {  // request_type_successor
+      assert(false); // TODO
+    }
+  }
+  DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const {
+    if (regs.type <= request_type_erase) {  // insert of erase
+      if (d_results) { d_results[thread_id] = regs.result; }
+    }
+    else {  // find or successor
+      d_values[thread_id] = regs.value;
+    }
+  }
+};
+
 template <typename hashtable, typename func>
 __global__ void traverse_nodes_kernel(hashtable table, func task) {
   // called with single warp; not parallelized for debug purpose
@@ -659,6 +724,73 @@ struct erase_device_func {
     table.template cooperative_erase<use_hash_tag, tag_use_same_hash, do_merge_chains, do_merge_buckets>(cur_key, cur_key_length, tile, allocator, reclaimer);
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
+};
+
+template <bool use_hash_tag,
+          bool tag_use_same_hash,
+          bool erase_do_merge_chains,
+          bool erase_do_merge_buckets,
+          typename key_slice_type,
+          typename size_type,
+          typename value_type>
+struct mixed_device_func {
+  static constexpr bool reclaim_required = true;
+  // kernel args
+  const request_type* d_types;
+  const key_slice_type* d_keys;
+  size_type max_key_length;
+  const size_type* d_key_lengths;
+  value_type* d_values;
+  bool* d_results;
+  bool insert_update_if_exists;
+  // device-side registers
+  struct dev_regs {
+    request_type type;
+    const key_slice_type* key;
+    size_type key_length;
+    value_type value;
+    bool result;
+  };
+  // device-side functions
+  template <typename tile_type>
+  DEVICE_QUALIFIER dev_regs load(uint32_t thread_id, tile_type& tile) const {
+    return dev_regs{
+      .type = d_types[thread_id],
+      .key = &d_keys[max_key_length * thread_id],
+      .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length,
+      .value = d_values[thread_id]
+    };
+  }
+  template <typename hashtable, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
+    auto cur_type = tile.shfl(regs.type, cur_rank);
+    auto cur_key = tile.shfl(regs.key, cur_rank);
+    auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
+    if (cur_type == request_type_insert) {
+      auto cur_value = tile.shfl(regs.value, cur_rank);
+      auto cur_result = table.template cooperative_insert<use_hash_tag, tag_use_same_hash>(cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, insert_update_if_exists);
+      if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
+    }
+    else if (cur_type == request_type_find) {
+      auto cur_value = table.template cooperative_find<true, use_hash_tag, tag_use_same_hash>(cur_key, cur_key_length, tile, allocator);
+      if (tile.thread_rank() == cur_rank) { regs.value = cur_value; }
+    }
+    else if (cur_type == request_type_erase) {
+      auto cur_result = table.template cooperative_erase<use_hash_tag, tag_use_same_hash, erase_do_merge_chains, erase_do_merge_buckets>(cur_key, cur_key_length, tile, allocator, reclaimer);
+      if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
+    }
+    else {  // request_type_successor
+      assert(false); // TODO
+    }
+  }
+  DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const {
+    if (regs.type <= request_type_erase) {  // insert of erase
+      if (d_results) { d_results[thread_id] = regs.result; }
+    }
+    else {  // find or successor
+      d_values[thread_id] = regs.value;
+    }
+  }
 };
 
 template <typename hashtable, typename func>
