@@ -4,6 +4,9 @@ set(BENCHMARKS
     masstree_bench
     fixedhashtable_bench
     linearhashtable_bench
+    masstree_mix_bench
+    fixedhashtable_mix_bench
+    linearhashtable_mix_bench
 )
 
 foreach(BENCHMARK ${BENCHMARKS})
