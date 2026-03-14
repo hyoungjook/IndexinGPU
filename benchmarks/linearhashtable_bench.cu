@@ -37,9 +37,9 @@ using value_type = uint32_t;
 using size_type = uint32_t;
 
 template <typename linearhashtable_type,
+          bool find_concurrent = false,
           bool use_hash_tag = true,
           bool tag_use_same_hash = true,
-          bool find_concurrent = false,
           bool erase_merge_buckets = true,
           bool erase_merge_chains = true>
 void bench_linearhashtable(thrust::device_vector<key_slice_type>& d_keys,
@@ -265,8 +265,14 @@ int main(int argc, char** argv) {
   using simple_debra_reclaim_type = simple_debra_reclaimer<>;
   using linearhashtable_type = GpuLinearHashtable::gpu_linearhashtable<simple_slab_linear_alloc_type, simple_debra_reclaim_type>;
 
-  std::cout << "Benchmarking linearhashtable_type" << std::endl;
-  bench_linearhashtable<linearhashtable_type>(
+  std::cout << "Benchmarking linearhashtable_type weak-reads" << std::endl;
+  bench_linearhashtable<linearhashtable_type, false>(
+    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
+    num_keys, max_key_length, num_experiments, erase_ratio, initial_directory_size, resize_policy,
+    validate_result, validate_index, verbose
+  );
+  std::cout << "Benchmarking linearhashtable_type atomic-reads" << std::endl;
+  bench_linearhashtable<linearhashtable_type, true>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
     num_keys, max_key_length, num_experiments, erase_ratio, initial_directory_size, resize_policy,
     validate_result, validate_index, verbose

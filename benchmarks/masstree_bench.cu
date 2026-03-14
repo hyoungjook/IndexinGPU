@@ -37,8 +37,8 @@ using value_type = uint32_t;
 using size_type = uint32_t;
 
 template <typename masstree_type,
-          bool enable_suffix = true,
           bool find_successor_concurrent = false,
+          bool enable_suffix = true,
           bool erase_remove_empty_root = true,
           bool erase_merge = true,
           bool erase_concurrent = true,
@@ -280,8 +280,14 @@ int main(int argc, char** argv) {
   using simple_debra_reclaim_type = simple_debra_reclaimer<>;
   using masstree_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type>;
 
-  std::cout << "Benchmarking masstree_type" << std::endl;
-  bench_masstree<masstree_type>(
+  std::cout << "Benchmarking masstree_type weak-reads" << std::endl;
+  bench_masstree<masstree_type, false>(
+    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
+    num_keys, max_key_length, max_counts_per_query, num_experiments, erase_ratio,
+    validate_result, validate_index, verbose
+  );
+  std::cout << "Benchmarking masstree_type atomic-reads" << std::endl;
+  bench_masstree<masstree_type, true>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
     num_keys, max_key_length, max_counts_per_query, num_experiments, erase_ratio,
     validate_result, validate_index, verbose
