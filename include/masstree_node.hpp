@@ -41,6 +41,14 @@ struct masstree_node {
   }
   DEVICE_QUALIFIER masstree_node(size_type index,
                                  const elem_type elem,
+                                 const tile_type& tile,
+                                 allocator_type& allocator)
+      : node_index_(index)
+      , lane_elem_(elem)
+      , tile_(tile)
+      , allocator_(allocator) {}
+  DEVICE_QUALIFIER masstree_node(size_type index,
+                                 const elem_type elem,
                                  uint32_t metadata,
                                  uint32_t keystate,
                                  const tile_type& tile,
@@ -92,6 +100,13 @@ struct masstree_node {
     utils::memory::store<elem_type, true, true>(node_ptr + tile_.thread_rank(), lane_elem_);
     tile_.sync();
   }
+  template <bool atomic, bool acquire = true>
+  DEVICE_QUALIFIER void load_fetchonly() {
+    auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
+    if constexpr (atomic) { tile_.sync(); }
+    lane_elem_ = utils::memory::load<elem_type, atomic, acquire>(node_ptr + tile_.thread_rank());
+    if constexpr (atomic) { tile_.sync(); }
+  }
 
   DEVICE_QUALIFIER void read_metadata_from_registers() {
     metadata_ = tile_.shfl(lane_elem_, metadata_lane_);
@@ -113,6 +128,8 @@ struct masstree_node {
       }
     }
   }
+
+  DEVICE_QUALIFIER elem_type get_lane_elem() const { return lane_elem_; }
 
   DEVICE_QUALIFIER int get_key_lane_from_location(const int location) const {
     assert(0 <= location && location < node_width);
@@ -294,7 +311,7 @@ struct masstree_node {
   }
 
   // lexicographic comparisons for key entries
-  DEVICE_QUALIFIER bool cmp_key(const key_type& k1, bool morekey1, const key_type& k2, bool morekey2) const {
+  DEVICE_QUALIFIER static bool cmp_key(const key_type& k1, bool morekey1, const key_type& k2, bool morekey2) {
     return (k1 < k2) || ((k1 == k2) && (static_cast<int>(morekey1) <= static_cast<int>(morekey2)));
   }
   template <bool use_upper_key>
@@ -735,7 +752,6 @@ struct masstree_node {
   DEVICE_QUALIFIER void borrow_right(masstree_node& sibling_node,
                                      masstree_node& parent_node,
                                      int left_location,
-                                     const value_type& current_node_index,
                                      const value_type& new_sibling_index,
                                      masstree_node& new_sibling_node) {
     // compute num shift; adjust similar to get_split_left_width()
@@ -781,7 +797,7 @@ struct masstree_node {
     }
     new_sibling_node.write_metadata_to_registers();
     // make old sibling empty
-    sibling_node.make_garbage_node(true, current_node_index);
+    sibling_node.make_garbage_node(true, node_index_);
     // update parent
     if (tile_.thread_rank() == get_key_lane_from_location(left_location)) {
       parent_node.lane_elem_ = pivot_key;

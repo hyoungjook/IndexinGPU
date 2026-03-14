@@ -37,8 +37,8 @@ using value_type = uint32_t;
 using size_type = uint32_t;
 
 template <typename hashtable_type,
-          bool use_hash_tag = true,
           bool find_concurrent = false,
+          bool use_hash_tag = true,
           bool erase_merge = true>
 void bench_hashtable(thrust::device_vector<key_slice_type>& d_keys,
                      thrust::device_vector<size_type>& d_lengths,
@@ -263,14 +263,26 @@ int main(int argc, char** argv) {
   using chainhashtable_type = GpuHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_debra_reclaim_type>;
   using cuckoohashtable_type = GpuHashtable::gpu_cuckoohashtable<simple_slab_alloc_type, simple_debra_reclaim_type>;
 
-  std::cout << "Benchmarking chainhashtable_type" << std::endl;
-  bench_hashtable<chainhashtable_type>(
+  std::cout << "Benchmarking chainhashtable_type weak-reads" << std::endl;
+  bench_hashtable<chainhashtable_type, false>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
     num_keys, max_key_length, num_experiments, erase_ratio, chain_fill_factor,
     validate_result, validate_index, verbose
   );
-  std::cout << "Benchmarking cuckoohashtable_type" << std::endl;
-  bench_hashtable<cuckoohashtable_type>(
+  std::cout << "Benchmarking chainhashtable_type atomic-reads" << std::endl;
+  bench_hashtable<chainhashtable_type, true>(
+    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
+    num_keys, max_key_length, num_experiments, erase_ratio, chain_fill_factor,
+    validate_result, validate_index, verbose
+  );
+  std::cout << "Benchmarking cuckoohashtable_type weak-reads" << std::endl;
+  bench_hashtable<cuckoohashtable_type, false>(
+    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
+    num_keys, max_key_length, num_experiments, erase_ratio, cuckoo_fill_factor,
+    validate_result, validate_index, verbose
+  );
+  std::cout << "Benchmarking cuckoohashtable_type atomic-reads" << std::endl;
+  bench_hashtable<cuckoohashtable_type, true>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
     num_keys, max_key_length, num_experiments, erase_ratio, cuckoo_fill_factor,
     validate_result, validate_index, verbose

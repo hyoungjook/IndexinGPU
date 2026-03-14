@@ -37,12 +37,12 @@ using value_type = uint32_t;
 using size_type = uint32_t;
 
 template <typename masstree_type,
+          bool find_successor_concurrent = false,
           bool enable_suffix = true,
-          bool find_concurrent = false,
-          bool successor_concurrent = false,
           bool erase_remove_empty_root = true,
           bool erase_merge = true,
-          bool erase_concurrent = true>
+          bool erase_concurrent = true,
+          bool reuse_root = true>
 void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
                     thrust::device_vector<size_type>& d_lengths,
                     thrust::device_vector<value_type>& d_values,
@@ -74,7 +74,7 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
     }
     gpu_timer insert_timer;
     insert_timer.start_timer();
-    tree.template insert<enable_suffix>(
+    tree.template insert<enable_suffix, reuse_root>(
       d_keys.data().get(), max_key_length, d_lengths.data().get(), d_values.data().get(), num_keys);
     insert_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
@@ -83,7 +83,7 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
 
     gpu_timer find_timer;
     find_timer.start_timer();
-    tree.template find<find_concurrent>(
+    tree.template find<find_successor_concurrent, reuse_root>(
       d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), d_query_results.data().get(), num_keys);
     find_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
@@ -92,7 +92,7 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
 
     gpu_timer successor_timer;
     successor_timer.start_timer();
-    tree.template scan<false, successor_concurrent>(
+    tree.template scan<false, find_successor_concurrent, reuse_root>(
       d_query_keys.data().get(), d_query_lengths.data().get(),
       max_key_length, max_counts_per_query, num_keys,
       nullptr, nullptr, nullptr, d_query_results.data().get(), nullptr, nullptr);
@@ -106,7 +106,8 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
     erase_timer.start_timer();
     tree.template erase<erase_remove_empty_root,
                         erase_merge || erase_remove_empty_root,
-                        erase_concurrent || erase_merge || erase_remove_empty_root>(
+                        erase_concurrent || erase_merge || erase_remove_empty_root,
+                        reuse_root>(
       d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), num_erase);
     erase_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
@@ -279,8 +280,14 @@ int main(int argc, char** argv) {
   using simple_debra_reclaim_type = simple_debra_reclaimer<>;
   using masstree_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type>;
 
-  std::cout << "Benchmarking masstree_type" << std::endl;
-  bench_masstree<masstree_type>(
+  std::cout << "Benchmarking masstree_type weak-reads" << std::endl;
+  bench_masstree<masstree_type, false>(
+    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
+    num_keys, max_key_length, max_counts_per_query, num_experiments, erase_ratio,
+    validate_result, validate_index, verbose
+  );
+  std::cout << "Benchmarking masstree_type atomic-reads" << std::endl;
+  bench_masstree<masstree_type, true>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
     num_keys, max_key_length, max_counts_per_query, num_experiments, erase_ratio,
     validate_result, validate_index, verbose
