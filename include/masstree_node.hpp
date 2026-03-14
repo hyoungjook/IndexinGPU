@@ -121,6 +121,8 @@ struct masstree_node {
     }
   }
 
+  DEVICE_QUALIFIER elem_type get_lane_elem() const { return lane_elem_; }
+
   DEVICE_QUALIFIER int get_key_lane_from_location(const int location) const {
     assert(0 <= location && location < node_width);
     return location;

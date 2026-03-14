@@ -81,14 +81,15 @@ struct gpu_masstree {
 
   // host-side APIs
   // if key_lengths == NULL, we use max_key_length as a fixed length
-  template <bool concurrent = false>
+  template <bool concurrent = false,
+            bool reuse_root = true>
   void find(const key_slice_type* keys,
             const size_type max_key_length,
             const size_type* key_lengths,
             value_type* values,
             const size_type num_keys,
             cudaStream_t stream = 0) {
-    kernels::GpuMasstree::find_device_func<concurrent, key_slice_type, size_type, value_type>
+    kernels::GpuMasstree::find_device_func<concurrent, reuse_root, key_slice_type, size_type, value_type>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values};
     kernels::launch_batch_kernel(*this, func, num_keys, stream);
   }
@@ -160,36 +161,62 @@ struct gpu_masstree {
 
   // device-side APIs
   template <bool concurrent, typename tile_type>
-  DEVICE_QUALIFIER value_type cooperative_find(const key_slice_type* key,
-                                               size_type key_length,
-                                               const tile_type& tile,
-                                               device_allocator_context_type& allocator) {
+  DEVICE_QUALIFIER elem_type cooperative_fetch_root(const tile_type& tile,
+                                                    device_allocator_context_type& allocator) {
+    using node_type = masstree_node<tile_type, device_allocator_context_type>;
+    auto root_node = node_type(root_index_, tile, allocator);
+    root_node.template load_fetchonly<concurrent>();
+    return root_node.get_lane_elem();
+  }
+
+  template <bool concurrent, typename tile_type>
+  DEVICE_QUALIFIER value_type cooperative_find_from_root(const key_slice_type* key,
+                                                         size_type key_length,
+                                                         elem_type root_lane_elem,
+                                                         const tile_type& tile,
+                                                         device_allocator_context_type& allocator) {
     using node_type = masstree_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     dummy_early_exit_check<node_type> dummy_early_exit;
-    size_type current_node_index = root_index_;
     size_type slice = 0;
+    auto current_node = node_type(root_index_, root_lane_elem, 0, 0, tile, allocator);
+    current_node.read_metadata_from_registers();
     while (slice < key_length) {
       const key_slice_type key_slice = key[slice];
       const bool more_key = (slice < key_length - 1);
-      auto border_node = coop_traverse_until_border<concurrent>(key_slice, current_node_index, tile, allocator, false, dummy_early_exit);
-      const int found_keystate = border_node.get_key_value_from_node(key_slice, current_node_index, more_key);
+      coop_traverse_until_border<concurrent>(current_node, key_slice, tile, allocator, false, dummy_early_exit);
+      value_type found_value;
+      const int found_keystate = current_node.get_key_value_from_node(key_slice, found_value, more_key);
       if (found_keystate < 0) {
         // key not exists, exit early
         return invalid_value;
       }
-      if (found_keystate == node_type::KEYSTATE_SUFFIX) {
-        auto suffix = suffix_type(current_node_index, tile, allocator);
-        suffix.load_head();
-        const bool suffix_eq = suffix.streq(key + slice + 1, key_length - slice - 1);
-        return suffix_eq ? suffix.get_value() : invalid_value;
-      }
-      else {  // keystate == LINK or VALUE
+      if (found_keystate == node_type::KEYSTATE_LINK) {
         slice++;
+        current_node = node_type(found_value, tile, allocator);
+        current_node.template load<concurrent>();
+      }
+      else {// keystate == SUFFIX or VALUE
+        if (found_keystate == node_type::KEYSTATE_SUFFIX) {
+          auto suffix = suffix_type(found_value, tile, allocator);
+          suffix.load_head();
+          const bool suffix_eq = suffix.streq(key + slice + 1, key_length - slice - 1);
+          found_value = suffix_eq ? suffix.get_value() : invalid_value;
+        }
+        return found_value;
       }
     }
-    // current_node_index has the final value
-    return current_node_index;
+    assert(false);
+    return invalid_value;
+  }
+
+  template <bool concurrent, typename tile_type>
+  DEVICE_QUALIFIER value_type cooperative_find(const key_slice_type* key,
+                                               size_type key_length,
+                                               const tile_type& tile,
+                                               device_allocator_context_type& allocator) {
+    auto root_lane_elem = cooperative_fetch_root<concurrent>(tile, allocator);
+    return cooperative_find_from_root<concurrent>(key, key_length, root_lane_elem, tile, allocator);
   }
 
   template <bool use_upper_key, bool concurrent, typename tile_type>
@@ -230,7 +257,9 @@ struct gpu_masstree {
     [[maybe_unused]] dynamic_stack_type_x1 ignore_upper_key_stack(allocator, tile);
     while (true) {
       // traverse the btree: current_node_index can be root node or border node
-      auto border_node = coop_traverse_until_border<concurrent>(lower_key_slice, current_node_index, tile, allocator, false, dummy_early_exit);
+      auto border_node = node_type(current_node_index, tile, allocator);
+      border_node.template load<concurrent>();
+      coop_traverse_until_border<concurrent>(border_node, lower_key_slice, tile, allocator, false, dummy_early_exit);
       // traverse side links, scan the nodes, and decide scan_op:
       //      >=0 (down-link location; go to next layer)
       //      -1 (continue side-link traverse)
@@ -550,7 +579,9 @@ struct gpu_masstree {
         }
         else {
           const bool lock_border_node = !more_key;
-          border_node = coop_traverse_until_border<concurrent>(key_slice, current_node_index, tile, allocator, lock_border_node, early_exit);
+          border_node = node_type(current_node_index, tile, allocator);
+          border_node.template load<concurrent>();
+          coop_traverse_until_border<concurrent>(border_node, key_slice, tile, allocator, lock_border_node, early_exit);
           border_node_locked_by_me = lock_border_node;
         }
         if (early_exit.exited_) {
@@ -667,7 +698,9 @@ struct gpu_masstree {
           size_type layer_root_index;
           per_layer_indexes.pop(layer_root_index, current_node_index);
           merge_early_exit_check early_exit{key_slice, true};
-          border_node = coop_traverse_until_border<true>(key_slice, current_node_index, tile, allocator, true, early_exit);
+          border_node = node_type(current_node_index, tile, allocator);
+          border_node.template load<true>();
+          coop_traverse_until_border<true>(border_node, key_slice, tile, allocator, true, early_exit);
           if (early_exit.exited_) { break; }
           if (border_node.key_is_in_node(key_slice, node_type::KEYSTATE_LINK) && border_node.is_underflow()) {
             // cannot allow underflow. retry from root with proactive merging
@@ -722,25 +755,23 @@ struct gpu_masstree {
   };
 
   template <bool concurrent, typename tile_type, typename early_exit_check>
-  DEVICE_QUALIFIER masstree_node<tile_type, device_allocator_context_type>
-        coop_traverse_until_border(const key_slice_type& key_slice,
-                                   const size_type& current_root_index,
+  DEVICE_QUALIFIER void
+        coop_traverse_until_border(masstree_node<tile_type, device_allocator_context_type>& current_node,
+                                   const key_slice_type& key_slice,
                                    const tile_type& tile,
                                    device_allocator_context_type& allocator,
                                    bool lock_border_node,
                                    early_exit_check& early_exit) {
     // starting from a local root node in a layer, return the border node and its index
     using node_type = masstree_node<tile_type, device_allocator_context_type>;
-    node_type current_node = node_type(current_root_index, tile, allocator);
     while (true) {
-      current_node.template load<concurrent>();
       if constexpr (concurrent) {
         traverse_side_links(current_node, key_slice, tile, allocator);
       }
       if (current_node.is_border()) {
         if (lock_border_node) {
           if (early_exit.check(current_node)) {
-            return current_node;
+            return;
           }
           current_node.lock();
           current_node.template load<true>();
@@ -752,11 +783,12 @@ struct gpu_masstree {
             continue; // retry traversal to border
           }
         }
-        return current_node;
+        return;
       }
       else {
         auto next_index = current_node.find_next(key_slice);
         current_node = node_type(next_index, tile, allocator);
+        current_node.template load<concurrent>();
       }
     }
     assert(false);
