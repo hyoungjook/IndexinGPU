@@ -252,9 +252,6 @@ struct masstree_node {
     auto next_location = find_next_location(key);
     return get_value_from_location(next_location);
   }
-  DEVICE_QUALIFIER bool key_is_in_upperhalf(const key_type& pivot_key, const key_type& key) const {
-    return (pivot_key < key);
-  }
   DEVICE_QUALIFIER value_type find_next_and_sibling(const key_type& key, value_type& sibling_index, bool& sibling_at_left) const {
     auto next_location = find_next_location(key);
     sibling_at_left = decide_merge_left(next_location);
@@ -444,8 +441,9 @@ struct masstree_node {
     return shift_required ? (half_node_width_ - 1) : half_node_width_;
   }
 
-  DEVICE_QUALIFIER masstree_node do_split(const value_type right_sibling_index,
-                                          const int left_width) {
+  DEVICE_QUALIFIER void do_split(masstree_node& right_sibling_node,
+                                 const int left_width) {
+    // right_sibling_node has valid node_index_. this function fills its lane_elem_.
     // same-key link and value entries (if both exist) must be in the same node
     //assert(!(
     //  is_border() &&
@@ -454,96 +452,81 @@ struct masstree_node {
     //));
     assert(is_full());
     // prepare the upper half in right sibling
-    elem_type right_sibling_elem = tile_.shfl_down(lane_elem_, left_width);
-    uint32_t right_sibling_keystate = is_border() ? tile_.shfl_down(keystate_, left_width) : false;
+    right_sibling_node.lane_elem_ = tile_.shfl_down(lane_elem_, left_width);
+    right_sibling_node.keystate_ = is_border() ? tile_.shfl_down(keystate_, left_width) : false;
     // reconnect right sibling pointers
     if (tile_.thread_rank() == sibling_ptr_lane_) {
       // right's right sibling = this node's previous right sibling
-      right_sibling_elem = lane_elem_;
+      right_sibling_node.lane_elem_ = lane_elem_;
       // left's right sibling = right
-      lane_elem_ = right_sibling_index;
+      lane_elem_ = right_sibling_node.get_node_index();
     }
     // reassign high keys
     if (is_border()) {
       auto pivot_key = get_key_from_location(left_width - 1);
       if (tile_.thread_rank() == border_high_key_lane_) {
         // right's high key = this node's previous high key
-        right_sibling_elem = lane_elem_;
+        right_sibling_node.lane_elem_ = lane_elem_;
         // left's high key = pivot key
         lane_elem_ = pivot_key;
       }
     }
     // update metadata
-    uint32_t right_metadata = (metadata_ & ~(num_keys_mask_ | sibling_bit_mask_));
-    right_metadata |= ((num_keys() - left_width) << num_keys_offset_); // right.num_keys = num_keys - left_width;
-    if (has_sibling()) right_metadata |= sibling_bit_mask_;   // right.has_sibling = has_sibling;
+    right_sibling_node.metadata_ = (metadata_ & ~(num_keys_mask_ | sibling_bit_mask_));
+    right_sibling_node.metadata_ |= ((num_keys() - left_width) << num_keys_offset_); // right.num_keys = num_keys - left_width;
+    if (has_sibling()) { right_sibling_node.metadata_ |= sibling_bit_mask_; }  // right.has_sibling = has_sibling;
     set_num_keys(left_width);
     metadata_ |= sibling_bit_mask_; // has_sibling = true;
-    // create right sibling node
-    masstree_node right_sibling_node =
-        masstree_node(right_sibling_index, right_sibling_elem,
-                      right_metadata, right_sibling_keystate, tile_, allocator_);
     // flush metadata
     write_metadata_to_registers();
     right_sibling_node.write_metadata_to_registers();
-
-    return right_sibling_node;
   }
 
-  struct split_intermediate_result {
-    masstree_node sibling;
-    key_type pivot_key;
-  };
   // Note parent must be locked before this gets called
-  DEVICE_QUALIFIER split_intermediate_result split(const value_type right_sibling_index,
-                                                   const value_type parent_index,
-                                                   masstree_node& parent_node) {
+  DEVICE_QUALIFIER void split(masstree_node& right_sibling_node,
+                              const value_type parent_index,
+                              masstree_node& parent_node) {
     // We assume here that the parent is locked
     auto left_width = get_split_left_width();
-    auto split_result = do_split(right_sibling_index, left_width);
+    do_split(right_sibling_node, left_width);
 
     // update the parent
     auto pivot_key = get_key_from_location(left_width - 1);
-    parent_node.insert(pivot_key, right_sibling_index, 0);
-    return {split_result, pivot_key};
+    parent_node.insert(pivot_key, right_sibling_node.get_node_index(), 0);
   }
 
-  struct two_nodes_result {
-    masstree_node left;
-    masstree_node right;
-  };
-  DEVICE_QUALIFIER two_nodes_result split_as_root(const value_type left_sibling_index,
-                                                  const value_type right_sibling_index) {
+  DEVICE_QUALIFIER void split_as_root(masstree_node& left_child_node,
+                                      masstree_node& right_child_node) {
     // Copy the current node into a child
     assert(is_root());
-    auto left_child =
-        masstree_node(left_sibling_index, lane_elem_, metadata_, keystate_, tile_, allocator_);
+    left_child_node.lane_elem_ = lane_elem_;
+    left_child_node.metadata_ = metadata_;
+    left_child_node.keystate_ = keystate_;
     // if the root was a border node, now it should be interior
     metadata_ &= ~border_bit_mask_; // is_border = false;
     // left child is not a root anymore
-    left_child.metadata_ &= ~root_bit_mask_;  // left_child.is_root = false;
+    left_child_node.metadata_ &= ~root_bit_mask_;  // left_child_node.is_root = false;
     // Make new root
     set_num_keys(2);
-    auto left_width = left_child.get_split_left_width();
-    auto pivot_key = left_child.get_key_from_location(left_width - 1);
+    auto left_width = left_child_node.get_split_left_width();
+    auto pivot_key = left_child_node.get_key_from_location(left_width - 1);
     if (tile_.thread_rank() == get_key_lane_from_location(0)) {
       lane_elem_ = pivot_key;
     }
     else if (tile_.thread_rank() == get_value_lane_from_location(0)) {
-      lane_elem_ = left_sibling_index;
+      lane_elem_ = left_child_node.node_index_;
     }
     else if (tile_.thread_rank() == get_key_lane_from_location(1)) {
       lane_elem_ = max_key;
     }
     else if (tile_.thread_rank() == get_value_lane_from_location(1)) {
-      lane_elem_ = right_sibling_index;
+      lane_elem_ = right_child_node.node_index_;
     }
     assert(!has_sibling()); // root has no sibling
     write_metadata_to_registers();
 
     // now split the left child
-    auto right_child = left_child.do_split(right_sibling_index, left_width);
-    return {left_child, right_child};
+    left_child_node.do_split(right_child_node, left_width);
   }
 
   DEVICE_QUALIFIER void do_insert(const key_type& key, const value_type& value, uint32_t keystate, const size_type& key_location) {

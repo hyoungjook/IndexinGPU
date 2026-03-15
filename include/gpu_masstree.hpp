@@ -942,38 +942,38 @@ struct gpu_masstree {
             continue;
           }
           // do split
-          auto sibling_index = allocator.allocate(tile);
-          auto split_result = current_node.split(sibling_index, parent_index, parent_node);
+          auto right_sibling_node = node_type(allocator.allocate(tile), tile, allocator);
+          current_node.split(right_sibling_node, parent_index, parent_node);
           // write order: right -> left -> parent
-          split_result.sibling.template store<true>();
+          right_sibling_node.template store<true>();
           current_node.template store<true>();
           parent_node.store_unlock();
           // update current node if necessary
-          if (current_node.key_is_in_upperhalf(split_result.pivot_key, key_slice)) {
+          if (current_node.get_high_key() < key_slice) {
             current_node.unlock();
-            current_node = split_result.sibling;
+            current_node = right_sibling_node;
           }
           else {
-            split_result.sibling.unlock();
+            right_sibling_node.unlock();
           }
         }
         else { // (current_node.get_node_index() == root_node_index)
           assert(current_node.is_root());
-          auto left_sibling_index = allocator.allocate(tile);
-          auto right_sibling_index = allocator.allocate(tile);
-          auto two_siblings = current_node.split_as_root(left_sibling_index, right_sibling_index);
+          auto left_child_node = node_type(allocator.allocate(tile), tile, allocator);
+          auto right_child_node = node_type(allocator.allocate(tile), tile, allocator);
+          current_node.split_as_root(left_child_node, right_child_node);
           // write order: right -> left -> parent
-          two_siblings.right.template store<true>();
-          two_siblings.left.template store<true>();
+          right_child_node.template store<true>();
+          left_child_node.template store<true>();
           current_node.store_unlock();
           // update current node to left or right
-          if (current_node.find_next(key_slice) == left_sibling_index) {
-            two_siblings.right.unlock();
-            current_node = two_siblings.left;
+          if (current_node.find_next(key_slice) == left_child_node.get_node_index()) {
+            right_child_node.unlock();
+            current_node = left_child_node;
           }
           else {
-            two_siblings.left.unlock();
-            current_node = two_siblings.right;
+            left_child_node.unlock();
+            current_node = right_child_node;
           }
           parent_index = root_index;
         }
