@@ -47,18 +47,6 @@ struct masstree_node {
       , lane_elem_(elem)
       , tile_(tile)
       , allocator_(allocator) {}
-  DEVICE_QUALIFIER masstree_node(size_type index,
-                                 const elem_type elem,
-                                 uint32_t metadata,
-                                 uint32_t keystate,
-                                 const tile_type& tile,
-                                 allocator_type& allocator)
-      : node_index_(index)
-      , lane_elem_(elem)
-      , metadata_(metadata)
-      , keystate_(keystate)
-      , tile_(tile)
-      , allocator_(allocator) {}
 
   DEVICE_QUALIFIER void initialize_root() {
     lane_elem_ = 0;
