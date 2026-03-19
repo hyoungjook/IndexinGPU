@@ -454,7 +454,7 @@ struct suffix_node_subwarp {
         }
         else {
           shift_elem = tile_.shfl_up(src.lane_elem_.first, shift_offset - node_width);
-          if (max(shift_offset - node_width, skip_elems) <= tile_.thread_rank()) {
+          if (shift_offset - node_width <= tile_.thread_rank()) {
             dst_lane_elem.second = shift_elem;
           }
         }
@@ -537,7 +537,7 @@ struct suffix_node_subwarp {
         auto* next_ptr = reinterpret_cast<elem_unsigned_type*>(allocator_.address(next));
         auto elem = *reinterpret_cast<elem_type*>(&next_ptr[tile_.thread_rank()]);
         for (uint32_t i = 0; i < min(length, node_max_len_); i++) {
-          slice_type key_slice = tile_.shfl(i < node_width ? lane_elem_.first : lane_elem_.second, i % node_width);
+          slice_type key_slice = tile_.shfl(i < node_width ? elem.first : elem.second, i % node_width);
           if (lead_lane) printf("%u ", key_slice);
         }
         if (length <= node_max_len_) {
