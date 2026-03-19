@@ -73,6 +73,8 @@ struct gpu_masstree {
   using device_reclaimer_instance_type = typename host_reclaimer_type::device_instance_type;
   using device_reclaimer_context_type = device_reclaimer_context<host_reclaimer_type>;
 
+  using masstree_type = gpu_masstree<Allocator, Reclaimer, use_subwarp>;
+
   gpu_masstree() = delete;
   gpu_masstree(const host_allocator_type& host_allocator,
                const host_reclaimer_type& host_reclaimer)
@@ -101,7 +103,7 @@ struct gpu_masstree {
             value_type* values,
             const size_type num_keys,
             cudaStream_t stream = 0) {
-    kernels::GpuMasstree::find_device_func<concurrent, reuse_root, key_slice_type, size_type, value_type>
+    kernels::GpuMasstree::find_device_func<masstree_type, concurrent, reuse_root>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values};
     kernels::launch_batch_kernel<use_subwarp>(*this, func, num_keys, stream);
   }
@@ -115,7 +117,7 @@ struct gpu_masstree {
               const size_type num_keys,
               cudaStream_t stream = 0,
               bool update_if_exists = false) {
-    kernels::GpuMasstree::insert_device_func<enable_suffix, reuse_root, key_slice_type, size_type, value_type>
+    kernels::GpuMasstree::insert_device_func<masstree_type, enable_suffix, reuse_root>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .update_if_exists = update_if_exists};
     kernels::launch_batch_kernel<use_subwarp>(*this, func, num_keys, stream);
   }
@@ -129,7 +131,7 @@ struct gpu_masstree {
              const size_type* key_lengths,
              const size_type num_keys,
              cudaStream_t stream = 0) {
-    kernels::GpuMasstree::erase_device_func<concurrent, do_merge, do_remove_empty_root, reuse_root, key_slice_type, size_type, value_type>
+    kernels::GpuMasstree::erase_device_func<masstree_type, concurrent, do_merge, do_remove_empty_root, reuse_root>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths};
     kernels::launch_batch_kernel<use_subwarp>(*this, func, num_keys, stream);
   }
@@ -149,7 +151,7 @@ struct gpu_masstree {
             key_slice_type* out_keys = nullptr,
             size_type* out_key_lengths = nullptr,
             cudaStream_t stream = 0) {
-    kernels::GpuMasstree::scan_device_func<use_upper_key, concurrent, reuse_root, key_slice_type, size_type, value_type>
+    kernels::GpuMasstree::scan_device_func<masstree_type, use_upper_key, concurrent, reuse_root>
       func{.d_lower_keys = lower_keys, .d_lower_key_lengths = lower_key_lengths,
            .max_key_length = max_key_length, .max_count_per_query = max_count_per_query,
            .d_upper_keys = upper_keys, .d_upper_key_lengths = upper_key_lengths,
@@ -170,7 +172,7 @@ struct gpu_masstree {
                    const size_type num_requests,
                    cudaStream_t stream = 0,
                    bool insert_update_if_exists = false) {
-    kernels::GpuMasstree::mixed_device_func<enable_suffix, erase_do_merge, erase_do_remove_empty_root, reuse_root, key_slice_type, size_type, value_type>
+    kernels::GpuMasstree::mixed_device_func<masstree_type, enable_suffix, erase_do_merge, erase_do_remove_empty_root, reuse_root>
       func{.d_types = request_types, .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .d_results = results, .insert_update_if_exists = insert_update_if_exists};
     kernels::launch_batch_kernel<use_subwarp>(*this, func, num_requests, stream);
   }

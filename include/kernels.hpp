@@ -59,9 +59,11 @@ __global__ void batch_kernel(index_type index,
        thread_id += (num_worker_blocks * block_size)) {
     bool task_exists = (thread_id < num_requests);
     typename device_func::dev_regs regs;
-    func.load(regs, index, tile, allocator, thread_id, task_exists);
     if constexpr (do_reclaim) { reclaimer.begin_critical_section(block_wide_tile, allocator); }
     auto work_queue = tile.ballot(task_exists);
+    if (work_queue) {
+      func.load(regs, index, tile, allocator, thread_id, task_exists);
+    }
     while (work_queue) {
       int cur_rank = __ffs(work_queue) - 1;
       func.exec(index, regs, tile, allocator, reclaimer, cur_rank);
@@ -104,8 +106,12 @@ __global__ void initialize_kernel(masstree tree, size_type* d_root_index) {
   tree.allocate_root_node(d_root_index, tile, allocator);
 }
 
-template <bool enable_suffix, bool reuse_root, typename key_slice_type, typename size_type, typename value_type>
+template <typename masstree, bool enable_suffix, bool reuse_root>
 struct insert_device_func {
+  using key_slice_type = typename masstree::key_slice_type;
+  using size_type = typename masstree::size_type;
+  using value_type = typename masstree::value_type;
+  using elem_type = typename masstree::elem_type;
   static constexpr bool reclaim_required = true;
   // kernel args
   const key_slice_type* d_keys;
@@ -118,10 +124,10 @@ struct insert_device_func {
     const key_slice_type* key;
     size_type key_length;
     value_type value;
-    key_slice_type root_lane_elem;
+    elem_type root_lane_elem;
   };
   // device-side functions
-  template <typename masstree, typename tile_type, typename allocator_type>
+  template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
       regs.key = &d_keys[max_key_length * thread_id];
@@ -132,7 +138,7 @@ struct insert_device_func {
       regs.root_lane_elem = tree.template cooperative_fetch_root<true>(tile, allocator);
     }
   }
-  template <typename masstree, typename tile_type, typename allocator_type, typename reclaimer_type>
+  template <typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
@@ -147,8 +153,12 @@ struct insert_device_func {
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
 
-template <bool concurrent, bool reuse_root, typename key_slice_type, typename size_type, typename value_type>
+template <typename masstree, bool concurrent, bool reuse_root>
 struct find_device_func {
+  using key_slice_type = typename masstree::key_slice_type;
+  using size_type = typename masstree::size_type;
+  using value_type = typename masstree::value_type;
+  using elem_type = typename masstree::elem_type;
   static constexpr bool reclaim_required = false;
   // kernel args
   const key_slice_type* d_keys;
@@ -160,10 +170,10 @@ struct find_device_func {
     const key_slice_type* key;
     size_type key_length;
     value_type value;
-    key_slice_type root_lane_elem;
+    elem_type root_lane_elem;
   };
   // device-side functions
-  template <typename masstree, typename tile_type, typename allocator_type>
+  template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
       regs.key = &d_keys[max_key_length * thread_id];
@@ -173,7 +183,7 @@ struct find_device_func {
       regs.root_lane_elem = tree.template cooperative_fetch_root<true>(tile, allocator);
     }
   }
-  template <typename masstree, typename tile_type, typename allocator_type, typename reclaimer_type>
+  template <typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
@@ -189,8 +199,12 @@ struct find_device_func {
   }
 };
 
-template <bool concurrent, bool do_merge, bool do_remove_empty_root, bool reuse_root, typename key_slice_type, typename size_type, typename value_type>
+template <typename masstree, bool concurrent, bool do_merge, bool do_remove_empty_root, bool reuse_root>
 struct erase_device_func {
+  using key_slice_type = typename masstree::key_slice_type;
+  using size_type = typename masstree::size_type;
+  using value_type = typename masstree::value_type;
+  using elem_type = typename masstree::elem_type;
   static constexpr bool reclaim_required = true;
   // kernel args
   const key_slice_type* d_keys;
@@ -200,10 +214,10 @@ struct erase_device_func {
   struct dev_regs {
     const key_slice_type* key;
     size_type key_length;
-    key_slice_type root_lane_elem;
+    elem_type root_lane_elem;
   };
   // device-side functions
-  template <typename masstree, typename tile_type, typename allocator_type>
+  template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
       regs.key = &d_keys[max_key_length * thread_id];
@@ -213,7 +227,7 @@ struct erase_device_func {
       regs.root_lane_elem = tree.template cooperative_fetch_root<true>(tile, allocator);
     }
   }
-  template <typename masstree, typename tile_type, typename allocator_type, typename reclaimer_type>
+  template <typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
@@ -227,8 +241,12 @@ struct erase_device_func {
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
 
-template <bool use_upper_key, bool concurrent, bool reuse_root, typename key_slice_type, typename size_type, typename value_type>
+template <typename masstree, bool use_upper_key, bool concurrent, bool reuse_root>
 struct scan_device_func {
+  using key_slice_type = typename masstree::key_slice_type;
+  using size_type = typename masstree::size_type;
+  using value_type = typename masstree::value_type;
+  using elem_type = typename masstree::elem_type;
   static constexpr bool reclaim_required = false;
   // kernel args
   const key_slice_type* d_lower_keys;
@@ -251,10 +269,10 @@ struct scan_device_func {
     value_type* value;
     key_slice_type* out_key;
     size_type* out_key_length;
-    key_slice_type root_lane_elem;
+    elem_type root_lane_elem;
   };
   // device-side functions
-  template <typename masstree, typename tile_type, typename allocator_type>
+  template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
       regs.lower_key = &d_lower_keys[max_key_length * thread_id];
@@ -269,7 +287,7 @@ struct scan_device_func {
       regs.root_lane_elem = tree.template cooperative_fetch_root<true>(tile, allocator);
     }
   }
-  template <typename masstree, typename tile_type, typename allocator_type, typename reclaimer_type>
+  template <typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
     auto cur_lower_key = tile.shfl(regs.lower_key, cur_rank);
     auto cur_lower_key_length = tile.shfl(regs.lower_key_length, cur_rank);
@@ -295,14 +313,16 @@ struct scan_device_func {
   }
 };
 
-template <bool enable_suffix,
+template <typename masstree,
+          bool enable_suffix,
           bool erase_do_merge,
           bool erase_do_remove_empty_root,
-          bool reuse_root,
-          typename key_slice_type,
-          typename size_type,
-          typename value_type>
+          bool reuse_root>
 struct mixed_device_func {
+  using key_slice_type = typename masstree::key_slice_type;
+  using size_type = typename masstree::size_type;
+  using value_type = typename masstree::value_type;
+  using elem_type = typename masstree::elem_type;
   static constexpr bool reclaim_required = true;
   // kernel args
   const request_type* d_types;
@@ -319,10 +339,10 @@ struct mixed_device_func {
     size_type key_length;
     value_type value;
     bool result;
-    key_slice_type root_lane_elem;
+    elem_type root_lane_elem;
   };
   // device-side functions
-  template <typename masstree, typename tile_type, typename allocator_type>
+  template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
       regs.type = d_types[thread_id];
@@ -334,7 +354,7 @@ struct mixed_device_func {
       regs.root_lane_elem = tree.template cooperative_fetch_root<true>(tile, allocator);
     }
   }
-  template <typename masstree, typename tile_type, typename allocator_type, typename reclaimer_type>
+  template <typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
     auto cur_type = tile.shfl(regs.type, cur_rank);
     auto cur_key = tile.shfl(regs.key, cur_rank);

@@ -274,7 +274,7 @@ public:
     // used for gpu_masstree::cooperative_range()
     if (layer == 0 || count == 0) { return; }
     auto lane_elem_first = lane_elem_first_[key_slice_idx];
-    auto lane_elem_second = lane_elem_first_[key_slice_idx];
+    auto lane_elem_second = lane_elem_second_[key_slice_idx];
     int top = top_;
     while (true) {
       // store stack_register[0, top] -> out_keys[layer-top-1, layer-1]

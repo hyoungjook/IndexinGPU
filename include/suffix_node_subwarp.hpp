@@ -94,7 +94,7 @@ struct suffix_node_subwarp {
                             (elem.first != key[tile_.thread_rank()]);
       bool mismatch_second = (node_width + tile_.thread_rank() < node_max_len_) &&
                              (node_width + tile_.thread_rank() < key_length) && 
-                             (elem.second != key[tile_.thread_rank()]);
+                             (elem.second != key[node_width + tile_.thread_rank()]);
       uint32_t mismatch_ballot = tile_.ballot(mismatch_first || mismatch_second);
       if (mismatch_ballot != 0) { return false; }
       if (key_length <= node_max_len_) { return true; }
@@ -448,7 +448,9 @@ struct suffix_node_subwarp {
           shift_elem = tile_.shfl_up(src.lane_elem_.second, shift_offset);
           dst_lane_elem.second = shift_elem;
           shift_elem = tile_.shfl_down(src.lane_elem_.first, node_width - shift_offset);
-          dst_lane_elem.second = shift_elem;
+          if (tile_.thread_rank() < shift_offset) {
+            dst_lane_elem.second = shift_elem;
+          }
         }
         else {
           shift_elem = tile_.shfl_up(src.lane_elem_.first, shift_offset - node_width);
