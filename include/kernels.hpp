@@ -73,7 +73,8 @@ __global__ void batch_kernel(index_type index,
     if constexpr (do_reclaim) { reclaimer.end_critical_section(block_wide_tile); }
     if (thread_id < num_requests) { func.store(regs, thread_id); }
   }
-  if constexpr (do_reclaim) { reclaimer.drain_all(block_wide_tile, tile, allocator); }
+  auto warp_wide_tile = cg::tiled_partition<32>(block);
+  if constexpr (do_reclaim) { reclaimer.drain_all(block_wide_tile, warp_wide_tile, allocator); }
 }
 
 template <bool subwarp, typename index_type, typename device_func>
