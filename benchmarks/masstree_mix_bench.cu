@@ -1,6 +1,6 @@
 /*
  *   Copyright 2022 The Regents of the University of California, Davis
- *   Copyright 2025 Hyoungjoo Kim, Carnegie Mellon University
+ *   Copyright 2026 Hyoungjoo Kim, Carnegie Mellon University
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
  *   limitations under the License.
  */
 #include <cuda_profiler_api.h>
-#include <gpu_index.h>
+#include <gpu_masstree.hpp>
 #include <stdlib.h>
 #include <thrust/sequence.h>
 #include <thrust/logical.h>
