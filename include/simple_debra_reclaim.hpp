@@ -1,6 +1,6 @@
 /*
  *   Copyright 2022 The Regents of the University of California, Davis
- *   Copyright 2025 Hyoungjoo Kim, Carnegie Mellon University
+ *   Copyright 2026 Hyoungjoo Kim, Carnegie Mellon University
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <iostream>
 #include <memory>
+#include <device_context.hpp>
 
 // refactoring of memory_reclaimer.hpp
 #ifndef NDEBUG
@@ -193,12 +194,14 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
 
   template <typename block_type, typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void drain_all(const block_type& block, const tile_type& tile, allocator_type& allocator) {
+    static_assert(tile_type::size() == warp_size_);
     // only one tile is required, exit the rest to free hardware resource
-    if (block.thread_rank() >= tile_size_) { return; }
+    if (block.thread_rank() >= warp_size_) { return; }
+    tile.sync();
     while (true) {
       // check all bags are empty
       bool bag_empty = true;
-      static_assert(num_bags_ <= tile_size_);
+      static_assert(num_bags_ <= warp_size_);
       if (tile.thread_rank() < num_bags_) {
         bag_empty = (count_per_bag()[tile.thread_rank()] == 0);
       }
@@ -293,7 +296,7 @@ private:
   static constexpr uint32_t num_bags_ = 3;
   static constexpr uint32_t shmem_size_per_bag_ = 128;
   static constexpr size_type critical_bit_mask_ = 0x1;
-  static constexpr uint32_t tile_size_ = 32;
+  static constexpr uint32_t warp_size_ = 32;
 
   DEVICE_QUALIFIER pointer_type* limbo_bags() const { return shmem_buffer_; }
   DEVICE_QUALIFIER size_type* count_per_bag() const { return shmem_buffer_ + (shmem_size_per_bag_ * num_bags_); }

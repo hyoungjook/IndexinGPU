@@ -1,5 +1,5 @@
 /*
- *   Copyright 2025 Hyoungjoo Kim, Carnegie Mellon University
+ *   Copyright 2026 Hyoungjoo Kim, Carnegie Mellon University
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -26,8 +26,8 @@
 #include <fstream>
 #include <ios>
 #include <iostream>
-#include <hashtable_node.hpp>
-#include <suffix.hpp>
+#include <nodes.hpp>
+#include <compute_hash.hpp>
 #include <queue>
 #include <sstream>
 #include <type_traits>
@@ -41,16 +41,17 @@
 namespace GpuLinearHashtable {
 
 template <typename Allocator,
-          typename Reclaimer>
+          typename Reclaimer,
+          bool use_subwarp = true>
 struct gpu_linearhashtable {
   using size_type = uint32_t;
   using elem_type = uint32_t;
   using key_slice_type = elem_type;
   using value_type = elem_type;
   using table_ptr_type = uint64_t;
+  static constexpr bool use_subwarp_ = use_subwarp;
   static auto constexpr bucket_size = 32;
   static std::size_t constexpr bucket_bytes = sizeof(elem_type) * bucket_size;
-  static auto constexpr cg_tile_size = 32;
 
   static constexpr value_type invalid_value = std::numeric_limits<value_type>::max();
   static constexpr size_type invalid_pointer = std::numeric_limits<size_type>::max();
@@ -79,11 +80,11 @@ struct gpu_linearhashtable {
       , resize_policy_(resize_policy)
       , load_factor_threshold_(load_factor_threshold) {
     if ((resize_policy >= 0 && (resize_policy > 2.0f || resize_policy <= 1.0f)) ||
-        (resize_policy < 0 && (static_cast<size_type>(-resize_policy) % cg_tile_size != 0))) {
+        (resize_policy < 0 && (static_cast<size_type>(-resize_policy) % 32 != 0))) {
       fprintf(stderr, "Invalid resize_policy %f for GPULinearHT: "
                       "If >0 (exponential), should be in (1, 2], "
-                      "If <0 (linear), should be multiple of %u\n",
-                      resize_policy, cg_tile_size);
+                      "If <0 (linear), should be multiple of 32\n",
+                      resize_policy);
       exit(1);
     }
     allocate();
@@ -115,13 +116,14 @@ struct gpu_linearhashtable {
             value_type* values,
             const size_type num_keys,
             cudaStream_t stream = 0) {
-    kernels::GpuLinearHashtable::find_device_func<concurrent, use_hash_tag, tag_use_same_hash, reuse_dirsize, key_slice_type, size_type, value_type>
+    kernels::GpuLinearHashtable::find_device_func<gpu_linearhashtable, concurrent, use_hash_tag, tag_use_same_hash, reuse_dirsize>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values};
     kernels::launch_batch_kernel(*this, func, num_keys, stream);
   }
 
   template <bool use_hash_tag = true,
             bool tag_use_same_hash = true,
+            bool do_merge_chains = true,
             bool reuse_dirsize = true>
   void insert(const key_slice_type* keys,
               const size_type max_key_length,
@@ -130,7 +132,7 @@ struct gpu_linearhashtable {
               const size_type num_keys,
               cudaStream_t stream = 0,
               bool update_if_exists = false) {
-    kernels::GpuLinearHashtable::insert_device_func<use_hash_tag, tag_use_same_hash, reuse_dirsize, key_slice_type, size_type, value_type>
+    kernels::GpuLinearHashtable::insert_device_func<gpu_linearhashtable, use_hash_tag, tag_use_same_hash, do_merge_chains, reuse_dirsize>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .update_if_exists = update_if_exists};
     kernels::launch_batch_kernel(*this, func, num_keys, stream);
   }
@@ -145,15 +147,15 @@ struct gpu_linearhashtable {
              const size_type* key_lengths,
              const size_type num_keys,
              cudaStream_t stream = 0) {
-    kernels::GpuLinearHashtable::erase_device_func<use_hash_tag, tag_use_same_hash, do_merge_chains, do_merge_buckets, reuse_dirsize, key_slice_type, size_type, value_type>
+    kernels::GpuLinearHashtable::erase_device_func<gpu_linearhashtable, use_hash_tag, tag_use_same_hash, do_merge_chains, do_merge_buckets, reuse_dirsize>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths};
     kernels::launch_batch_kernel(*this, func, num_keys, stream);
   }
 
   template <bool use_hash_tag = true,
             bool tag_use_same_hash = true,
+            bool do_merge_chains = true,
             bool erase_do_merge_buckets = true,
-            bool erase_do_merge_chains = true,
             bool reuse_dirsize = true>
   void mixed_batch(const kernels::request_type* request_types,
                    const key_slice_type* keys,
@@ -164,15 +166,15 @@ struct gpu_linearhashtable {
                    const size_type num_requests,
                    cudaStream_t stream = 0,
                    bool insert_update_if_exists = false) {
-    kernels::GpuLinearHashtable::mixed_device_func<use_hash_tag, tag_use_same_hash, erase_do_merge_chains, erase_do_merge_buckets, reuse_dirsize, key_slice_type, size_type, value_type>
+    kernels::GpuLinearHashtable::mixed_device_func<gpu_linearhashtable, use_hash_tag, tag_use_same_hash, do_merge_chains, erase_do_merge_buckets, reuse_dirsize>
       func{.d_types = request_types, .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .d_results = results, .insert_update_if_exists = insert_update_if_exists};
     kernels::launch_batch_kernel(*this, func, num_requests, stream);
   }
 
   // device-side APIs
-  template <bool concurrent>
-  DEVICE_QUALIFIER size_type cooperative_fetch_dirsize() {
-    size_type directory_size = d_global_state_->template load_directory_size<concurrent>();
+  template <bool concurrent, typename tile_type>
+  DEVICE_QUALIFIER size_type cooperative_fetch_dirsize(const tile_type& tile) {
+    size_type directory_size = d_global_state_->template load_directory_size<concurrent, true>(tile);
     return directory_size;
   }
 
@@ -188,12 +190,12 @@ struct gpu_linearhashtable {
     size_type bucket_index_hash;
     const bool more_key = (key_length > 1);
     if (use_hash_tag && !tag_use_same_hash && more_key) {
-      auto hash = compute_hashx2(key, key_length, tile);
+      auto hash = utils::compute_hashx2<utils::PRIME0, utils::PRIME1>(key, key_length, tile);
       bucket_index_hash = hash.x;
       first_slice = hash.y;
     }
     else {
-      bucket_index_hash = compute_hash(key, key_length, tile);
+      bucket_index_hash = utils::compute_hash<utils::PRIME0>(key, key_length, tile);
       first_slice = (tag_use_same_hash && more_key) ? bucket_index_hash : key[0];
     }
     // find the bucket
@@ -201,8 +203,9 @@ struct gpu_linearhashtable {
     find_valid_bucket<concurrent>(node, bucket_index_hash, directory_size, tile, allocator);
     // search bucket
     suffix_type suffix_if_found(tile, allocator);
-    int location_if_found = coop_traverse_until_found<concurrent, use_hash_tag>(
-        node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator);
+    [[maybe_unused]] uint32_t dummy;
+    int location_if_found = coop_traverse_until_found<concurrent, use_hash_tag, false>(
+        node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator, dummy);
     if (location_if_found >= 0) { // found
       if (more_key) {
         return suffix_if_found.get_value();
@@ -220,12 +223,12 @@ struct gpu_linearhashtable {
                                                size_type key_length,
                                                const tile_type& tile,
                                                device_allocator_context_type& allocator) {
-    auto directory_size = cooperative_fetch_dirsize<concurrent>();
+    auto directory_size = cooperative_fetch_dirsize<concurrent>(tile);
     return cooperative_find_from_dirsize<concurrent, use_hash_tag, tag_use_same_hash>(
         directory_size, key, key_length, tile, allocator);
   }
 
-  template <bool use_hash_tag, bool tag_use_same_hash, typename tile_type>
+  template <bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains, typename tile_type>
   DEVICE_QUALIFIER bool cooperative_insert_from_dirsize(size_type& directory_size,
                                                         const key_slice_type* key,
                                                         const size_type key_length,
@@ -240,12 +243,12 @@ struct gpu_linearhashtable {
     size_type bucket_index_hash;
     const bool more_key = (key_length > 1);
     if (use_hash_tag && !tag_use_same_hash && more_key) {
-      auto hash = compute_hashx2(key, key_length, tile);
+      auto hash = utils::compute_hashx2<utils::PRIME0, utils::PRIME1>(key, key_length, tile);
       bucket_index_hash = hash.x;
       first_slice = hash.y;
     }
     else {
-      bucket_index_hash = compute_hash(key, key_length, tile);
+      bucket_index_hash = utils::compute_hash<utils::PRIME0>(key, key_length, tile);
       first_slice = (tag_use_same_hash && more_key) ? bucket_index_hash : key[0];
     }
     const bool check_load_factor = (bucket_index_hash % check_load_factor_every == 0);
@@ -261,9 +264,17 @@ struct gpu_linearhashtable {
         node_type::unlock(head_index, tile, allocator);
         continue;
       }
+      int location_if_found;
       suffix_type suffix_if_found(tile, allocator);
-      int location_if_found = coop_traverse_until_found<false, use_hash_tag>( // use weak load here b/c the first load did memory_order_acquire
-        node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator);
+      uint32_t num_keys_in_chain = 0;
+      if constexpr (do_merge_chains) {
+        location_if_found = coop_traverse_until_found_merge<use_hash_tag, true>(
+          node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator, reclaimer, num_keys_in_chain);
+      }
+      else {
+        location_if_found = coop_traverse_until_found<false, use_hash_tag, true>( // use weak load here b/c the first load did memory_order_acquire
+          node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator, num_keys_in_chain);
+      }
       if (location_if_found >= 0) { // already exists
         if (update_if_exists) {
           if (more_key) {
@@ -303,7 +314,7 @@ struct gpu_linearhashtable {
         node.template store_to_allocator<false>();
       }
       // check if chain is too long (not one)
-      if (!node.is_head()) {
+      if (num_keys_in_chain > node_type::capacity) {
         // check if split is possible
         auto local_depth = node.get_local_depth();
           // first bucket that points to this node
@@ -320,8 +331,8 @@ struct gpu_linearhashtable {
           auto new_node1_index = allocator.allocate(tile);
           auto new_node0 = node_type(new_node0_index, tile, allocator);
           auto new_node1 = node_type(new_node1_index, tile, allocator);
-          new_node0.initialize_empty(true, local_depth + 1);
-          new_node1.initialize_empty(true, local_depth + 1);
+          new_node0.initialize_empty(true, local_depth + 1, true);
+          new_node1.initialize_empty(true, local_depth + 1, true);
           // split
           while (true) {
             for (uint32_t loc = 0; loc < node.num_keys(); loc++) {
@@ -335,12 +346,12 @@ struct gpu_linearhashtable {
                   auto suffix_index = node.get_value_from_location(loc);
                   auto suffix = suffix_type(suffix_index, tile, allocator);
                   suffix.load_head();
-                  bucket_index_hash_at_loc = compute_hash_for_suffix<use_hash_tag>(
+                  bucket_index_hash_at_loc = utils::compute_hash_suffix<utils::PRIME0, !use_hash_tag>(
                       suffix, use_hash_tag ? 0 : node.get_key_from_location(loc), tile);
                 }
               }
               else {
-                bucket_index_hash_at_loc = compute_hash_single_slice(node.get_key_from_location(loc));
+                bucket_index_hash_at_loc = utils::compute_hash_slice<utils::PRIME0>(node.get_key_from_location(loc));
               }
               // store to either new_node0 or new_node1
               if ((bucket_index_hash_at_loc & (1u << local_depth)) == 0) {  // new_node0
@@ -380,12 +391,18 @@ struct gpu_linearhashtable {
           new_node0.template store_to_allocator<false>();
           new_node1.template store_to_allocator<true>();  // last store releases before updating directory
           // publish new buckets: 
-          auto local_depth_mask = (1u << local_depth);
-          directory_size = d_global_state_->template load_directory_size<true>();
-          for (size_type index = first_bucket_index; index < directory_size; index += local_depth_mask) {
-            auto new_node_index = (index & local_depth_mask) == 0 ? new_node0_index : new_node1_index;
-            directory_entry_at(index, allocator) = new_node_index;
+          uint32_t local_depth_mask = (1u << local_depth);
+          directory_size = d_global_state_->template load_directory_size<true, true>(tile);
+          for (size_type index = first_bucket_index; index < directory_size; index += (tile_type::size() * local_depth_mask)) {
+            size_type lane_index = index + local_depth_mask * tile.thread_rank();
+            if (lane_index < directory_size) {
+              auto new_node_index = (lane_index & local_depth_mask) == 0 ? new_node0_index : new_node1_index;
+              directory_entry_at(lane_index, allocator) = new_node_index;
+            }
           }
+          tile.sync();
+          node_type::unlock<false>(new_node0_index, tile, allocator);
+          node_type::unlock(new_node1_index, tile, allocator);
           reclaimer.retire(head_index, tile);
           met_invalid_pointer = false;
         }
@@ -395,10 +412,14 @@ struct gpu_linearhashtable {
         auto local_depth = node.get_local_depth();
         auto first_bucket_index = bucket_index_hash & ((1u << local_depth) - 1);
         auto local_depth_mask = (1u << local_depth);
-        directory_size = d_global_state_->template load_directory_size<true>();
-        for (size_type index = first_bucket_index; index < directory_size; index += local_depth_mask) {
-          directory_entry_at(index, allocator) = head_index;
+        directory_size = d_global_state_->template load_directory_size<true, true>(tile);
+        for (size_type index = first_bucket_index; index < directory_size; index += (tile_type::size() * local_depth_mask)) {
+          size_type lane_index = index + local_depth_mask * tile.thread_rank();
+          if (lane_index < directory_size) {
+            directory_entry_at(lane_index, allocator) = head_index;
+          }
         }
+        tile.sync();
       }
       node_type::unlock(head_index, tile, allocator);
       // extend if load factor is too high
@@ -406,21 +427,22 @@ struct gpu_linearhashtable {
         auto num_entries = d_global_state_->template increment_num_entries<1>(tile);
         if ((static_cast<float>(num_entries) / directory_size * (static_cast<float>(check_load_factor_every) / 15.0f)) > load_factor_threshold_) {
           if (d_global_state_->try_lock(tile)) {
-            auto curr_directory_size = d_global_state_->template load_directory_size<true>();
+            auto curr_directory_size = d_global_state_->template load_directory_size<true, true>(tile);
             if (curr_directory_size == directory_size) {
               auto new_directory_size =
                 (resize_policy_ > 0) ? static_cast<size_type>(static_cast<float>(directory_size) * resize_policy_):
                                        (directory_size + static_cast<size_type>(-resize_policy_));
-              new_directory_size = (new_directory_size + cg_tile_size - 1) / cg_tile_size * cg_tile_size;  // should be multiple of 32
+              new_directory_size = (new_directory_size + 32 - 1) / 32 * 32;  // should be multiple of 32
               new_directory_size = allocator.reallocate_linear(new_directory_size, tile);
               if (new_directory_size > curr_directory_size) {
                 // invalidate new pointers
-                for (size_type bucket = directory_size; bucket < new_directory_size; bucket += 32) {
+                for (size_type bucket = directory_size; bucket < new_directory_size; bucket += tile_type::size()) {
                   directory_entry_at(bucket + tile.thread_rank(), allocator) = invalid_pointer;
                 }
+                tile.sync();
                 // publish new directory
                 directory_size = new_directory_size;
-                d_global_state_->template store_directory_size<true>(directory_size);
+                d_global_state_->template store_directory_size<true, true>(directory_size, tile);
               }
             }
             else {
@@ -435,7 +457,7 @@ struct gpu_linearhashtable {
     assert(false);
   }
 
-  template <bool use_hash_tag, bool tag_use_same_hash, typename tile_type>
+  template <bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains, typename tile_type>
   DEVICE_QUALIFIER bool cooperative_insert(const key_slice_type* key,
                                            const size_type key_length,
                                            const value_type& value,
@@ -443,8 +465,8 @@ struct gpu_linearhashtable {
                                            device_allocator_context_type& allocator,
                                            device_reclaimer_context_type& reclaimer,
                                            bool update_if_exists = false) {
-    auto directory_size = cooperative_fetch_dirsize<true>();
-    return cooperative_insert_from_dirsize<use_hash_tag, tag_use_same_hash>(
+    auto directory_size = cooperative_fetch_dirsize<true>(tile);
+    return cooperative_insert_from_dirsize<use_hash_tag, tag_use_same_hash, do_merge_chains>(
         directory_size, key, key_length, value, tile, allocator, reclaimer);
   }
 
@@ -461,12 +483,12 @@ struct gpu_linearhashtable {
     size_type bucket_index_hash;
     const bool more_key = (key_length > 1);
     if (use_hash_tag && !tag_use_same_hash && more_key) {
-      auto hash = compute_hashx2(key, key_length, tile);
+      auto hash = utils::compute_hashx2<utils::PRIME0, utils::PRIME1>(key, key_length, tile);
       bucket_index_hash = hash.x;
       first_slice = hash.y;
     }
     else {
-      bucket_index_hash = compute_hash(key, key_length, tile);
+      bucket_index_hash = utils::compute_hash<utils::PRIME0>(key, key_length, tile);
       first_slice = (tag_use_same_hash && more_key) ? bucket_index_hash : key[0];
     }
     const bool check_load_factor = (bucket_index_hash % check_load_factor_every == 0);
@@ -480,18 +502,19 @@ struct gpu_linearhashtable {
       if (node.is_garbage()) {
         // this bucket just splitted by other thread; retry
         node_type::unlock(head_index, tile, allocator);
-        directory_size = d_global_state_->template load_directory_size<true>();
+        directory_size = d_global_state_->template load_directory_size<true, true>(tile);
         continue;
       }
       int location_if_found;
       suffix_type suffix_if_found(tile, allocator);
+      [[maybe_unused]] uint32_t dummy;
       if constexpr (do_merge_chains) {
-        location_if_found = coop_traverse_until_found_merge<use_hash_tag>(
-          node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator, reclaimer);
+        location_if_found = coop_traverse_until_found_merge<use_hash_tag, false>(
+          node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator, reclaimer, dummy);
       }
       else {
-        location_if_found = coop_traverse_until_found<false, use_hash_tag>(  // use weak load here b/c the first load did memory_order_acquire
-          node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator);
+        location_if_found = coop_traverse_until_found<false, use_hash_tag, false>(  // use weak load here b/c the first load did memory_order_acquire
+          node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator, dummy);
       }
       if (location_if_found >= 0) { // exists
         node.erase(location_if_found);
@@ -515,8 +538,13 @@ struct gpu_linearhashtable {
               // find sibling buckets
               auto sibling_bucket_index = bucket_index ^ (1u << (local_depth - 1));
               if (sibling_bucket_index >= directory_size) { break; }
-              auto head0_index = utils::memory::load<size_type, true, true>(&directory_entry_at(bucket_index, allocator));
-              auto head1_index = utils::memory::load<size_type, true, true>(&directory_entry_at(sibling_bucket_index, allocator));
+              size_type head0_index, head1_index;
+              if (tile.thread_rank() == 0) {
+                head0_index = utils::memory::load<size_type, true, true>(&directory_entry_at(bucket_index, allocator));
+                head1_index = utils::memory::load<size_type, true, true>(&directory_entry_at(sibling_bucket_index, allocator));
+              }
+              head0_index = tile.shfl(head0_index, 0);
+              head1_index = tile.shfl(head1_index, 0);
               if (head0_index == invalid_pointer ||
                   head1_index == invalid_pointer ||
                   head0_index == head1_index) { break; }
@@ -543,10 +571,14 @@ struct gpu_linearhashtable {
                   node1.set_local_depth(local_depth - 1);
                   node1.template store_to_allocator<true>();
                   auto local_depth_mask = (1u << local_depth);
-                  directory_size = d_global_state_->template load_directory_size<true>();
+                  directory_size = d_global_state_->template load_directory_size<true, true>(tile);
                   for (size_type index = bucket_index; index < directory_size; index += local_depth_mask) {
-                    directory_entry_at(index, allocator) = head1_index;
+                    size_type lane_index = index + local_depth_mask * tile.thread_rank();
+                    if (lane_index < directory_size) {
+                      directory_entry_at(lane_index, allocator) = head1_index;
+                    }
                   }
+                  tile.sync();
                   node.make_garbage();
                   node.template store_to_allocator<true>();
                   reclaimer.retire(head0_index, tile);
@@ -578,7 +610,7 @@ struct gpu_linearhashtable {
                                           const tile_type& tile,
                                           device_allocator_context_type& allocator,
                                           device_reclaimer_context_type& reclaimer) {
-    auto directory_size = cooperative_fetch_dirsize<true>();
+    auto directory_size = cooperative_fetch_dirsize<true>(tile);
     return cooperative_erase_from_dirsize<use_hash_tag, tag_use_same_hash, do_merge_chains, do_merge_buckets>(
         directory_size, key, key_length, tile, allocator, reclaimer);
   }
@@ -594,15 +626,22 @@ struct gpu_linearhashtable {
 
     DEVICE_QUALIFIER global_state(size_type initial_directory_size)
         : directory_size_(initial_directory_size)
-        , mutex_(0) {}
+        , mutex_(0)
+        , num_entries_(0) {}
     
-    template <bool atomic, bool acquire = true>
-    DEVICE_QUALIFIER size_type load_directory_size() {
-      return utils::memory::load<size_type, atomic, acquire>(&directory_size_);
+    template <bool atomic, bool acquire, typename tile_type>
+    DEVICE_QUALIFIER size_type load_directory_size(const tile_type& tile) {
+      size_type directory_size;
+      if (tile.thread_rank() == 0) {
+        directory_size = utils::memory::load<size_type, atomic, acquire>(&directory_size_);
+      }
+      return tile.shfl(directory_size, 0);
     }
-    template <bool atomic, bool release = true>
-    DEVICE_QUALIFIER void store_directory_size(size_type directory_size) {
-      utils::memory::store<size_type, atomic, release>(&directory_size_, directory_size);
+    template <bool atomic, bool release, typename tile_type>
+    DEVICE_QUALIFIER void store_directory_size(size_type directory_size, const tile_type& tile) {
+      if (tile.thread_rank() == 0) {
+        utils::memory::store<size_type, atomic, release>(&directory_size_, directory_size);
+      }
     }
     template <typename tile_type>
     DEVICE_QUALIFIER bool try_lock(const tile_type& tile) {
@@ -626,8 +665,13 @@ struct gpu_linearhashtable {
         mutex_ref.store(0, cuda::memory_order_release);
       }
     }
-    DEVICE_QUALIFIER size_type get_num_entries() {
-      return utils::memory::load<size_type, true, false>(&num_entries_);
+    template <typename tile_type>
+    DEVICE_QUALIFIER size_type get_num_entries(const tile_type& tile) {
+      size_type num_entries;
+      if (tile.thread_rank() == 0) {
+        num_entries = utils::memory::load<size_type, true, false>(&num_entries_);
+      }
+      return tile.shfl(num_entries, 0);
     }
     template <int amount, typename tile_type>
     DEVICE_QUALIFIER size_type increment_num_entries(const tile_type& tile) {
@@ -670,8 +714,11 @@ struct gpu_linearhashtable {
     }
     bool met_invalid_pointer = false;
     while (true) {
-      size_type head_index = utils::memory::load<size_type, concurrent, true>(
-          &directory_entry_at(bucket_index, allocator));
+      size_type head_index;
+      if (tile.thread_rank() == 0) {
+        head_index = utils::memory::load<size_type, concurrent, true>(&directory_entry_at(bucket_index, allocator));
+      }
+      head_index = tile.shfl(head_index, 0);
       if (head_index == invalid_pointer) {
         // retry after unsetting MSB 1
         assert(bucket_index != 0);
@@ -688,7 +735,7 @@ struct gpu_linearhashtable {
         bucket_index = bucket_index_hash & local_depth_mask;
         if (bucket_index >= directory_size) {
           // other warp extended directory meanwhile
-          directory_size = d_global_state_->template load_directory_size<concurrent>();
+          directory_size = d_global_state_->template load_directory_size<concurrent, true>(tile);
           assert(bucket_index < directory_size);
         }
         continue;
@@ -697,7 +744,7 @@ struct gpu_linearhashtable {
     }
   }
 
-  template <bool concurrent, bool use_hash_tag, typename tile_type>
+  template <bool concurrent, bool use_hash_tag, bool count_keys, typename tile_type>
   DEVICE_QUALIFIER int coop_traverse_until_found(hashtable_node<tile_type, device_allocator_context_type>& node,
                                                  const key_slice_type& first_slice,
                                                  bool more_key,
@@ -705,10 +752,12 @@ struct gpu_linearhashtable {
                                                  const size_type& key_length,
                                                  suffix_node<tile_type, device_allocator_context_type>& suffix_if_found,
                                                  const tile_type& tile,
-                                                 device_allocator_context_type& allocator) {
+                                                 device_allocator_context_type& allocator,
+                                                 uint32_t& num_total_keys) {
     using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     while (true) {
+      if constexpr (count_keys) { num_total_keys += node.num_keys(); }
       uint32_t to_check = node.match_key_in_node(first_slice, more_key);
       if (more_key) {
         // if length > 1, compare suffixes
@@ -743,7 +792,7 @@ struct gpu_linearhashtable {
     return -1;
   }
 
-  template <bool use_hash_tag, typename tile_type>
+  template <bool use_hash_tag, bool count_keys, typename tile_type>
   DEVICE_QUALIFIER int coop_traverse_until_found_merge(hashtable_node<tile_type, device_allocator_context_type>& node,
                                                        const key_slice_type& first_slice,
                                                        bool more_key,
@@ -752,11 +801,13 @@ struct gpu_linearhashtable {
                                                        suffix_node<tile_type, device_allocator_context_type>& suffix_if_found,
                                                        const tile_type& tile,
                                                        device_allocator_context_type& allocator,
-                                                       device_reclaimer_context_type& reclaimer) {
+                                                       device_reclaimer_context_type& reclaimer,
+                                                       uint32_t& num_total_keys) {
     using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     bool current_node_store_deferred = false;
     while (true) {
+      if constexpr (count_keys) { num_total_keys += node.num_keys(); }
       uint32_t to_check = node.match_key_in_node(first_slice, more_key);
       if (more_key) {
         // if length > 1, compare suffixes
@@ -805,113 +856,6 @@ struct gpu_linearhashtable {
     return -1;
   }
 
-  static constexpr uint32_t hash_prime0 = 0x9e3779b1;
-  static constexpr uint32_t hash_prime1 = 0x01000193;
-  static DEVICE_QUALIFIER uint32_t hash_murmur3_finalizer(uint32_t hash) {
-    hash ^= hash >> 16;
-    hash *= 0x85ebca6b;
-    hash ^= hash >> 13;
-    hash *= 0xc2b2ae35;
-    hash ^= hash >> 16;
-    return hash;
-  }
-  template <typename tile_type>
-  DEVICE_QUALIFIER uint32_t compute_hash(const key_slice_type* key, size_type key_length, const tile_type& tile) {
-    // parallel polynomial rolling hash
-    static constexpr uint32_t prime_multiplier = utils::constexpr_pow(hash_prime0, cg_tile_size);
-    // 1. exponent = [1, p, p^2, ..., p^31]; parallel prefix product
-    uint32_t exponent = (tile.thread_rank() == 0) ? 1 : hash_prime0;
-    for (uint32_t offset = 1; offset < cg_tile_size; offset <<= 1) {
-      auto up_exponent = tile.shfl_up(exponent, offset);
-      if (tile.thread_rank() >= offset) {
-        exponent *= up_exponent;
-      }
-    }
-    // 2. compute per-lane value
-    const auto original_length = key_length;
-    uint32_t hash = 0;
-    while (true) {
-      if (tile.thread_rank() < key_length) {
-        auto slice = key[tile.thread_rank()];
-        hash += exponent * slice;
-      }
-      if (key_length <= cg_tile_size) { break; }
-      key += cg_tile_size;
-      key_length -= cg_tile_size;
-      exponent *= prime_multiplier;
-    }
-    // 3. reduce sum
-    for (uint32_t offset = (cg_tile_size / 2); offset != 0; offset >>= 1) {
-      hash += tile.shfl_down(hash, offset);
-    }
-    hash = ((hash * hash_prime0) + original_length) * hash_prime0;
-    // 4. finalize
-    hash = hash_murmur3_finalizer(hash);
-    return tile.shfl(hash, 0);
-  }
-  template <typename tile_type>
-  DEVICE_QUALIFIER uint2 compute_hashx2(const key_slice_type* key, size_type key_length, const tile_type& tile) {
-    static constexpr uint32_t prime0_multiplier = utils::constexpr_pow(hash_prime0, cg_tile_size);
-    static constexpr uint32_t prime1_multiplier = utils::constexpr_pow(hash_prime1, cg_tile_size);
-    // 1. exponent = [1, p, p^2, ..., p^31]; parallel prefix product
-    uint32_t exponent0 = (tile.thread_rank() == 0) ? 1 : hash_prime0;
-    uint32_t exponent1 = (tile.thread_rank() == 0) ? 1 : hash_prime1;
-    for (uint32_t offset = 1; offset < cg_tile_size; offset <<= 1) {
-      auto up_exponent0 = tile.shfl_up(exponent0, offset);
-      auto up_exponent1 = tile.shfl_up(exponent1, offset);
-      if (tile.thread_rank() >= offset) {
-        exponent0 *= up_exponent0;
-        exponent1 *= up_exponent1;
-      }
-    }
-    // 2. compute per-lane value
-    const auto original_length = key_length;
-    uint32_t hash = 0, hash1 = 0;
-    while (true) {
-      if (tile.thread_rank() < key_length) {
-        auto slice = key[tile.thread_rank()];
-        hash += exponent0 * slice;
-        hash1 += exponent1 * slice;
-      }
-      if (key_length <= cg_tile_size) { break; }
-      key += cg_tile_size;
-      key_length -= cg_tile_size;
-      exponent0 *= prime0_multiplier;
-      exponent1 *= prime1_multiplier;
-    }
-    // 3. reduce sum
-    for (uint32_t offset = (cg_tile_size / 2); offset != 0; offset >>= 1) {
-      hash += tile.shfl_down(hash, offset);
-      hash1 += tile.shfl_up(hash1, offset);
-    }
-    hash = ((hash * hash_prime0) + original_length) * hash_prime0;
-    hash1 = ((hash1 * hash_prime1) + original_length) * hash_prime1;
-    if (tile.thread_rank() == cg_tile_size - 1) { hash = hash1; }
-    // 4. finalize
-    hash = hash_murmur3_finalizer(hash);
-    return make_uint2(tile.shfl(hash, 0), tile.shfl(hash, cg_tile_size - 1));
-  }
-  DEVICE_QUALIFIER uint32_t compute_hash_single_slice(const key_slice_type& key) {
-    // if key_length == 1, hash = murmur3(((key * p) + 1) * p)
-    uint32_t hash = ((key * hash_prime0) + 1) * hash_prime0;
-    return hash_murmur3_finalizer(hash);
-  }
-  template <bool use_hash_tag, typename suffix_type, typename tile_type>
-  DEVICE_QUALIFIER uint32_t compute_hash_for_suffix(const suffix_type& suffix,
-                                                    const key_slice_type& first_slice,
-                                                    const tile_type& tile) {
-    // compute polynomial
-    uint32_t hash = suffix.template compute_polynomial<hash_prime0>();
-    if constexpr (!use_hash_tag) {
-      hash = (hash * hash_prime0) + first_slice;
-    }
-    static constexpr uint32_t suffix_offset = use_hash_tag ? 0 : 1;
-    uint32_t key_length = suffix.get_key_length() + suffix_offset;
-    hash = ((hash * hash_prime0) + key_length) * hash_prime0;
-    // finalize
-    return hash_murmur3_finalizer(hash);
-  }
-
  public:
   // device-side debug functions
   template <typename tile_type, typename Func>
@@ -920,7 +864,7 @@ struct gpu_linearhashtable {
     // called with single warp
     using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     device_allocator_context_type allocator{allocator_, tile};
-    size_type directory_size = d_global_state_->template load_directory_size<false>();
+    size_type directory_size = d_global_state_->template load_directory_size<false, false>(tile);
     auto global_depth = compute_global_depth(directory_size);
     for (size_type bucket_index = 0; bucket_index < directory_size; bucket_index++) {
       auto node_index = directory_entry_at(bucket_index, allocator);
@@ -946,7 +890,8 @@ struct gpu_linearhashtable {
 
   template <typename func>
   void traverse_nodes(func task) {
-    kernels::GpuLinearHashtable::traverse_nodes_kernel<<<1, 32>>>(*this, task);
+    static constexpr auto block_size = use_subwarp ? 16 : 32;
+    kernels::GpuLinearHashtable::traverse_nodes_kernel<block_size><<<1, block_size>>>(*this, task);
     cudaDeviceSynchronize();
   }
 
@@ -1058,8 +1003,8 @@ struct gpu_linearhashtable {
 
   void initialize() {
     const uint32_t num_blocks = initial_directory_size_;
-    const uint32_t block_size = cg_tile_size;
-    kernels::GpuLinearHashtable::initialize_kernel<<<num_blocks, block_size>>>(*this);
+    const uint32_t block_size = use_subwarp ? 16 : 32;
+    kernels::GpuLinearHashtable::initialize_kernel<block_size><<<num_blocks, block_size>>>(*this);
     cuda_try(cudaDeviceSynchronize());
   }
 
@@ -1071,10 +1016,10 @@ struct gpu_linearhashtable {
   device_allocator_instance_type allocator_;
   device_reclaimer_instance_type reclaimer_;
 
-  template <typename linearhashtable>
+  template <uint32_t tile_size, typename linearhashtable>
   friend __global__ void kernels::GpuLinearHashtable::initialize_kernel(linearhashtable);
 
-  template <bool do_reclaim, typename device_func, typename index_type>
+  template <bool do_reclaim, bool subwarp, typename device_func, typename index_type>
   friend __global__ void kernels::batch_kernel(index_type index,
                                               const device_func func,
                                               uint32_t num_requests);

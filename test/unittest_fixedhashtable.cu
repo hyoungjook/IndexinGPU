@@ -1,6 +1,6 @@
 /*
  *   Copyright 2022 The Regents of the University of California, Davis
- *   Copyright 2025 Hyoungjoo Kim, Carnegie Mellon University
+ *   Copyright 2026 Hyoungjoo Kim, Carnegie Mellon University
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -15,7 +15,8 @@
  *   limitations under the License.
  */
 
-#include <gpu_index.h>
+#include <gpu_chainhashtable.hpp>
+#include <gpu_cuckoohashtable.hpp>
 #include <gtest/gtest.h>
 #include <cmd.hpp>
 #include <cstdint>
@@ -174,8 +175,10 @@ using simple_dummy_reclaim_type = simple_dummy_reclaimer;
 using simple_debra_reclaim_type = simple_debra_reclaimer<>;
 
 typedef testing::Types<
-    MapData<GpuHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_debra_reclaim_type>>,
-    MapData<GpuHashtable::gpu_cuckoohashtable<simple_slab_alloc_type, simple_debra_reclaim_type>>>
+    MapData<GpuHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_debra_reclaim_type, false>>,
+    MapData<GpuHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_debra_reclaim_type, true>>,
+    MapData<GpuHashtable::gpu_cuckoohashtable<simple_slab_alloc_type, simple_debra_reclaim_type, false>>,
+    MapData<GpuHashtable::gpu_cuckoohashtable<simple_slab_alloc_type, simple_debra_reclaim_type, true>>>
     Implementations;
 
 TYPED_TEST_SUITE(MapTest, Implementations);

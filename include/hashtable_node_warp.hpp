@@ -1,6 +1,6 @@
 /*
  *   Copyright 2022 The Regents of the University of California, Davis
- *   Copyright 2025 Hyoungjoo Kim, Carnegie Mellon University
+ *   Copyright 2026 Hyoungjoo Kim, Carnegie Mellon University
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -19,24 +19,22 @@
 #include <cstdint>
 #include <macros.hpp>
 #include <utils.hpp>
-#include <suffix.hpp>
+#include <suffix_node_warp.hpp>
 
 template <typename tile_type, typename allocator_type>
-struct hashtable_node {
+struct hashtable_node_warp {
   using elem_type = uint32_t;
   using key_type = elem_type;
   using value_type = elem_type;
   using size_type = uint32_t;
   static constexpr int node_width = 16;
   static constexpr int capacity = node_width - 1;
-  DEVICE_QUALIFIER hashtable_node(const tile_type& tile, allocator_type& allocator)
+  static_assert(tile_type::size() == 2 * node_width);
+  DEVICE_QUALIFIER hashtable_node_warp(const tile_type& tile, allocator_type& allocator)
       : tile_(tile), allocator_(allocator) {}
-  DEVICE_QUALIFIER hashtable_node(size_type index, const tile_type& tile, allocator_type& allocator)
-      : node_index_(index), tile_(tile), allocator_(allocator)
-  {
-    assert(tile_.size() == 2 * node_width);
-  }
-  DEVICE_QUALIFIER void initialize_empty(bool is_head, size_type local_depth = 0) {
+  DEVICE_QUALIFIER hashtable_node_warp(size_type index, const tile_type& tile, allocator_type& allocator)
+      : node_index_(index), tile_(tile), allocator_(allocator) {}
+  DEVICE_QUALIFIER void initialize_empty(bool is_head, size_type local_depth = 0, bool is_locked = false) {
     lane_elem_ = 0;
     metadata_ = (
       (0u << num_keys_offset_) |  // num_keys = 0;
@@ -44,6 +42,7 @@ struct hashtable_node {
       (0u & garbage_bit_mask_)    // is_garbage = false;
     );
     if (is_head) { metadata_ |= head_bit_mask_; }
+    if (is_locked) { metadata_ |= lock_bit_mask_; }
     metadata_ |= (local_depth << local_depth_bits_offset_);
     write_metadata_to_registers();
   }
@@ -131,7 +130,7 @@ struct hashtable_node {
   DEVICE_QUALIFIER bool is_full() const {
     return (num_keys() == max_num_keys_);
   }
-  DEVICE_QUALIFIER bool is_mergeable(const hashtable_node& next_node) const {
+  DEVICE_QUALIFIER bool is_mergeable(const hashtable_node_warp& next_node) const {
     return (num_keys() + next_node.num_keys()) <= max_num_keys_;
   }
   DEVICE_QUALIFIER bool get_suffix_of_location(int location) const {
@@ -271,7 +270,7 @@ struct hashtable_node {
     }
   }
 
-  DEVICE_QUALIFIER void merge(const hashtable_node<tile_type, allocator_type>& next_node) {
+  DEVICE_QUALIFIER void merge(const hashtable_node_warp<tile_type, allocator_type>& next_node) {
     assert(is_mergeable(next_node));
     // copy elements from next node
     bool suffix_bit = get_suffix_of_location(tile_.thread_rank());
@@ -288,10 +287,12 @@ struct hashtable_node {
     metadata_ &= ~suffix_bits_mask_;
     metadata_ |= ((new_suffix_bits << suffix_bits_offset_) & suffix_bits_mask_);
     // copy next node's next index
-    metadata_ = (metadata_ & ~next_bit_mask_) ^ (next_node.metadata_ & next_bit_mask_); // has_next = next.has_next
     if (tile_.thread_rank() == next_ptr_lane_) {
       lane_elem_ = next_node.lane_elem_;
     }
+    // has_next = next.has_next
+    metadata_ &= ~next_bit_mask_;
+    metadata_ |= (next_node.metadata_ & next_bit_mask_);
     write_metadata_to_registers();
   }
 
@@ -318,8 +319,8 @@ struct hashtable_node {
     write_metadata_to_registers();
   }
 
-  DEVICE_QUALIFIER hashtable_node<tile_type, allocator_type>& operator=(
-        const hashtable_node<tile_type, allocator_type>& other) {
+  DEVICE_QUALIFIER hashtable_node_warp<tile_type, allocator_type>& operator=(
+        const hashtable_node_warp<tile_type, allocator_type>& other) {
     node_index_ = other.node_index_;
     lane_elem_ = other.lane_elem_;
     metadata_ = other.metadata_;
@@ -346,8 +347,8 @@ struct hashtable_node {
     if (lead_lane) printf("ld(%u) ", get_local_depth());
     if (lead_lane) printf("%u ", num_keys());
     for (size_type i = 0; i < num_keys(); ++i) {
-      elem_type key = tile_.shfl(lane_elem_, get_key_lane_from_location(i));
-      elem_type value = tile_.shfl(lane_elem_, get_value_lane_from_location(i));
+      elem_type key = get_key_from_location(i);
+      elem_type value = get_value_from_location(i);
       bool suffix_bit = get_suffix_of_location(i);
       if (lead_lane) printf("(%u %u %s) ", key, value, suffix_bit ? "s" : "$");
     }
@@ -363,8 +364,8 @@ struct hashtable_node {
     for (size_type i = 0; i < num_keys(); ++i) {
       bool suffix_bit = get_suffix_of_location(i);
       if (suffix_bit) {
-        elem_type suffix_index = tile_.shfl(lane_elem_, get_value_lane_from_location(i));
-        auto suffix = suffix_node<tile_type, allocator_type>(suffix_index, tile_, allocator_);
+        elem_type suffix_index = get_value_from_location(i);
+        auto suffix = suffix_node_warp<tile_type, allocator_type>(suffix_index, tile_, allocator_);
         suffix.load_head();
         suffix.print();
       }
