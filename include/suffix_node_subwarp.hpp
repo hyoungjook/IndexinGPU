@@ -282,7 +282,7 @@ struct suffix_node_subwarp {
         hash1 += exponent1 * elem.first;
       }
       if (this_length <= node_width) { break; }
-      this_length -= node_max_len_;
+      this_length -= node_width;
       if (skip_elems <= tile_.thread_rank()) {
         exponent0 *= prime0_multiplier16;
         exponent1 *= prime1_multiplier16;

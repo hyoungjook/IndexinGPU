@@ -52,7 +52,6 @@ struct gpu_cuckoohashtable {
   static constexpr bool use_subwarp_ = use_subwarp;
   static auto constexpr bucket_size = 32;
   static std::size_t constexpr bucket_bytes = sizeof(elem_type) * bucket_size;
-  static auto constexpr cg_tile_size = 32;
   static auto constexpr num_hfs = 4;
   static auto constexpr max_fill_factor = 0.9f;
   static uint32_t constexpr version_counter_size = 8192;

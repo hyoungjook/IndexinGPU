@@ -286,10 +286,12 @@ struct hashtable_node_warp {
     metadata_ &= ~suffix_bits_mask_;
     metadata_ |= ((new_suffix_bits << suffix_bits_offset_) & suffix_bits_mask_);
     // copy next node's next index
-    metadata_ = (metadata_ & ~next_bit_mask_) ^ (next_node.metadata_ & next_bit_mask_); // has_next = next.has_next
     if (tile_.thread_rank() == next_ptr_lane_) {
       lane_elem_ = next_node.lane_elem_;
     }
+    // has_next = next.has_next
+    metadata_ &= ~next_bit_mask_;
+    metadata_ |= (next_node.metadata_ & next_bit_mask_);
     write_metadata_to_registers();
   }
 
@@ -344,8 +346,8 @@ struct hashtable_node_warp {
     if (lead_lane) printf("ld(%u) ", get_local_depth());
     if (lead_lane) printf("%u ", num_keys());
     for (size_type i = 0; i < num_keys(); ++i) {
-      elem_type key = tile_.shfl(lane_elem_, get_key_lane_from_location(i));
-      elem_type value = tile_.shfl(lane_elem_, get_value_lane_from_location(i));
+      elem_type key = get_key_from_location(i);
+      elem_type value = get_value_from_location(i);
       bool suffix_bit = get_suffix_of_location(i);
       if (lead_lane) printf("(%u %u %s) ", key, value, suffix_bit ? "s" : "$");
     }
@@ -361,7 +363,7 @@ struct hashtable_node_warp {
     for (size_type i = 0; i < num_keys(); ++i) {
       bool suffix_bit = get_suffix_of_location(i);
       if (suffix_bit) {
-        elem_type suffix_index = tile_.shfl(lane_elem_, get_value_lane_from_location(i));
+        elem_type suffix_index = get_value_from_location(i);
         auto suffix = suffix_node_warp<tile_type, allocator_type>(suffix_index, tile_, allocator_);
         suffix.load_head();
         suffix.print();

@@ -52,7 +52,6 @@ struct gpu_linearhashtable {
   static constexpr bool use_subwarp_ = use_subwarp;
   static auto constexpr bucket_size = 32;
   static std::size_t constexpr bucket_bytes = sizeof(elem_type) * bucket_size;
-  static auto constexpr cg_tile_size = 32;
 
   static constexpr value_type invalid_value = std::numeric_limits<value_type>::max();
   static constexpr size_type invalid_pointer = std::numeric_limits<size_type>::max();
@@ -81,11 +80,11 @@ struct gpu_linearhashtable {
       , resize_policy_(resize_policy)
       , load_factor_threshold_(load_factor_threshold) {
     if ((resize_policy >= 0 && (resize_policy > 2.0f || resize_policy <= 1.0f)) ||
-        (resize_policy < 0 && (static_cast<size_type>(-resize_policy) % cg_tile_size != 0))) {
+        (resize_policy < 0 && (static_cast<size_type>(-resize_policy) % 32 != 0))) {
       fprintf(stderr, "Invalid resize_policy %f for GPULinearHT: "
                       "If >0 (exponential), should be in (1, 2], "
-                      "If <0 (linear), should be multiple of %u\n",
-                      resize_policy, cg_tile_size);
+                      "If <0 (linear), should be multiple of 32\n",
+                      resize_policy);
       exit(1);
     }
     allocate();
@@ -413,11 +412,11 @@ struct gpu_linearhashtable {
               auto new_directory_size =
                 (resize_policy_ > 0) ? static_cast<size_type>(static_cast<float>(directory_size) * resize_policy_):
                                        (directory_size + static_cast<size_type>(-resize_policy_));
-              new_directory_size = (new_directory_size + cg_tile_size - 1) / cg_tile_size * cg_tile_size;  // should be multiple of 32
+              new_directory_size = (new_directory_size + 32 - 1) / 32 * 32;  // should be multiple of 32
               new_directory_size = allocator.reallocate_linear(new_directory_size, tile);
               if (new_directory_size > curr_directory_size) {
                 // invalidate new pointers
-                for (size_type bucket = directory_size; bucket < new_directory_size; bucket += 32) {
+                for (size_type bucket = directory_size; bucket < new_directory_size; bucket += tile_type::size()) {
                   directory_entry_at(bucket + tile.thread_rank(), allocator) = invalid_pointer;
                 }
                 // publish new directory

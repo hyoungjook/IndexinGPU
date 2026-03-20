@@ -19,26 +19,27 @@
 #include <cstdint>
 #include <macros.hpp>
 #include <utils.hpp>
-#include <suffix_node_warp.hpp>
+#include <suffix_node_subwarp.hpp>
 
 template <typename tile_type, typename allocator_type>
 struct hashtable_node_subwarp {
-  using elem_type = uint32_t;
-  using key_type = elem_type;
-  using value_type = elem_type;
+  using key_type = uint32_t;
+  using value_type = uint32_t;
   using size_type = uint32_t;
+  struct __align__(8) elem_type {
+    key_type key;
+    value_type value;
+  };
+  using elem_unsigned_type = uint64_t;
   static constexpr int node_width = 16;
   static constexpr int capacity = node_width - 1;
   static_assert(tile_type::size() == node_width);
   DEVICE_QUALIFIER hashtable_node_subwarp(const tile_type& tile, allocator_type& allocator)
       : tile_(tile), allocator_(allocator) {}
   DEVICE_QUALIFIER hashtable_node_subwarp(size_type index, const tile_type& tile, allocator_type& allocator)
-      : node_index_(index), tile_(tile), allocator_(allocator)
-  {
-    assert(tile_.size() == 2 * node_width);
-  }
+      : node_index_(index), tile_(tile), allocator_(allocator) {}
   DEVICE_QUALIFIER void initialize_empty(bool is_head, size_type local_depth = 0) {
-    lane_elem_ = 0;
+    lane_elem_ = {0, 0};
     metadata_ = (
       (0u << num_keys_offset_) |  // num_keys = 0;
       (0u & next_bit_mask_) |     // has_next = false;
@@ -50,75 +51,64 @@ struct hashtable_node_subwarp {
   }
 
   template <bool atomic, bool acquire = true>
-  DEVICE_QUALIFIER void load_from_array(elem_type* table_ptr) {
-    auto node_ptr = table_ptr + (static_cast<std::size_t>(2 * node_width) * node_index_);
+  DEVICE_QUALIFIER void load_from_array(key_type* table_ptr) {
+    auto node_ptr = reinterpret_cast<elem_unsigned_type*>(table_ptr + (static_cast<std::size_t>(2 * node_width) * node_index_));
     do_load<atomic, acquire>(node_ptr);
   }
   template <bool atomic, bool acquire = true>
   DEVICE_QUALIFIER void load_from_allocator() {
-    auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
+    auto node_ptr = reinterpret_cast<elem_unsigned_type*>(allocator_.address(node_index_));
     do_load<atomic, acquire>(node_ptr);
   }
   template <bool atomic, bool acquire>
-  DEVICE_QUALIFIER void do_load(elem_type* node_ptr) {
+  DEVICE_QUALIFIER void do_load(elem_unsigned_type* node_ptr) {
     if constexpr (atomic) { tile_.sync(); }
-    lane_elem_ = utils::memory::load<elem_type, atomic, acquire>(node_ptr + tile_.thread_rank());
+    auto elem = utils::memory::load<elem_unsigned_type, atomic, acquire>(node_ptr + tile_.thread_rank());
+    lane_elem_ = *reinterpret_cast<elem_type*>(&elem);
     if constexpr (atomic) { tile_.sync(); }
     read_metadata_from_registers();
   }
   template <bool atomic, bool release = true>
-  DEVICE_QUALIFIER void store_to_array(elem_type* table_ptr) {
+  DEVICE_QUALIFIER void store_to_array(key_type* table_ptr) {
     auto node_ptr = table_ptr + (static_cast<std::size_t>(2 * node_width) * node_index_);
-    do_store<atomic, release>(node_ptr);
+    do_store<atomic, release>(reinterpret_cast<elem_unsigned_type*>(node_ptr));
   }
   template <bool atomic, bool release = true>
   DEVICE_QUALIFIER void store_to_allocator() {
-    auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
+    auto node_ptr = reinterpret_cast<elem_unsigned_type*>(allocator_.address(node_index_));
     do_store<atomic, release>(node_ptr);
   }
   template <bool atomic, bool release = true>
-  DEVICE_QUALIFIER void store_head_to_array_aux_to_allocator(elem_type* table_ptr) {
+  DEVICE_QUALIFIER void store_head_to_array_aux_to_allocator(key_type* table_ptr) {
     auto node_ptr = is_head() ?
-        table_ptr + (static_cast<std::size_t>(2 * node_width) * node_index_) :
-        reinterpret_cast<elem_type*>(allocator_.address(node_index_));
+        reinterpret_cast<elem_unsigned_type*>(table_ptr + (static_cast<std::size_t>(2 * node_width) * node_index_)) :
+        reinterpret_cast<elem_unsigned_type*>(allocator_.address(node_index_));
     do_store<atomic, release>(node_ptr);
   }
   template <bool atomic, bool release>
-  DEVICE_QUALIFIER void do_store(elem_type* node_ptr) {
+  DEVICE_QUALIFIER void do_store(elem_unsigned_type* node_ptr) {
     if constexpr (atomic) { tile_.sync(); }
-    utils::memory::store<elem_type, atomic, release>(node_ptr + tile_.thread_rank(), lane_elem_);
+    utils::memory::store<elem_unsigned_type, atomic, release>(node_ptr + tile_.thread_rank(), *reinterpret_cast<elem_unsigned_type*>(&lane_elem_));
     if constexpr (atomic) { tile_.sync(); }
   }
 
   DEVICE_QUALIFIER void read_metadata_from_registers() {
-    metadata_ = tile_.shfl(lane_elem_, metadata_lane_);
+    metadata_ = tile_.shfl(lane_elem_.key, metadata_lane_);
   }
   DEVICE_QUALIFIER void write_metadata_to_registers() {
     if (tile_.thread_rank() == metadata_lane_) {
-      lane_elem_ = metadata_;
+      lane_elem_.key = metadata_;
     }
   }
 
-  DEVICE_QUALIFIER int get_key_lane_from_location(const int location) const {
-    assert(0 <= location && location < node_width);
-    return location;
-  }
-  DEVICE_QUALIFIER int get_value_lane_from_location(const int location) const {
-    assert(0 <= location && location < node_width);
-    return node_width + location;
-  }
-
   DEVICE_QUALIFIER key_type get_key_from_location(const int location) const {
-    return tile_.shfl(lane_elem_, get_key_lane_from_location(location));
+    return tile_.shfl(lane_elem_.key, location);
   }
   DEVICE_QUALIFIER value_type get_value_from_location(const int location) const {
-    return tile_.shfl(lane_elem_, get_value_lane_from_location(location));
+    return tile_.shfl(lane_elem_.value, location);
   }
-  DEVICE_QUALIFIER bool is_valid_key_lane() const {
+  DEVICE_QUALIFIER bool is_valid_lane() const {
     return tile_.thread_rank() < num_keys();
-  }
-  DEVICE_QUALIFIER bool is_valid_value_lane() const {
-    return node_width <= tile_.thread_rank() && tile_.thread_rank() < node_width + num_keys();
   }
 
   DEVICE_QUALIFIER uint32_t num_keys() const {
@@ -151,10 +141,10 @@ struct hashtable_node_subwarp {
     write_metadata_to_registers();
   }
   DEVICE_QUALIFIER value_type get_next_index() const {
-    return tile_.shfl(lane_elem_, next_ptr_lane_);
+    return tile_.shfl(lane_elem_.value, next_ptr_lane_);
   }
   DEVICE_QUALIFIER void set_next_index(const value_type& index) {
-    if (tile_.thread_rank() == next_ptr_lane_) { lane_elem_ = index; }
+    if (tile_.thread_rank() == next_ptr_lane_) { lane_elem_.value = index; }
   }
   DEVICE_QUALIFIER bool is_head() const {
     return static_cast<bool>(metadata_ & head_bit_mask_);
@@ -178,45 +168,45 @@ struct hashtable_node_subwarp {
   DEVICE_QUALIFIER size_type get_node_index() const { return node_index_; }
 
   // lock/unlock for head nodes embedded in array (chainHT, cuckooHT)
-  static DEVICE_QUALIFIER bool try_lock(elem_type* table_ptr, size_type bucket_index, const tile_type& tile) {
-    elem_type old;
-    auto bucket_ptr = table_ptr + (static_cast<std::size_t>(2 * node_width) * bucket_index);
+  static DEVICE_QUALIFIER bool try_lock(key_type* table_ptr, size_type bucket_index, const tile_type& tile) {
+    key_type old;
+    auto bucket_ptr = reinterpret_cast<elem_type*>(table_ptr + (static_cast<std::size_t>(2 * node_width) * bucket_index));
     if (tile.thread_rank() == metadata_lane_) {
-      cuda::atomic_ref<elem_type, cuda::thread_scope_device> metadata_ref(bucket_ptr[metadata_lane_]);
+      cuda::atomic_ref<key_type, cuda::thread_scope_device> metadata_ref(bucket_ptr[metadata_lane_].key);
       old = metadata_ref.fetch_or(lock_bit_mask_, cuda::memory_order_relaxed);
     }
-    old = tile.shfl(old, metadata_lane_);
-    bool is_locked = (old & lock_bit_mask_) == 0; // if previously not locked, now it's locked
+    // if previously not locked, now it's locked
+    bool is_locked = (tile.shfl(old, metadata_lane_) & lock_bit_mask_) == 0;
     if (is_locked) { cuda::atomic_thread_fence(cuda::memory_order_acquire, cuda::thread_scope_device); }
     return is_locked;
   }
-  static DEVICE_QUALIFIER void lock(elem_type* table_ptr, size_type bucket_index, const tile_type& tile) {
+  static DEVICE_QUALIFIER void lock(key_type* table_ptr, size_type bucket_index, const tile_type& tile) {
     while (!try_lock(table_ptr, bucket_index, tile));
   }
   template <bool release = true>
-  static DEVICE_QUALIFIER void unlock(elem_type* table_ptr, size_type bucket_index, const tile_type& tile) {
+  static DEVICE_QUALIFIER void unlock(key_type* table_ptr, size_type bucket_index, const tile_type& tile) {
     // unlock, only using the pointer, not load the entire register
-    auto bucket_ptr = table_ptr + (static_cast<std::size_t>(2 * node_width) * bucket_index);
+    auto bucket_ptr = reinterpret_cast<elem_type*>(table_ptr + (static_cast<std::size_t>(2 * node_width) * bucket_index));
     if (tile.thread_rank() == metadata_lane_) {
       if constexpr (release) {
-        cuda::atomic_ref<elem_type, cuda::thread_scope_device> metadata_ref(bucket_ptr[metadata_lane_]);
+        cuda::atomic_ref<key_type, cuda::thread_scope_device> metadata_ref(bucket_ptr[metadata_lane_].key);
         metadata_ref.fetch_and(~lock_bit_mask_, cuda::memory_order_release);
       }
       else {
-        bucket_ptr[metadata_lane_] &= ~lock_bit_mask_;
+        bucket_ptr[metadata_lane_].key &= ~lock_bit_mask_;
       }
     }
   }
   // lock/unlock for head nodes in slab allocator (linearHT)
   static DEVICE_QUALIFIER bool try_lock(size_type head_index, const tile_type& tile, allocator_type& allocator) {
-    elem_type old;
+    key_type old;
     auto bucket_ptr = reinterpret_cast<elem_type*>(allocator.address(head_index));
     if (tile.thread_rank() == metadata_lane_) {
-      cuda::atomic_ref<elem_type, cuda::thread_scope_device> metadata_ref(bucket_ptr[metadata_lane_]);
+      cuda::atomic_ref<key_type, cuda::thread_scope_device> metadata_ref(bucket_ptr[metadata_lane_].key);
       old = metadata_ref.fetch_or(lock_bit_mask_, cuda::memory_order_relaxed);
     }
-    old = tile.shfl(old, metadata_lane_);
-    bool is_locked = (old & lock_bit_mask_) == 0; // if previously not locked, now it's locked
+    // if previously not locked, now it's locked
+    bool is_locked = (tile.shfl(old, metadata_lane_) & lock_bit_mask_) == 0;
     if (is_locked) { cuda::atomic_thread_fence(cuda::memory_order_acquire, cuda::thread_scope_device); }
     return is_locked;
   }
@@ -229,36 +219,32 @@ struct hashtable_node_subwarp {
     auto bucket_ptr = reinterpret_cast<elem_type*>(allocator.address(head_index));
     if (tile.thread_rank() == metadata_lane_) {
       if constexpr (release) {
-        cuda::atomic_ref<elem_type, cuda::thread_scope_device> metadata_ref(bucket_ptr[metadata_lane_]);
+        cuda::atomic_ref<key_type, cuda::thread_scope_device> metadata_ref(bucket_ptr[metadata_lane_].key);
         metadata_ref.fetch_and(~lock_bit_mask_, cuda::memory_order_release);
       }
       else {
-        bucket_ptr[metadata_lane_] &= ~lock_bit_mask_;
+        bucket_ptr[metadata_lane_].key &= ~lock_bit_mask_;
       }
     }
   }
 
   DEVICE_QUALIFIER uint32_t match_key_in_node(const key_type& key, bool more_key) const {
-    return tile_.ballot(is_valid_key_lane() &&
-                        lane_elem_ == key &&
+    return tile_.ballot(is_valid_lane() &&
+                        lane_elem_.key == key &&
                         get_suffix_of_location(tile_.thread_rank()) == more_key);
   }
   DEVICE_QUALIFIER uint32_t match_key_value_in_node(const key_type& key, const value_type& value, bool more_key) const {
-    auto down_elem = tile_.shfl_down(lane_elem_, node_width);
-    return tile_.ballot(is_valid_key_lane() &&
-                        lane_elem_ == key &&
-                        down_elem == value &&
+    return tile_.ballot(is_valid_lane() &&
+                        lane_elem_.key == key &&
+                        lane_elem_.value == value &&
                         get_suffix_of_location(tile_.thread_rank()) == more_key);
   }
 
   DEVICE_QUALIFIER void insert(const key_type& key, const value_type& value, bool more_key) {
     assert(!is_full());
     auto location = num_keys();
-    if (tile_.thread_rank() == get_key_lane_from_location(location)) {
-      lane_elem_ = key;
-    }
-    if (tile_.thread_rank() == get_value_lane_from_location(location)) {
-      lane_elem_ = value;
+    if (tile_.thread_rank() == location) {
+      lane_elem_ = {key, value};
     }
     set_suffix_of_location(location, more_key);
     metadata_++;    // equiv. to num_keys++
@@ -267,8 +253,8 @@ struct hashtable_node_subwarp {
 
   DEVICE_QUALIFIER void update(int location, const value_type& value) {
     assert(location < num_keys());
-    if (tile_.thread_rank() == get_value_lane_from_location(location)) {
-      lane_elem_ = value;
+    if (tile_.thread_rank() == location) {
+      lane_elem_.value = value;
     }
   }
 
@@ -279,8 +265,7 @@ struct hashtable_node_subwarp {
     elem_type shifted_elem = tile_.shfl_up(next_node.lane_elem_, num_keys());
     bool shifted_suffix_bit = next_node.get_suffix_of_location(tile_.thread_rank() - num_keys());
     auto new_num_keys = num_keys() + next_node.num_keys();
-    if ((num_keys() <= tile_.thread_rank() && tile_.thread_rank() < new_num_keys) ||
-        (node_width + num_keys() <= tile_.thread_rank() && tile_.thread_rank() < node_width + new_num_keys)) {
+    if (num_keys() <= tile_.thread_rank() && tile_.thread_rank() < new_num_keys) {
       lane_elem_ = shifted_elem;
       suffix_bit = shifted_suffix_bit;
     }
@@ -289,10 +274,12 @@ struct hashtable_node_subwarp {
     metadata_ &= ~suffix_bits_mask_;
     metadata_ |= ((new_suffix_bits << suffix_bits_offset_) & suffix_bits_mask_);
     // copy next node's next index
-    metadata_ = (metadata_ & ~next_bit_mask_) ^ (next_node.metadata_ & next_bit_mask_); // has_next = next.has_next
     if (tile_.thread_rank() == next_ptr_lane_) {
-      lane_elem_ = next_node.lane_elem_;
+      lane_elem_.value = next_node.lane_elem_.value;
     }
+    // has_next = next.has_next
+    metadata_ &= ~next_bit_mask_;
+    metadata_ |= (next_node.metadata_ & next_bit_mask_);
     write_metadata_to_registers();
   }
 
@@ -302,15 +289,10 @@ struct hashtable_node_subwarp {
     bool suffix_bit = get_suffix_of_location(tile_.thread_rank());
     auto down_elem = tile_.shfl_down(lane_elem_, 1);
     auto down_suffix_bit = get_suffix_of_location(tile_.thread_rank() + 1);
-    if (is_valid_key_lane()) {
-      if (tile_.thread_rank() >= get_key_lane_from_location(location)) {
+    if (is_valid_lane()) {
+      if (tile_.thread_rank() >= location) {
         lane_elem_ = down_elem;
         suffix_bit = down_suffix_bit;
-      }
-    }
-    else if (is_valid_value_lane()) {
-      if (tile_.thread_rank() >= get_value_lane_from_location(location)) {
-        lane_elem_ = down_elem;
       }
     }
     auto new_suffix_bits = tile_.ballot(suffix_bit);
@@ -347,13 +329,13 @@ struct hashtable_node_subwarp {
     if (lead_lane) printf("ld(%u) ", get_local_depth());
     if (lead_lane) printf("%u ", num_keys());
     for (size_type i = 0; i < num_keys(); ++i) {
-      elem_type key = tile_.shfl(lane_elem_, get_key_lane_from_location(i));
-      elem_type value = tile_.shfl(lane_elem_, get_value_lane_from_location(i));
+      key_type key = get_key_from_location(i);
+      value_type value = get_value_from_location(i);
       bool suffix_bit = get_suffix_of_location(i);
       if (lead_lane) printf("(%u %u %s) ", key, value, suffix_bit ? "s" : "$");
     }
     if (lead_lane) printf("%s ", (metadata_ & lock_bit_mask_) ? "locked" : "free");
-    elem_type next_index = get_next_index();
+    size_type next_index = get_next_index();
     if (has_next()) {
       if (lead_lane) printf("next(%u)", next_index);
     }
@@ -364,8 +346,8 @@ struct hashtable_node_subwarp {
     for (size_type i = 0; i < num_keys(); ++i) {
       bool suffix_bit = get_suffix_of_location(i);
       if (suffix_bit) {
-        elem_type suffix_index = tile_.shfl(lane_elem_, get_value_lane_from_location(i));
-        auto suffix = suffix_node_warp<tile_type, allocator_type>(suffix_index, tile_, allocator_);
+        size_type suffix_index = get_value_from_location(i);
+        auto suffix = suffix_node_subwarp<tile_type, allocator_type>(suffix_index, tile_, allocator_);
         suffix.load_head();
         suffix.print();
       }
@@ -379,8 +361,7 @@ struct hashtable_node_subwarp {
   allocator_type& allocator_;
 
   // node consists of 2*node_width elements, each mapped to a lane in the tile.
-  //  [key0] [key1] ... [key13] [key14] | [metadata]
-  //  [val0] [val1] ... [val13] [val14] | [next]
+  //  [key,val0] [key,val1] ... [key,val14] | [metadata,next]
 
   // metadata is 32bits.
   //    (MSB)
@@ -394,9 +375,9 @@ struct hashtable_node_subwarp {
   //  - is_garbage, is_locked are only valid for head nodes
   //  - local_depth for the node chain is all same
 
-  static_assert(sizeof(elem_type) == sizeof(uint32_t));
-  static constexpr uint32_t metadata_lane_ = node_width - 1;
-  static constexpr uint32_t next_ptr_lane_ = node_width * 2 - 1;
+  static_assert(sizeof(elem_type) == sizeof(uint64_t));
+  static constexpr uint32_t metadata_lane_ = node_width - 1;  // key
+  static constexpr uint32_t next_ptr_lane_ = node_width - 1;  // value
   static constexpr uint32_t num_keys_offset_ = 0;
   static constexpr uint32_t num_keys_bits_ = 4;
   static constexpr uint32_t num_keys_mask_ = ((1u << num_keys_bits_) - 1) << num_keys_offset_;

@@ -42,7 +42,7 @@ DEVICE_QUALIFIER uint32_t compute_hash(const uint32_t* input, uint32_t length, c
   // parallel polynomial rolling hash
   static constexpr uint32_t tile_size = tile_type::size();
   static constexpr uint32_t prime0_mult = utils::constexpr_pow(prime0, tile_size);
-  // 1. exponent = [1, p, p^2, ..., p^31]; parallel prefix product
+  // 1. exponent = [1, p, p^2, ..., p^(tile_size-1)]; parallel prefix product
   uint32_t exponent = (tile.thread_rank() == 0) ? 1 : prime0;
   for (uint32_t offset = 1; offset < tile_size; offset <<= 1) {
     auto up_exponent = tile.shfl_up(exponent, offset);
@@ -86,7 +86,7 @@ DEVICE_QUALIFIER uint2 compute_hashx2(const uint32_t* input, uint32_t length, co
   static constexpr uint32_t tile_size = tile_type::size();
   static constexpr uint32_t prime0_mult = utils::constexpr_pow(prime0, tile_size);
   static constexpr uint32_t prime1_mult = utils::constexpr_pow(prime1, tile_size);
-  // 1. exponent = [1, p, p^2, ..., p^31]; parallel prefix product
+  // 1. exponent = [1, p, p^2, ..., p^(tile_size-1)]; parallel prefix product
   uint32_t exponent0 = (tile.thread_rank() == 0) ? 1 : prime0;
   uint32_t exponent1 = (tile.thread_rank() == 0) ? 1 : prime1;
   for (uint32_t offset = 1; offset < tile_size; offset <<= 1) {

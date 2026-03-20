@@ -52,7 +52,6 @@ struct gpu_chainhashtable {
   static constexpr bool use_subwarp_ = use_subwarp;
   static auto constexpr bucket_size = 32;
   static std::size_t constexpr bucket_bytes = sizeof(elem_type) * bucket_size;
-  static auto constexpr cg_tile_size = 32;
 
   static constexpr value_type invalid_value = std::numeric_limits<value_type>::max();
 
