@@ -520,6 +520,14 @@ struct gpu_cuckoohashtable {
     traverse_nodes(task);
   }
 
+  void print_memory_use() {
+    std::size_t memory_use_bytes = bucket_bytes * num_buckets_per_hf_ * num_hfs;
+    auto meminfo = utils::compute_device_memory_usage();
+    std::cout << "gpu_cuckoohashtable: array is "
+      << memory_use_bytes << "/" << meminfo.total_bytes << "B ("
+      << static_cast<float>(memory_use_bytes) / meminfo.total_bytes * 100.0f << "%)" << std::endl;
+  }
+
   struct validate_nodes_task {
     template <typename tile_type>
     DEVICE_QUALIFIER void init(const tile_type& tile) {

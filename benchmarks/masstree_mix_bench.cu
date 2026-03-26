@@ -52,12 +52,13 @@ void mix_bench_masstree(thrust::device_vector<key_slice_type>& d_insert_keys,
                         uint32_t mix_num_requests,
                         uint32_t max_key_length,
                         std::size_t num_experiments,
+                        float allocator_pool_ratio,
                         bool verbose = false) {
   float average_insert_seconds = 0.f;
   float average_mix_seconds = 0.f;
 
   for (std::size_t exp = 0; exp < num_experiments; exp++) {
-    typename masstree_type::host_allocator_type host_alloc;
+    typename masstree_type::host_allocator_type host_alloc(allocator_pool_ratio);
     typename masstree_type::host_reclaimer_type host_reclaim;
     masstree_type tree(host_alloc, host_reclaim);
     if (verbose) {
@@ -114,6 +115,7 @@ int main(int argc, char** argv) {
   if (find_ratio < 0.f) {
     std::cerr << "insert-ratio " << insert_ratio << " + erase_ratio " << erase_ratio << " > 1" << std::endl;
   }
+  float allocator_pool_ratio = get_arg_value<float>(arguments, "allocator-pool-ratio").value_or(0.9f);
   bool verbose   = get_arg_value<bool>(arguments, "verbose").value_or(false);
   std::string dataset_file = get_arg_value<std::string>(arguments, "dataset-file").value_or("");
   std::size_t num_experiments = get_arg_value<std::size_t>(arguments, "num-experiments").value_or(1llu);
@@ -292,13 +294,13 @@ int main(int argc, char** argv) {
   mix_bench_masstree<masstree_tile32_type>(
     d_keys, d_lengths, d_values, half_num_keys,
     d_mix_types, d_mix_keys, d_mix_lengths, d_mix_values, half_num_keys,
-    max_key_length, num_experiments, verbose
+    max_key_length, num_experiments, allocator_pool_ratio, verbose
   );
   std::cout << "Benchmarking masstree_tile16_type" << std::endl;
   mix_bench_masstree<masstree_tile16_type>(
     d_keys, d_lengths, d_values, half_num_keys,
     d_mix_types, d_mix_keys, d_mix_lengths, d_mix_values, half_num_keys,
-    max_key_length, num_experiments, verbose
+    max_key_length, num_experiments, allocator_pool_ratio, verbose
   );
   
 }

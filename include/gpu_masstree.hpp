@@ -627,7 +627,7 @@ struct gpu_masstree {
       bool border_node_locked_by_me = true;
       {
         merge_early_exit_check early_exit{key_slice, more_key};
-        if (do_merge && retry_with_merge) {
+        if (do_merge && (!more_key || retry_with_merge)) {
           coop_traverse_until_border_merge(current_node, key_slice, tile, allocator, reclaimer, early_exit);
           retry_with_merge = false;
         }

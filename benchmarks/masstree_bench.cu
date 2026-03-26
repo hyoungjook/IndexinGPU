@@ -53,6 +53,7 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
                     uint32_t max_counts_per_query,
                     std::size_t num_experiments,
                     float erase_ratio,
+                    float allocator_pool_ratio,
                     bool validate_result = false,
                     bool validate_index = false,
                     bool verbose = false) {
@@ -65,7 +66,7 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
   std::size_t valid_count = 0;
 
   for (std::size_t exp = 0; exp < num_experiments; exp++) {
-    typename masstree_type::host_allocator_type host_alloc;
+    typename masstree_type::host_allocator_type host_alloc(allocator_pool_ratio);
     typename masstree_type::host_reclaimer_type host_reclaim;
     masstree_type tree(host_alloc, host_reclaim);
     if (verbose) {
@@ -81,6 +82,10 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
     cuda_try(cudaDeviceSynchronize());
     float insert_elapsed = insert_timer.get_elapsed_s();
     average_insert_seconds += insert_elapsed;
+
+    if (verbose && exp == 0) {
+      host_alloc.print_stats();
+    }
 
     gpu_timer find_timer1;
     find_timer1.start_timer();
@@ -198,6 +203,7 @@ int main(int argc, char** argv) {
   uint32_t max_counts_per_query = get_arg_value<uint32_t>(arguments, "max-counts-per-query").value_or(1u);
   float common_prefix_ratio = get_arg_value<float>(arguments, "common-prefix-ratio").value_or(0.1f);
   float erase_ratio = get_arg_value<float>(arguments, "erase-ratio").value_or(0.1f);
+  float allocator_pool_ratio = get_arg_value<float>(arguments, "allocator-pool-ratio").value_or(0.9f);
   bool validate_result   = get_arg_value<bool>(arguments, "validate-result").value_or(false);
   bool validate_index   = get_arg_value<bool>(arguments, "validate-index").value_or(false);
   bool verbose   = get_arg_value<bool>(arguments, "verbose").value_or(false);
@@ -316,13 +322,13 @@ int main(int argc, char** argv) {
   bench_masstree<masstree_tile32_type>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
     num_keys, max_key_length, max_counts_per_query, num_experiments, erase_ratio,
-    validate_result, validate_index, verbose
+    allocator_pool_ratio, validate_result, validate_index, verbose
   );
   std::cout << "Benchmarking masstree_tile16_type" << std::endl;
   bench_masstree<masstree_tile16_type>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
     num_keys, max_key_length, max_counts_per_query, num_experiments, erase_ratio,
-    validate_result, validate_index, verbose
+    allocator_pool_ratio, validate_result, validate_index, verbose
   );
   
 }
