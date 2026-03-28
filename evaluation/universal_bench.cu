@@ -29,6 +29,9 @@
 #include <cmd.hpp>
 #include <gpu_timer.hpp>
 #include <gpu_masstree_adapter.hpp>
+#include <gpu_chainhashtable_adapter.hpp>
+#include <gpu_cuckoohashtable_adapter.hpp>
+#include <gpu_linearhashtable_adapter.hpp>
 
 using key_slice_type = uint32_t;
 using value_type = uint32_t;
@@ -342,7 +345,7 @@ int main(int argc, char** argv) {
   std::string index_type = get_arg_value<std::string>(arguments, "index-type").value_or("gpu_masstree");
 
   #define FORALL_INDEXES(x) \
-  x(gpu_masstree)
+  x(gpu_masstree) x(gpu_chainhashtable) x(gpu_cuckoohashtable) x(gpu_linearhashtable)
 
   #define INDEX_NAME_CHECK(index) (index_type == #index) ||
   check_argument(FORALL_INDEXES(INDEX_NAME_CHECK) false);
