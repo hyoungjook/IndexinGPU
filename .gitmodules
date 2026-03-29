@@ -1,6 +1,3 @@
 [submodule "baselines/MVGpuBTree"]
 	path = baselines/MVGpuBTree
 	url = https://github.com/owensgroup/MVGpuBTree.git
-[submodule "baselines/BGHT"]
-	path = baselines/BGHT
-	url = https://github.com/owensgroup/BGHT.git
