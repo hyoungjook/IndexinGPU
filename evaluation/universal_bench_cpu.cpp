@@ -27,6 +27,7 @@
 #include <generate_workload.hpp>
 #include <cpu_libcuckoo_adapter.hpp>
 #include <cpu_masstree_adapter.hpp>
+#include <cpu_art_adapter.hpp>
 
 namespace universal {
 
@@ -173,7 +174,7 @@ int main(int argc, char** argv) {
                  num_scans < std::numeric_limits<size_type>::max());
 
   #define FORALL_INDEXES(x) \
-  x(cpu_libcuckoo) x(cpu_masstree)
+  x(cpu_libcuckoo) x(cpu_masstree) x(cpu_art)
 
   #define INDEX_NAME_CHECK(index) (index_type == #index) ||
   check_argument(FORALL_INDEXES(INDEX_NAME_CHECK) false);
@@ -234,13 +235,15 @@ int main(int argc, char** argv) {
   }
   std::size_t results_buffer_size = std::max(
     (repeats_lookup > 0) ? num_lookups : 0,
-    (repeats_scan > 0) ? num_scans * scan_count : 0
+    (repeats_scan > 0) ? (index_type != "cpu_art" ? num_scans * scan_count : num_scans * scan_count * 2) : 0
   );
   auto h_results = std::vector<value_type>(results_buffer_size);
+  
 
   // run benchmark
   #define ADAPTER_RUN_BENCH(index) \
   if (index_type == #index) { \
+    index##_adapter_.register_dataset(h_keys.data(), h_key_lengths.data(), h_values.data()); \
     universal::run_bench(index##_adapter_, \
       keylen_max, h_keys, h_key_lengths, h_values, num_keys, num_deletes, \
       h_lookup_keys, h_lookup_key_lengths, num_lookups, \

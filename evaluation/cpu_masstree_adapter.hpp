@@ -57,6 +57,7 @@ struct cpu_masstree_adapter {
   void print_args() const {
     configs_.print();
   }
+  void register_dataset(const key_slice_type* key, const size_type* key_lengths, const value_type* values) {}
   void initialize() {
     if (!main_threadinfo_) {
       main_threadinfo_ = threadinfo::make(threadinfo::TI_MAIN, -1);

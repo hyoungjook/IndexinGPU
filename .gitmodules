@@ -10,3 +10,6 @@
 [submodule "baselines/masstree-beta"]
 	path = baselines/masstree-beta
 	url = https://github.com/kohler/masstree-beta.git
+[submodule "baselines/ARTSynchronized"]
+	path = baselines/ARTSynchronized
+	url = https://github.com/flode/ARTSynchronized.git

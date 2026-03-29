@@ -70,6 +70,7 @@ struct cpu_libcuckoo_adapter {
   void print_args() const {
     configs_.print();
   }
+  void register_dataset(const key_slice_type* key, const size_type* key_lengths, const value_type* values) {}
   void initialize() {
     index_ = std::make_unique<index_type>(configs_.initial_capacity);
   }
