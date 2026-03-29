@@ -14,6 +14,7 @@
  *   limitations under the License.
  */
 #pragma once
+#include <cstring>
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -28,19 +29,31 @@ struct cpu_libcuckoo_adapter {
   using key_slice_type = uint32_t;
   using value_type = uint32_t;
   using size_type = uint32_t;
-  using key_type = std::vector<key_slice_type>;
-
+  struct key_type {
+    const key_slice_type* data;
+    size_type length;
+  };
   struct key_hash {
     std::size_t operator()(const key_type& key) const {
       std::size_t hash = 0;
-      for (auto slice : key) {
-        hash ^= std::hash<key_slice_type>{}(slice) + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+      for (size_type i = 0; i < key.length; i++) {
+        hash ^= std::hash<key_slice_type>{}(key.data[i]) + 0x9e3779b9 + (hash << 6) + (hash >> 2);
       }
       return hash;
     }
   };
-
-  using index_type = libcuckoo::cuckoohash_map<key_type, value_type, key_hash>;
+  struct key_equal {
+    bool operator()(const key_type& lhs, const key_type& rhs) const {
+      if (lhs.length != rhs.length) {
+        return false;
+      }
+      if (lhs.length == 0) {
+        return true;
+      }
+      return std::memcmp(lhs.data, rhs.data, sizeof(key_slice_type) * lhs.length) == 0;
+    }
+  };
+  using index_type = libcuckoo::cuckoohash_map<key_type, value_type, key_hash, key_equal>;
 
   void parse(std::vector<std::string>& arguments) {
     configs_ = configs(arguments);
@@ -55,14 +68,14 @@ struct cpu_libcuckoo_adapter {
     index_.reset();
   }
   void insert(const key_slice_type* key, size_type key_length, value_type value) {
-    index_->insert_or_assign(make_key(key, key_length), value);
+    index_->insert_or_assign(key_type{key, key_length}, value);
   }
   void erase(const key_slice_type* key, size_type key_length) {
-    index_->erase(make_key(key, key_length));
+    index_->erase(key_type{key, key_length});
   }
   value_type find(const key_slice_type* key, size_type key_length) {
     value_type value = std::numeric_limits<value_type>::max();
-    index_->find(make_key(key, key_length), value);
+    index_->find(key_type{key, key_length}, value);
     return value;
   }
 
@@ -81,8 +94,4 @@ struct cpu_libcuckoo_adapter {
 
   configs configs_;
   std::unique_ptr<index_type> index_;
-
-  static key_type make_key(const key_slice_type* key, size_type key_length) {
-    return key_type(key, key + key_length);
-  }
 };
