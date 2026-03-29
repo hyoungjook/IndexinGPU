@@ -32,6 +32,9 @@
 #include <gpu_chainhashtable_adapter.hpp>
 #include <gpu_cuckoohashtable_adapter.hpp>
 #include <gpu_linearhashtable_adapter.hpp>
+#ifdef UNIVERSAL_BENCH_WITH_BASELINE
+#include <gpu_btree_adapter.hpp>
+#endif
 
 using key_slice_type = uint32_t;
 using value_type = uint32_t;
@@ -243,6 +246,7 @@ void run_bench(adapter_type& adapter,
                thrust::device_vector<key_slice_type>& lookup_keys,
                thrust::device_vector<size_type>& lookup_key_lengths,
                std::size_t num_lookups,
+               thrust::device_vector<key_slice_type>& scan_upper_keys_if_btree,
                uint32_t scan_count,
                std::size_t num_scans,
                thrust::device_vector<value_type>& results,
@@ -299,7 +303,7 @@ void run_bench(adapter_type& adapter,
     for (std::size_t r = 0; r < repeats_scan; r++) {
       gpu_timer scan_timer;
       scan_timer.start_timer();
-      adapter.scan(lookup_keys.data().get(), keylen_max, lookup_key_lengths.data().get(), scan_count, results.data().get(), num_scans);
+      adapter.scan(lookup_keys.data().get(), keylen_max, lookup_key_lengths.data().get(), scan_count, results.data().get(), num_scans, scan_upper_keys_if_btree.data().get());
       scan_timer.stop_timer();
       cuda_try(cudaDeviceSynchronize());
       scan_seconds += scan_timer.get_elapsed_s();
@@ -343,9 +347,18 @@ int main(int argc, char** argv) {
   std::size_t repeats_scan = get_arg_value<std::size_t>(arguments, "repeats-scan").value_or(0);
   // index config
   std::string index_type = get_arg_value<std::string>(arguments, "index-type").value_or("gpu_masstree");
+  check_argument(num_keys < std::numeric_limits<size_type>::max() &&
+                 num_lookups < std::numeric_limits<size_type>::max() &&
+                 num_scans < std::numeric_limits<size_type>::max());
 
+  #ifdef UNIVERSAL_BENCH_WITH_BASELINE
+  #define FORALL_INDEXES(x) \
+  x(gpu_masstree) x(gpu_chainhashtable) x(gpu_cuckoohashtable) x(gpu_linearhashtable) \
+  x(gpu_blink_tree) 
+  #else
   #define FORALL_INDEXES(x) \
   x(gpu_masstree) x(gpu_chainhashtable) x(gpu_cuckoohashtable) x(gpu_linearhashtable)
+  #endif
 
   #define INDEX_NAME_CHECK(index) (index_type == #index) ||
   check_argument(FORALL_INDEXES(INDEX_NAME_CHECK) false);
@@ -393,16 +406,28 @@ int main(int argc, char** argv) {
   std::vector<value_type> h_values;
   std::vector<key_slice_type> h_lookup_keys;
   std::vector<size_type> h_lookup_key_lengths;
+  std::vector<key_slice_type> h_scan_upper_keys_if_btree;
   universal::generate_key_values(h_keys, h_key_lengths, h_values,
                            num_keys, keylen_prefix, keylen_min, keylen_max, keylen_theta);
+  std::size_t num_lookups_keys = max(
+    (repeats_lookup > 0) ? num_lookups : 0,
+    (repeats_scan > 0) ? num_scans : 0
+  );
   if (repeats_lookup > 0) {
     universal::generate_lookup_keys(h_lookup_keys, h_lookup_key_lengths, h_keys, h_key_lengths,
                                     num_keys, keylen_prefix, keylen_min, keylen_max, keylen_theta,
-                                    num_lookups, lookup_theta, lookup_exist_ratio);
+                                    num_lookups_keys, lookup_theta, lookup_exist_ratio);
+  }
+  if (index_type == "gpu_blink_tree" && repeats_scan > 0) {
+    check_argument(keylen_max == 1);
+    h_scan_upper_keys_if_btree = std::vector<key_slice_type>(num_scans);
+    for (std::size_t i = 0; i < num_scans; i++) {
+      h_scan_upper_keys_if_btree[i] = h_lookup_keys[i] + scan_count - 1;
+    }
   }
   std::size_t results_buffer_size = max(
     (repeats_lookup > 0) ? num_lookups : 0,
-    (repeats_scan > 0) ? (num_scans * scan_count) : 0
+    (repeats_scan > 0) ? (index_type != "gpu_blink_tree" ? num_scans * scan_count : num_scans * scan_count * 2) : 0
   );
 
   // copy vectors to device
@@ -412,11 +437,15 @@ int main(int argc, char** argv) {
   auto d_lookup_keys = thrust::device_vector<key_slice_type>(h_lookup_keys.size());
   auto d_lookup_key_lengths = thrust::device_vector<key_slice_type>(h_lookup_key_lengths.size());
   auto d_results = thrust::device_vector<value_type>(results_buffer_size);
+  auto d_scan_upper_keys_if_btree = thrust::device_vector<key_slice_type>(h_scan_upper_keys_if_btree.size());
   d_keys = h_keys;
   d_key_lengths = h_key_lengths;
   d_values = h_values;
   d_lookup_keys = h_lookup_keys;
   d_lookup_key_lengths = h_lookup_key_lengths;
+  if (h_scan_upper_keys_if_btree.size() > 0) {
+    d_scan_upper_keys_if_btree = h_scan_upper_keys_if_btree;
+  }
 
   // run benchmark
   #define ADAPTER_RUN_BENCH(index) \
@@ -424,7 +453,7 @@ int main(int argc, char** argv) {
     universal::run_bench(index##_adapter_, \
       keylen_max, d_keys, d_key_lengths, d_values, num_keys, num_deletes, \
       d_lookup_keys, d_lookup_key_lengths, num_lookups, \
-      scan_count, num_scans, d_results, \
+      d_scan_upper_keys_if_btree, scan_count, num_scans, d_results, \
       repeats_insert, repeats_delete, repeats_lookup, repeats_scan); \
   }
   FORALL_INDEXES(ADAPTER_RUN_BENCH)

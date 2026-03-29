@@ -105,7 +105,6 @@ struct gpu_chainhashtable_adapter {
     float initial_array_fill_factor;
     bool use_hash_tag;
     bool merge_chains;
-
     configs() {}
     configs(std::vector<std::string>& arguments) {
       allocator_pool_ratio = get_arg_value<float>(arguments, "allocator-pool-ratio").value_or(0.5f);

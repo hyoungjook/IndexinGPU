@@ -123,7 +123,6 @@ struct gpu_linearhashtable_adapter {
     };
     uint32_t merge_level;   // 0: naive, 1: merge chains, 2: merge buckets
     bool reuse_dirsize;
-
     configs() {}
     configs(std::vector<std::string>& arguments) {
       allocator_pool_ratio = get_arg_value<float>(arguments, "allocator-pool-ratio").value_or(0.9f);

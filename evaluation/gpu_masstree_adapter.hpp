@@ -102,7 +102,9 @@ struct gpu_masstree_adapter {
             const size_type* key_lengths,
             uint32_t count,
             value_type* results,
-            std::size_t num_keys) {
+            std::size_t num_keys,
+            const key_slice_type* upper_keys_for_btree) {
+    (void)upper_keys_for_btree;
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_bool(configs_.lookup_concurrent, [&](auto t2, auto c2) {
         adapter_util::dispatch_bool(configs_.reuse_root, [&](auto t3, auto c3, auto r3) {
@@ -124,7 +126,6 @@ struct gpu_masstree_adapter {
     };
     uint32_t merge_level;  // 0: naive, 1: concurrent, 2: merge, 3: remove_root
     bool reuse_root;
-
     configs() {}
     configs(std::vector<std::string>& arguments) {
       allocator_pool_ratio = get_arg_value<float>(arguments, "allocator-pool-ratio").value_or(0.9f);

@@ -102,7 +102,6 @@ struct gpu_cuckoohashtable_adapter {
     std::size_t num_keys; // parse again here; do not print
     float initial_array_fill_factor;
     bool use_hash_tag;
-
     configs() {}
     configs(std::vector<std::string>& arguments) {
       allocator_pool_ratio = get_arg_value<float>(arguments, "allocator-pool-ratio").value_or(0.1f);
