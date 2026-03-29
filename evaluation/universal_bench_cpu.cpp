@@ -26,18 +26,21 @@
 #include <cmd.hpp>
 #include <generate_workload.hpp>
 #include <cpu_libcuckoo_adapter.hpp>
+#include <cpu_masstree_adapter.hpp>
 
 namespace universal {
 
-template <class F>
-void helper_multithread(F&& f, std::size_t num_tasks) {
+template <class F, class ThreadEnter, class ThreadExit>
+void helper_multithread(F&& f, std::size_t num_tasks, ThreadEnter&& thread_enter, ThreadExit&& thread_exit) {
   const unsigned num_workers = std::max(1u, std::thread::hardware_concurrency());
   std::vector<std::thread> workers;
   for (unsigned tid = 0; tid < num_workers; tid++) {
     workers.emplace_back([&](unsigned thread_id) {
+      thread_enter();
       for (std::size_t task_idx = thread_id; task_idx < num_tasks; task_idx += num_workers) {
         std::forward<F>(f)(task_idx);
       }
+      thread_exit();
     }, tid);
   }
   for (auto& w: workers) { w.join(); }
@@ -73,7 +76,9 @@ void run_bench(adapter_type& adapter,
     timer_start = std::chrono::high_resolution_clock::now();
     helper_multithread([&](std::size_t task_idx) {
       adapter.insert(&keys[task_idx * keylen_max], key_lengths[task_idx], values[task_idx]);
-    }, num_keys);
+    }, num_keys,
+    [&]() { adapter.thread_enter(); },
+    [&]() { adapter.thread_exit(); });
     timer_end = std::chrono::high_resolution_clock::now();
     insert_seconds += std::chrono::duration_cast<std::chrono::duration<float>>(timer_end - timer_start).count();
 
@@ -81,7 +86,9 @@ void run_bench(adapter_type& adapter,
       timer_start = std::chrono::high_resolution_clock::now();
       helper_multithread([&](std::size_t task_idx) {
         adapter.erase(&keys[task_idx * keylen_max], key_lengths[task_idx]);
-      }, num_deletes);
+      }, num_deletes,
+      [&]() { adapter.thread_enter(); },
+      [&]() { adapter.thread_exit(); });
       timer_end = std::chrono::high_resolution_clock::now();
       delete_seconds += std::chrono::duration_cast<std::chrono::duration<float>>(timer_end - timer_start).count();
     }
@@ -99,12 +106,16 @@ void run_bench(adapter_type& adapter,
   adapter.initialize();
   helper_multithread([&](std::size_t task_idx) {
     adapter.insert(&keys[task_idx * keylen_max], key_lengths[task_idx], values[task_idx]);
-  }, num_keys);
+  }, num_keys,
+  [&]() { adapter.thread_enter(); },
+  [&]() { adapter.thread_exit(); });
   for (std::size_t r = 0; r < repeats_lookup; r++) {
     timer_start = std::chrono::high_resolution_clock::now();
     helper_multithread([&](std::size_t task_idx) {
       results[task_idx] = adapter.find(&lookup_keys[task_idx * keylen_max], lookup_key_lengths[task_idx]);
-    }, num_lookups);
+    }, num_lookups,
+    [&]() { adapter.thread_enter(); },
+    [&]() { adapter.thread_exit(); });
     timer_end = std::chrono::high_resolution_clock::now();
     lookup_seconds += std::chrono::duration_cast<std::chrono::duration<float>>(timer_end - timer_start).count();
   }
@@ -114,7 +125,9 @@ void run_bench(adapter_type& adapter,
       timer_start = std::chrono::high_resolution_clock::now();
       helper_multithread([&](std::size_t task_idx) {
         adapter.scan(&lookup_keys[task_idx * keylen_max], lookup_key_lengths[task_idx], scan_count, &results[task_idx * scan_count]);
-      }, num_lookups);
+      }, num_scans,
+      [&]() { adapter.thread_enter(); },
+      [&]() { adapter.thread_exit(); });
       timer_end = std::chrono::high_resolution_clock::now();
       scan_seconds += std::chrono::duration_cast<std::chrono::duration<float>>(timer_end - timer_start).count();
     }
@@ -160,7 +173,7 @@ int main(int argc, char** argv) {
                  num_scans < std::numeric_limits<size_type>::max());
 
   #define FORALL_INDEXES(x) \
-  x(cpu_libcuckoo)
+  x(cpu_libcuckoo) x(cpu_masstree)
 
   #define INDEX_NAME_CHECK(index) (index_type == #index) ||
   check_argument(FORALL_INDEXES(INDEX_NAME_CHECK) false);
@@ -214,7 +227,7 @@ int main(int argc, char** argv) {
     (repeats_lookup > 0) ? num_lookups : 0,
     (repeats_scan > 0) ? num_scans : 0
   );
-  if (repeats_lookup > 0) {
+  if (repeats_lookup > 0 || repeats_scan > 0) {
     universal::generate_lookup_keys(h_lookup_keys, h_lookup_key_lengths, h_keys, h_key_lengths,
                                     num_keys, keylen_prefix, keylen_min, keylen_max, keylen_theta,
                                     num_lookups_keys, lookup_theta, lookup_exist_ratio);

@@ -213,7 +213,7 @@ int main(int argc, char** argv) {
     (repeats_lookup > 0) ? num_lookups : 0,
     (repeats_scan > 0) ? num_scans : 0
   );
-  if (repeats_lookup > 0) {
+  if (repeats_lookup > 0 || repeats_scan > 0) {
     universal::generate_lookup_keys(h_lookup_keys, h_lookup_key_lengths, h_keys, h_key_lengths,
                                     num_keys, keylen_prefix, keylen_min, keylen_max, keylen_theta,
                                     num_lookups_keys, lookup_theta, lookup_exist_ratio);

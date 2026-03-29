@@ -67,6 +67,8 @@ struct cpu_libcuckoo_adapter {
   void destroy() {
     index_.reset();
   }
+  void thread_enter() noexcept {}
+  void thread_exit() noexcept {}
   void insert(const key_slice_type* key, size_type key_length, value_type value) {
     index_->insert_or_assign(key_type{key, key_length}, value);
   }
