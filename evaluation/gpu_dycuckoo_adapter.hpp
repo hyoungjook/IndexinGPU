@@ -38,16 +38,14 @@ struct gpu_dycuckoo_adapter {
     configs_.print();
   }
   void initialize() {
-    auto initial_capacity = static_cast<uint32_t>(
-      static_cast<float>(configs_.num_keys) / configs_.initial_array_fill_factor);
     if (configs_.use_lock) {
-      index_ = gpu_dycuckoo_dynamic_lock_create(initial_capacity,
+      index_ = gpu_dycuckoo_dynamic_lock_create(configs_.initial_capacity,
                                                 configs_.small_batch_size,
                                                 configs_.fill_factor_lower_bound,
                                                 configs_.fill_factor_upper_bound);
     }
     else {
-      index_ = gpu_dycuckoo_dynamic_create(initial_capacity,
+      index_ = gpu_dycuckoo_dynamic_create(configs_.initial_capacity,
                                            configs_.small_batch_size,
                                            configs_.fill_factor_lower_bound,
                                            configs_.fill_factor_upper_bound);
@@ -106,20 +104,18 @@ struct gpu_dycuckoo_adapter {
  private:
   struct configs {
     bool use_lock;
-    std::size_t num_keys;
-    float initial_array_fill_factor;
+    uint32_t initial_capacity;
     float fill_factor_lower_bound;
     float fill_factor_upper_bound;
     int small_batch_size;
     configs() {}
     configs(std::vector<std::string>& arguments) {
       use_lock = get_arg_value<bool>(arguments, "use-lock").value_or(false);
-      num_keys = get_arg_value<std::size_t>(arguments, "num-keys").value_or(1000000);
-      initial_array_fill_factor = get_arg_value<float>(arguments, "initial-array-fill-factor").value_or(0.8f);
+      initial_capacity = get_arg_value<uint32_t>(arguments, "initial-capacity").value_or(100000);
       fill_factor_lower_bound = get_arg_value<float>(arguments, "fill-factor-lower-bound").value_or(0.5f);
       fill_factor_upper_bound = get_arg_value<float>(arguments, "fill-factor-upper-bound").value_or(0.8f);
       small_batch_size = get_arg_value<int>(arguments, "small-batch-size").value_or(20000);
-      check_argument(0 < initial_array_fill_factor && initial_array_fill_factor <= 1.0f);
+      check_argument(0 < initial_capacity);
       check_argument(0 < fill_factor_lower_bound &&
                      fill_factor_lower_bound < fill_factor_upper_bound &&
                      fill_factor_upper_bound <= 1.0f);
@@ -129,7 +125,7 @@ struct gpu_dycuckoo_adapter {
 
     void print() const {
       std::cout << "    use-lock: " << use_lock << std::endl
-                << "    initial-array-fill-factor: " << initial_array_fill_factor << std::endl
+                << "    initial-capacity: " << initial_capacity << std::endl
                 << "    fill-factor-lower-bound: " << fill_factor_lower_bound << std::endl
                 << "    fill-factor-upper-bound: " << fill_factor_upper_bound << std::endl
                 << "    small-batch-size: " << small_batch_size << std::endl

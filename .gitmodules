@@ -4,3 +4,6 @@
 [submodule "baselines/DyCuckoo"]
 	path = baselines/DyCuckoo
 	url = https://github.com/zhuqiweigit/DyCuckoo.git
+[submodule "baselines/libcuckoo"]
+	path = baselines/libcuckoo
+	url = https://github.com/efficient/libcuckoo.git
