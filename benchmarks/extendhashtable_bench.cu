@@ -15,7 +15,7 @@
  *   limitations under the License.
  */
 #include <cuda_profiler_api.h>
-#include <gpu_linearhashtable.hpp>
+#include <gpu_extendhashtable.hpp>
 #include <stdlib.h>
 #include <thrust/sequence.h>
 #include <thrust/logical.h>
@@ -36,13 +36,13 @@ using key_slice_type = uint32_t;
 using value_type = uint32_t;
 using size_type = uint32_t;
 
-template <typename linearhashtable_type,
+template <typename extendhashtable_type,
           bool use_hash_tag = true,
           bool tag_use_same_hash = true,
           bool merge_chains = true,
           bool erase_merge_buckets = true,
           bool reuse_dirsize = true>
-void bench_linearhashtable(thrust::device_vector<key_slice_type>& d_keys,
+void bench_extendhashtable(thrust::device_vector<key_slice_type>& d_keys,
                            thrust::device_vector<size_type>& d_lengths,
                            thrust::device_vector<value_type>& d_values,
                            thrust::device_vector<key_slice_type>& d_query_keys,
@@ -66,9 +66,9 @@ void bench_linearhashtable(thrust::device_vector<key_slice_type>& d_keys,
   std::size_t valid_count = 0;
 
   for (std::size_t exp = 0; exp < num_experiments; exp++) {
-    typename linearhashtable_type::host_allocator_type host_alloc(allocator_pool_ratio);
-    typename linearhashtable_type::host_reclaimer_type host_reclaim;
-    linearhashtable_type table(host_alloc, host_reclaim, initial_directory_size, resize_policy, load_factor_threshold);
+    typename extendhashtable_type::host_allocator_type host_alloc(allocator_pool_ratio);
+    typename extendhashtable_type::host_reclaimer_type host_reclaim;
+    extendhashtable_type table(host_alloc, host_reclaim, initial_directory_size, resize_policy, load_factor_threshold);
     if (verbose) {
       auto memory_usage = utils::compute_device_memory_usage();
       std::cout << "Using: " << double(memory_usage.used_bytes) / double(1 << 30) << " GiBs"
@@ -291,17 +291,17 @@ int main(int argc, char** argv) {
   std::cout << "erase-ratio = " << erase_ratio << std::endl;
   using simple_slab_linear_alloc_type = simple_slab_linear_allocator<128>;
   using simple_debra_reclaim_type = simple_debra_reclaimer<>;
-  using linearhashtable_tile32_type = GpuLinearHashtable::gpu_linearhashtable<simple_slab_linear_alloc_type, simple_debra_reclaim_type, 32>;
-  using linearhashtable_tile16_type = GpuLinearHashtable::gpu_linearhashtable<simple_slab_linear_alloc_type, simple_debra_reclaim_type, 16>;
+  using extendhashtable_tile32_type = GpuExtendHashtable::gpu_extendhashtable<simple_slab_linear_alloc_type, simple_debra_reclaim_type, 32>;
+  using extendhashtable_tile16_type = GpuExtendHashtable::gpu_extendhashtable<simple_slab_linear_alloc_type, simple_debra_reclaim_type, 16>;
 
-  std::cout << "Benchmarking linearhashtable_tile32_type" << std::endl;
-  bench_linearhashtable<linearhashtable_tile32_type>(
+  std::cout << "Benchmarking extendhashtable_tile32_type" << std::endl;
+  bench_extendhashtable<extendhashtable_tile32_type>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
     num_keys, max_key_length, num_experiments, erase_ratio, initial_directory_size, resize_policy, load_factor_threshold,
     allocator_pool_ratio, validate_result, validate_index, verbose
   );
-  std::cout << "Benchmarking linearhashtable_tile16_type" << std::endl;
-  bench_linearhashtable<linearhashtable_tile16_type>(
+  std::cout << "Benchmarking extendhashtable_tile16_type" << std::endl;
+  bench_extendhashtable<extendhashtable_tile16_type>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
     num_keys, max_key_length, num_experiments, erase_ratio, initial_directory_size, resize_policy, load_factor_threshold,
     allocator_pool_ratio, validate_result, validate_index, verbose

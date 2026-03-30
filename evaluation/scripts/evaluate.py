@@ -14,7 +14,7 @@ class IndexType(Enum):
     gpu_masstree = auto()
     gpu_chainhashtable = auto()
     gpu_cuckoohashtable = auto()
-    gpu_linearhashtable = auto()
+    gpu_extendhashtable = auto()
     gpu_blink_tree = auto()
     gpu_dycuckoo = auto()
     cpu_libcuckoo = auto()
@@ -71,7 +71,7 @@ EXECUTABLE_INFO = {
             IndexType.gpu_masstree,
             IndexType.gpu_chainhashtable,
             IndexType.gpu_cuckoohashtable,
-            IndexType.gpu_linearhashtable,
+            IndexType.gpu_extendhashtable,
         ]
     },
     BenchExecutable.gpu_baseline: {
@@ -115,7 +115,7 @@ INDEX_INFO = {
         OptionalConfigType.initial_array_fill_factor,
         OptionalConfigType.use_hash_tag,
     ],
-    IndexType.gpu_linearhashtable: [
+    IndexType.gpu_extendhashtable: [
         OptionalConfigType.allocator_pool_ratio,
         OptionalConfigType.tile_size,
         OptionalConfigType.lookup_concurrent,

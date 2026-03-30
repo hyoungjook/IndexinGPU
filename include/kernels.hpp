@@ -607,11 +607,11 @@ __global__ void traverse_nodes_kernel(hashtable table, func task) {
 
 } // namespace GpuHashtable
 
-namespace GpuLinearHashtable {
+namespace GpuExtendHashtable {
 
-template <uint32_t tile_size, typename linearhashtable>
-__global__ void initialize_kernel(linearhashtable table) {
-  using allocator_type = typename linearhashtable::device_allocator_context_type;
+template <uint32_t tile_size, typename extendhashtable>
+__global__ void initialize_kernel(extendhashtable table) {
+  using allocator_type = typename extendhashtable::device_allocator_context_type;
   auto block = cg::this_thread_block();
   auto tile  = cg::tiled_partition<tile_size>(block);
   auto bucket_index = blockIdx.x;
@@ -842,6 +842,6 @@ __global__ void traverse_nodes_kernel(hashtable table, func task) {
   task.fini(tile);
 }
 
-} // namespace GpuLinearHashtable
+} // namespace GpuExtendHashtable
 
 } // namespace kernels

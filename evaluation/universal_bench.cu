@@ -29,7 +29,7 @@
 #include <gpu_masstree_adapter.hpp>
 #include <gpu_chainhashtable_adapter.hpp>
 #include <gpu_cuckoohashtable_adapter.hpp>
-#include <gpu_linearhashtable_adapter.hpp>
+#include <gpu_extendhashtable_adapter.hpp>
 #elif defined(UNIVERSAL_BENCH_WITH_GPU_BASELINE)
 #include <gpu_blink_tree_adapter.hpp>
 #include <gpu_dycuckoo_adapter.hpp>
@@ -136,7 +136,7 @@ int main(int argc, char** argv) {
 
   #if defined(UNIVERSAL_BENCH_WITH_ROBUST_INDEX)
   #define FORALL_INDEXES(x) \
-  x(gpu_masstree) x(gpu_chainhashtable) x(gpu_cuckoohashtable) x(gpu_linearhashtable)
+  x(gpu_masstree) x(gpu_chainhashtable) x(gpu_cuckoohashtable) x(gpu_extendhashtable)
   #elif defined(UNIVERSAL_BENCH_WITH_GPU_BASELINE)
   #define FORALL_INDEXES(x) \
   x(gpu_blink_tree) x(gpu_dycuckoo)

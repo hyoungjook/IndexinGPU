@@ -13,7 +13,7 @@ CPMAddPackage(
 
 set(GTEST_TESTS
     unittest_masstree
-    unittest_linearhashtable
+    unittest_extendhashtable
     unittest_fixedhashtable
 )
 foreach(TEST ${GTEST_TESTS})

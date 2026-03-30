@@ -3,10 +3,10 @@ project(benchmarks)
 set(BENCHMARKS
     masstree_bench
     fixedhashtable_bench
-    linearhashtable_bench
+    extendhashtable_bench
     masstree_mix_bench
     fixedhashtable_mix_bench
-    linearhashtable_mix_bench
+    extendhashtable_mix_bench
 )
 
 foreach(BENCHMARK ${BENCHMARKS})

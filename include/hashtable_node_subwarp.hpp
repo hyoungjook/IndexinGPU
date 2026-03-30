@@ -198,7 +198,7 @@ struct hashtable_node_subwarp {
       }
     }
   }
-  // lock/unlock for head nodes in slab allocator (linearHT)
+  // lock/unlock for head nodes in slab allocator (extendHT)
   static DEVICE_QUALIFIER bool try_lock(size_type head_index, const tile_type& tile, allocator_type& allocator) {
     key_type old;
     auto bucket_ptr = reinterpret_cast<elem_type*>(allocator.address(head_index));

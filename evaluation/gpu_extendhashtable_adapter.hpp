@@ -19,19 +19,19 @@
 #include <macros.hpp>
 #include <cmd.hpp>
 #include <adapter_util.hpp>
-#include <gpu_linearhashtable.hpp>
+#include <gpu_extendhashtable.hpp>
 #include <simple_slab_linear_alloc.hpp>
 #include <simple_debra_reclaim.hpp>
 
-struct gpu_linearhashtable_adapter {
+struct gpu_extendhashtable_adapter {
   static constexpr bool is_ordered = false;
   using key_slice_type = uint32_t;
   using value_type = uint32_t;
   using size_type = uint32_t;
   using allocator_type = simple_slab_linear_allocator<128>;
   using reclaimer_type = simple_debra_reclaimer<>;
-  using index32_type = GpuLinearHashtable::gpu_linearhashtable<allocator_type, reclaimer_type, 32>;
-  using index16_type = GpuLinearHashtable::gpu_linearhashtable<allocator_type, reclaimer_type, 16>;
+  using index32_type = GpuExtendHashtable::gpu_extendhashtable<allocator_type, reclaimer_type, 32>;
+  using index16_type = GpuExtendHashtable::gpu_extendhashtable<allocator_type, reclaimer_type, 16>;
 
   void parse(std::vector<std::string>& arguments) {
     configs_ = configs(arguments);
