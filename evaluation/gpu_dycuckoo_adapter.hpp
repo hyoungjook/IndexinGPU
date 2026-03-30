@@ -22,6 +22,7 @@
 #include <string>
 #include <vector>
 #include <cmd.hpp>
+#include <generate_workload.hpp>
 #include <gpu_dycuckoo_backend.hpp>
 #include <macros.hpp>
 
@@ -102,36 +103,41 @@ struct gpu_dycuckoo_adapter {
   }
 
  private:
+  #define FORALL_ARGUMENTS_GPU_DYCUCKOO(x) \
+    x(use_lock, bool, false) \
+    x(initial_capacity, uint32_t, 1000000) \
+    x(fill_factor_lower_bound, float, 0.5f) \
+    x(fill_factor_upper_bound, float, 0.8f) \
+    x(small_batch_size, int, 20000)
   struct configs {
-    bool use_lock;
-    uint32_t initial_capacity;
-    float fill_factor_lower_bound;
-    float fill_factor_upper_bound;
-    int small_batch_size;
+    #define DECLARE_ARGUMENTS(arg, type, default_value) type arg;
+    FORALL_ARGUMENTS_GPU_DYCUCKOO(DECLARE_ARGUMENTS)
+    #undef DECLARE_ARGUMENTS
     configs() {}
     configs(std::vector<std::string>& arguments) {
-      use_lock = get_arg_value<bool>(arguments, "use_lock").value_or(false);
-      initial_capacity = get_arg_value<uint32_t>(arguments, "initial_capacity").value_or(100000);
-      fill_factor_lower_bound = get_arg_value<float>(arguments, "fill_factor_lower_bound").value_or(0.5f);
-      fill_factor_upper_bound = get_arg_value<float>(arguments, "fill_factor_upper_bound").value_or(0.8f);
-      small_batch_size = get_arg_value<int>(arguments, "small-batch-size").value_or(20000);
+      #define PARSE_ARGUMENTS(arg, type, default_value) \
+      arg = get_arg_value<type>(arguments, #arg).value_or(default_value);
+      FORALL_ARGUMENTS_GPU_DYCUCKOO(PARSE_ARGUMENTS)
+      #undef PARSE_ARGUMENTS
       check_argument(0 < initial_capacity);
       check_argument(0 < fill_factor_lower_bound &&
                      fill_factor_lower_bound < fill_factor_upper_bound &&
                      fill_factor_upper_bound <= 1.0f);
-      uint32_t keylen_max = get_arg_value<uint32_t>(arguments, "keylen-max").value_or(1);
+      #define PARSE_DEFAULT_ARGUMENTS(arg, type, default_value) \
+      [[maybe_unused]] auto arg = get_arg_value<type>(arguments, #arg).value_or(default_value);
+      FORALL_ARGUMENTS(PARSE_DEFAULT_ARGUMENTS)
+      #undef PARSE_DEFAULT_ARGUMENTS
       check_argument(keylen_max == 1);
     }
 
     void print() const {
-      std::cout << "    use_lock=" << use_lock << std::endl
-                << "    initial_capacity=" << initial_capacity << std::endl
-                << "    fill_factor_lower_bound=" << fill_factor_lower_bound << std::endl
-                << "    fill_factor_upper_bound=" << fill_factor_upper_bound << std::endl
-                << "    small_batch_size=" << small_batch_size << std::endl
-                ;
+      #define PRINT_ARGUMENTS(arg, type, default_value) \
+      std::cout << "    " #arg "=" << arg << std::endl;
+      FORALL_ARGUMENTS_GPU_DYCUCKOO(PRINT_ARGUMENTS)
+      #undef PRINT_ARGUMENTS
     }
   };
+  #undef FORALL_ARGUMENTS_GPU_DYCUCKOO
 
   configs configs_;
   void* index_;

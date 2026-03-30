@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 #include <cmd.hpp>
+#include <generate_workload.hpp>
 #include <device_context.hpp>
 #include <macros.hpp>
 #include <pair_type.hpp>
@@ -96,22 +97,33 @@ struct gpu_blink_tree_adapter {
   }
 
  private:
+  #define FORALL_ARGUMENTS_GPU_BLINKTREE(x) \
+    x(lookup_concurrent, bool, true) \
+    x(erase_concurrent, bool, true)
   struct configs {
-    bool lookup_concurrent;
-    bool erase_concurrent;
+    #define DECLARE_ARGUMENTS(arg, type, default_value) type arg;
+    FORALL_ARGUMENTS_GPU_BLINKTREE(DECLARE_ARGUMENTS)
+    #undef DECLARE_ARGUMENTS
     configs() {}
     configs(std::vector<std::string>& arguments) {
-      lookup_concurrent = get_arg_value<bool>(arguments, "lookup_concurrent").value_or(true);
-      erase_concurrent = get_arg_value<bool>(arguments, "erase_concurrent").value_or(true);
-      uint32_t keylen_max = get_arg_value<uint32_t>(arguments, "keylen_max").value_or(1);
+      #define PARSE_ARGUMENTS(arg, type, default_value) \
+      arg = get_arg_value<type>(arguments, #arg).value_or(default_value);
+      FORALL_ARGUMENTS_GPU_BLINKTREE(PARSE_ARGUMENTS)
+      #undef PARSE_ARGUMENTS
+      #define PARSE_DEFAULT_ARGUMENTS(arg, type, default_value) \
+      [[maybe_unused]] auto arg = get_arg_value<type>(arguments, #arg).value_or(default_value);
+      FORALL_ARGUMENTS(PARSE_DEFAULT_ARGUMENTS)
+      #undef PARSE_DEFAULT_ARGUMENTS
       check_argument(keylen_max == 1);
     }
     void print() const {
-      std::cout << "    lookup_concurrent=" << lookup_concurrent << std::endl
-                << "    erase_concurrent=" << erase_concurrent << std::endl
-                ;
+      #define PRINT_ARGUMENTS(arg, type, default_value) \
+      std::cout << "    " #arg "=" << arg << std::endl;
+      FORALL_ARGUMENTS_GPU_BLINKTREE(PRINT_ARGUMENTS)
+      #undef PRINT_ARGUMENTS
     }
   };
+  #undef FORALL_ARGUMENTS_GPU_BLINKTREE
 
   configs configs_;
   index_type* index_;

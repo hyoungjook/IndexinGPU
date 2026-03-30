@@ -1,6 +1,8 @@
 import argparse
 from enum import Enum, auto
+import glob
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -152,13 +154,13 @@ def config_value_to_str(value) -> str:
         return value.name
     return str(value)
 
-def parse_args():
+def parse_args_for_measure():
     parser = argparse.ArgumentParser()
     parser.add_argument('--build-dir', type=str,
         default=str(Path(__file__).parent.parent.parent / 'build'),
         help='Path of the program build directory.')
-    parser.add_argument('--result-file', type=str, required=True,
-        help='Path of JSON file in which the result will be added.')
+    parser.add_argument('--result-dir', type=str, required=True,
+        help='Path of directory to add the result JSON file.')
     args = parser.parse_args()
     return args
 
@@ -215,7 +217,7 @@ def run_one(args, config):
     print(f'parsed_config: {parsed_config}, result: {result}')
     return parsed_config, result
 
-def run_all_and_add_to_json(args, configs):
+def run_all_and_add_to_json(args, configs, result_file_name):
     # run all
     parsed_configs = []
     results = []
@@ -227,15 +229,32 @@ def run_all_and_add_to_json(args, configs):
             assert config_type.name in parsed_config and \
                 parsed_config[config_type.name] == config_value_to_str(config_value)
     # add to json
-    result_file = Path(args.result_file)
-    if result_file.exists():
-        with result_file.open("r", encoding="utf-8") as f:
-            json_data = json.load(f)
-        if not isinstance(json_data, list):
-            raise ValueError("JSON root must be list")
-    else:
-        json_data = []
+    json_data = []
     for config, result in zip(parsed_configs, results):
         json_data.append({'config': config, 'result': result})
-    with result_file.open("w", encoding="utf-8") as f:
+    os.makedirs(args.result_dir, exist_ok=True)
+    result_file = Path(args.result_dir) / f'{result_file_name}.json'
+    with Path(result_file).open("w", encoding="utf-8") as f:
         json.dump(json_data, f, ensure_ascii=False, indent=2)
+
+def parse_args_for_plot():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--result-dir', type=str, required=True,
+        help='Path of directory with JSON files with the result.')
+    args = parser.parse_args()
+    return args
+
+def read_configs_and_results(args):
+    json_data = []
+    for result_file in glob.glob(os.path.join(args.result_dir, '*.json')):
+        try:
+            with Path(result_file).open("r", encoding="utf-8") as f:
+                data = json.load(f)
+                assert isinstance(data, list)
+                json_data += data
+        except Exception as e:
+            pass
+    if len(json_data) == 0:
+        print(f'No valid json result file in {args.result_dir}')
+        exit(1)
+    return json_data

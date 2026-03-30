@@ -92,17 +92,28 @@ struct cpu_libcuckoo_adapter {
   }
 
  private:
+  #define FORALL_ARGUMENTS_CPU_LIBCUCKOO(x) \
+    x(initial_capacity, std::size_t, 1000000)
   struct configs {
-    std::size_t initial_capacity;
+    #define DECLARE_ARGUMENTS(arg, type, default_value) type arg;
+    FORALL_ARGUMENTS_CPU_LIBCUCKOO(DECLARE_ARGUMENTS)
+    #undef DECLARE_ARGUMENTS
     configs() {}
     configs(std::vector<std::string>& arguments) {
-      initial_capacity = get_arg_value<float>(arguments, "initial_capacity").value_or(100000);
+      #define PARSE_ARGUMENTS(arg, type, default_value) \
+      arg = get_arg_value<type>(arguments, #arg).value_or(default_value);
+      FORALL_ARGUMENTS_CPU_LIBCUCKOO(PARSE_ARGUMENTS)
+      #undef PARSE_ARGUMENTS
       check_argument(0 < initial_capacity);
     }
     void print() const {
-      std::cout << "  initial_capacity=" << initial_capacity << std::endl;
+      #define PRINT_ARGUMENTS(arg, type, default_value) \
+      std::cout << "    " #arg "=" << arg << std::endl;
+      FORALL_ARGUMENTS_CPU_LIBCUCKOO(PRINT_ARGUMENTS)
+      #undef PRINT_ARGUMENTS
     }
   };
+  #undef FORALL_ARGUMENTS_CPU_LIBCUCKOO
 
   configs configs_;
   std::unique_ptr<index_type> index_;

@@ -107,50 +107,40 @@ struct gpu_extendhashtable_adapter {
   }
 
  private:
+  #define FORALL_ARGUMENTS_GPU_EXTENDHASHTABLE(x) \
+    x(allocator_pool_ratio, float, 0.9f) \
+    x(tile_size, uint32_t, 32) \
+    x(lookup_concurrent, bool, true) \
+    x(initial_directory_size, uint32_t, (1000000 / 15)) \
+    x(resize_policy, float, 2.0f) \
+    x(load_factor_threshold, float, 2.5f) \
+    /* hash_tag_level: 0(slice0_tag), 1(hash_tag), 2(samehash_tag) */ \
+    x(hash_tag_level, uint32_t, 2) \
+    /* merge_level: 0(naive), 1(merge_chains), 2(merge_buckets) */ \
+    x(merge_level, uint32_t, 2) \
+    x(reuse_dirsize, bool, true)
   struct configs {
-    float allocator_pool_ratio;
-    uint32_t tile_size;
-    bool lookup_concurrent;
-    uint32_t initial_directory_size;
-    float resize_policy;
-    float load_factor_threshold;
-    inline static const char* hash_tag_level_strings[3] = {
-      "slice0_tag", "hash_tag", "samehash_tag"
-    };
-    uint32_t hash_tag_level;  // 0: 1st slice as tag, 1: hash tag, 2: same hash tag
-    inline static const char* merge_level_strings[3] = {
-      "naive", "merge_chains", "merge_buckets"
-    };
-    uint32_t merge_level;   // 0: naive, 1: merge chains, 2: merge buckets
-    bool reuse_dirsize;
+    #define DECLARE_ARGUMENTS(arg, type, default_value) type arg;
+    FORALL_ARGUMENTS_GPU_EXTENDHASHTABLE(DECLARE_ARGUMENTS)
+    #undef DECLARE_ARGUMENTS
     configs() {}
     configs(std::vector<std::string>& arguments) {
-      allocator_pool_ratio = get_arg_value<float>(arguments, "allocator_pool_ratio").value_or(0.9f);
-      tile_size = get_arg_value<uint32_t>(arguments, "tile_size").value_or(32);
-      lookup_concurrent = get_arg_value<bool>(arguments, "lookup_concurrent").value_or(true);
-      initial_directory_size = get_arg_value<uint32_t>(arguments, "initial_directory_size").value_or(1024);
-      resize_policy = get_arg_value<float>(arguments, "resize_policy").value_or(2.0f);
-      load_factor_threshold = get_arg_value<float>(arguments, "load_factor_threshold").value_or(2.5f);
-      hash_tag_level = get_arg_value<uint32_t>(arguments, "hash_tag_level").value_or(2);
-      merge_level = get_arg_value<uint32_t>(arguments, "merge_level").value_or(2);
-      reuse_dirsize = get_arg_value<bool>(arguments, "reuse_dirsize").value_or(true);
+      #define PARSE_ARGUMENTS(arg, type, default_value) \
+      arg = get_arg_value<type>(arguments, #arg).value_or(default_value);
+      FORALL_ARGUMENTS_GPU_EXTENDHASHTABLE(PARSE_ARGUMENTS)
+      #undef PARSE_ARGUMENTS
       check_argument(tile_size == 32 || tile_size == 16);
       check_argument(0 < load_factor_threshold);
       check_argument(hash_tag_level <= 2);
     }
     void print() const {
-      std::cout << "    allocator_pool_ratio=" << allocator_pool_ratio << std::endl
-                << "    tile_size=" << tile_size << std::endl
-                << "    lookup_concurrent=" << lookup_concurrent << std::endl
-                << "    initial_directory_size=" << initial_directory_size << std::endl
-                << "    resize_policy=" << resize_policy << std::endl
-                << "    load_factor_threshold=" << load_factor_threshold << std::endl
-                << "    hash_tag_level=" << hash_tag_level << "(" << hash_tag_level_strings[hash_tag_level] << ")" << std::endl
-                << "    merge_level=" << merge_level << "(" << merge_level_strings[merge_level] << ")" << std::endl
-                << "    reuse_dirsize=" << reuse_dirsize<< std::endl
-                ;
+      #define PRINT_ARGUMENTS(arg, type, default_value) \
+      std::cout << "    " #arg "=" << arg << std::endl;
+      FORALL_ARGUMENTS_GPU_EXTENDHASHTABLE(PRINT_ARGUMENTS)
+      #undef PRINT_ARGUMENTS
     }
   };
+  #undef FORALL_ARGUMENTS_GPU_EXTENDHASHTABLE
 
   template <uint32_t tile_size, uint32_t hash_tag_level, uint32_t merge_level, bool reuse_dirsize, typename... arg_types>
   void do_insert(arg_types... args) {

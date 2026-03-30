@@ -8,5 +8,5 @@ CONFIGS = [
 ]
 
 if __name__ == "__main__":
-    args = parse_args()
-    run_all_and_add_to_json(args, CONFIGS)
+    args = parse_args_for_measure()
+    run_all_and_add_to_json(args, CONFIGS, "result_gpu")

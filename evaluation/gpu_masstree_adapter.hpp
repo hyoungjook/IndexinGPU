@@ -116,37 +116,35 @@ struct gpu_masstree_adapter {
   }
 
  private:
+  #define FORALL_ARGUMENTS_GPU_MASSTREE(x) \
+    x(allocator_pool_ratio, float, 0.9f) \
+    x(tile_size, uint32_t, 32) \
+    x(lookup_concurrent, bool, true) \
+    x(enable_suffix, bool, true) \
+    /* merge_level: 0(naive) 1(concurrent) 2(merge) 3(remove_root) */ \
+    x(merge_level, uint32_t, 3) \
+    x(reuse_root, bool, true)
   struct configs {
-    float allocator_pool_ratio;
-    uint32_t tile_size;
-    bool lookup_concurrent;
-    bool enable_suffix;
-    inline static const char* merge_level_strings[4] = {
-      "naive", "concurrent", "merge", "remove_root"
-    };
-    uint32_t merge_level;  // 0: naive, 1: concurrent, 2: merge, 3: remove_root
-    bool reuse_root;
+    #define DECLARE_ARGUMENTS(arg, type, default_value) type arg;
+    FORALL_ARGUMENTS_GPU_MASSTREE(DECLARE_ARGUMENTS)
+    #undef DECLARE_ARGUMENTS
     configs() {}
     configs(std::vector<std::string>& arguments) {
-      allocator_pool_ratio = get_arg_value<float>(arguments, "allocator_pool_ratio").value_or(0.9f);
-      tile_size = get_arg_value<uint32_t>(arguments, "tile_size").value_or(32);
-      lookup_concurrent = get_arg_value<bool>(arguments, "lookup_concurrent").value_or(true);
-      enable_suffix = get_arg_value<bool>(arguments, "enable_suffix").value_or(true);
-      merge_level = get_arg_value<uint32_t>(arguments, "merge_level").value_or(3);
-      reuse_root = get_arg_value<bool>(arguments, "reuse_root").value_or(true);
+      #define PARSE_ARGUMENTS(arg, type, default_value) \
+      arg = get_arg_value<type>(arguments, #arg).value_or(default_value);
+      FORALL_ARGUMENTS_GPU_MASSTREE(PARSE_ARGUMENTS)
+      #undef PARSE_ARGUMENTS
       check_argument(tile_size == 32 || tile_size == 16);
       check_argument(merge_level <= 3);
     }
     void print() const {
-      std::cout << "    allocator_pool_ratio=" << allocator_pool_ratio << std::endl
-                << "    tile_size=" << tile_size << std::endl
-                << "    lookup_concurrent=" << lookup_concurrent << std::endl
-                << "    enable_suffix=" << enable_suffix << std::endl
-                << "    merge_level=" << merge_level << "(" << merge_level_strings[merge_level] << ")" << std::endl
-                << "    reuse_root=" << reuse_root << std::endl
-                ;
+      #define PRINT_ARGUMENTS(arg, type, default_value) \
+      std::cout << "    " #arg "=" << arg << std::endl;
+      FORALL_ARGUMENTS_GPU_MASSTREE(PRINT_ARGUMENTS)
+      #undef PRINT_ARGUMENTS
     }
   };
+  #undef FORALL_ARGUMENTS_GPU_MASSTREE
 
   template <uint32_t tile_size, bool enable_suffix, bool reuse_root, typename... arg_types>
   void do_insert(arg_types... args) {
