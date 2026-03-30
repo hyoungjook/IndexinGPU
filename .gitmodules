@@ -1,0 +1,15 @@
+[submodule "baselines/MVGpuBTree"]
+	path = baselines/MVGpuBTree
+	url = https://github.com/owensgroup/MVGpuBTree.git
+[submodule "baselines/DyCuckoo"]
+	path = baselines/DyCuckoo
+	url = https://github.com/zhuqiweigit/DyCuckoo.git
+[submodule "baselines/libcuckoo"]
+	path = baselines/libcuckoo
+	url = https://github.com/efficient/libcuckoo.git
+[submodule "baselines/masstree-beta"]
+	path = baselines/masstree-beta
+	url = https://github.com/kohler/masstree-beta.git
+[submodule "baselines/ARTSynchronized"]
+	path = baselines/ARTSynchronized
+	url = https://github.com/flode/ARTSynchronized.git

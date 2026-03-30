@@ -19,6 +19,7 @@
 #include <macros.hpp>
 #include <cmd.hpp>
 #include <adapter_util.hpp>
+#include <generate_workload.hpp>
 #include <gpu_chainhashtable.hpp>
 #include <simple_slab_alloc.hpp>
 #include <simple_debra_reclaim.hpp>
@@ -97,37 +98,40 @@ struct gpu_chainhashtable_adapter {
   }
 
  private:
+  #define FORALL_ARGUMENTS_GPU_CHAINHASHTABLE(x) \
+    x(allocator_pool_ratio, float, 0.5f) \
+    x(tile_size, uint32_t, 32) \
+    x(lookup_concurrent, bool, true) \
+    x(initial_array_fill_factor, float, 2.0f) \
+    x(use_hash_tag, bool, true) \
+    x(merge_chains, bool, true)
   struct configs {
-    float allocator_pool_ratio;
-    uint32_t tile_size;
-    bool lookup_concurrent;
+    #define DECLARE_ARGUMENTS(arg, type, default_value) type arg;
+    FORALL_ARGUMENTS_GPU_CHAINHASHTABLE(DECLARE_ARGUMENTS)
+    #undef DECLARE_ARGUMENTS
     std::size_t num_keys; // parse again here; do not print
-    float initial_array_fill_factor;
-    bool use_hash_tag;
-    bool merge_chains;
-
     configs() {}
     configs(std::vector<std::string>& arguments) {
-      allocator_pool_ratio = get_arg_value<float>(arguments, "allocator-pool-ratio").value_or(0.5f);
-      tile_size = get_arg_value<uint32_t>(arguments, "tile-size").value_or(32);
-      lookup_concurrent = get_arg_value<bool>(arguments, "lookup-concurrent").value_or(true);
-      num_keys = get_arg_value<std::size_t>(arguments, "num-keys").value_or(1000000);
-      initial_array_fill_factor = get_arg_value<float>(arguments, "initial-array-fill-factor").value_or(2.0f);
-      use_hash_tag = get_arg_value<bool>(arguments, "use-hash-tag").value_or(true);
-      merge_chains = get_arg_value<bool>(arguments, "merge-chains").value_or(true);
+      #define PARSE_ARGUMENTS(arg, type, default_value) \
+      arg = get_arg_value<type>(arguments, #arg).value_or(default_value);
+      FORALL_ARGUMENTS_GPU_CHAINHASHTABLE(PARSE_ARGUMENTS)
+      #undef PARSE_ARGUMENTS
+      #define PARSE_DEFAULT_ARGUMENTS(arg, type, default_value) \
+      [[maybe_unused]] auto tmp_##arg = get_arg_value<type>(arguments, #arg).value_or(default_value);
+      FORALL_ARGUMENTS(PARSE_DEFAULT_ARGUMENTS)
+      #undef PARSE_DEFAULT_ARGUMENTS
+      num_keys = tmp_num_keys;
       check_argument(tile_size == 32 || tile_size == 16);
       check_argument(0 < initial_array_fill_factor);
     }
     void print() const {
-      std::cout << "  allocator-pool-ratio: " << allocator_pool_ratio << std::endl
-                << "  tile-size: " << tile_size << std::endl
-                << "  lookup-concurrent: " << lookup_concurrent << std::endl
-                << "  initial-array-fill-factor: " << initial_array_fill_factor << std::endl
-                << "  use-hash-tag: " << use_hash_tag << std::endl
-                << "  merge-chains: " << merge_chains << std::endl
-                ;
+      #define PRINT_ARGUMENTS(arg, type, default_value) \
+      std::cout << "    " #arg "=" << arg << std::endl;
+      FORALL_ARGUMENTS_GPU_CHAINHASHTABLE(PRINT_ARGUMENTS)
+      #undef PRINT_ARGUMENTS
     }
   };
+  #undef FORALL_ARGUMENTS_GPU_CHAINHASHTABLE
 
   template <uint32_t tile_size, bool use_hash_tag, typename... arg_types>
   void do_insert(arg_types... args) {

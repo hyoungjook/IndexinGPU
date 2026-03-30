@@ -38,12 +38,12 @@
 #include <simple_dummy_reclaim.hpp>
 #include <simple_debra_reclaim.hpp>
 
-namespace GpuLinearHashtable {
+namespace GpuExtendHashtable {
 
 template <typename Allocator,
           typename Reclaimer,
           uint32_t tile_size = 32>
-struct gpu_linearhashtable {
+struct gpu_extendhashtable {
   using size_type = uint32_t;
   using elem_type = uint32_t;
   using key_slice_type = elem_type;
@@ -67,10 +67,10 @@ struct gpu_linearhashtable {
   using device_reclaimer_instance_type = typename host_reclaimer_type::device_instance_type;
   using device_reclaimer_context_type = device_reclaimer_context<host_reclaimer_type>;
 
-  gpu_linearhashtable() = delete;
+  gpu_extendhashtable() = delete;
   // resize_policy: if > 0, linear resizing by the amount (converted to int)
   //                if < 0, exponential resizing by the amount
-  gpu_linearhashtable(const host_allocator_type& host_allocator,
+  gpu_extendhashtable(const host_allocator_type& host_allocator,
                       const host_reclaimer_type& host_reclaimer,
                       size_type initial_directory_size,
                       float resize_policy,
@@ -82,7 +82,7 @@ struct gpu_linearhashtable {
       , load_factor_threshold_(load_factor_threshold) {
     if ((resize_policy >= 0 && (resize_policy > 2.0f || resize_policy <= 1.0f)) ||
         (resize_policy < 0 && (static_cast<size_type>(-resize_policy) % 32 != 0))) {
-      fprintf(stderr, "Invalid resize_policy %f for GPULinearHT: "
+      fprintf(stderr, "Invalid resize_policy %f for GPUExtendHT: "
                       "If >0 (exponential), should be in (1, 2], "
                       "If <0 (linear), should be multiple of 32\n",
                       resize_policy);
@@ -91,8 +91,8 @@ struct gpu_linearhashtable {
     allocate();
   }
 
-  gpu_linearhashtable& operator=(const gpu_linearhashtable& other) = delete;
-  gpu_linearhashtable(const gpu_linearhashtable& other)
+  gpu_extendhashtable& operator=(const gpu_extendhashtable& other) = delete;
+  gpu_extendhashtable(const gpu_extendhashtable& other)
       : d_global_state_(other.d_global_state_)
       , is_owner_(false)
       , initial_directory_size_(other.initial_directory_size_)
@@ -101,7 +101,7 @@ struct gpu_linearhashtable {
       , allocator_(other.allocator_)
       , reclaimer_(other.reclaimer_) {}
 
-  ~gpu_linearhashtable() {
+  ~gpu_extendhashtable() {
     deallocate();
   }
 
@@ -117,7 +117,7 @@ struct gpu_linearhashtable {
             value_type* values,
             const size_type num_keys,
             cudaStream_t stream = 0) {
-    kernels::GpuLinearHashtable::find_device_func<gpu_linearhashtable, concurrent, use_hash_tag, tag_use_same_hash, reuse_dirsize>
+    kernels::GpuExtendHashtable::find_device_func<gpu_extendhashtable, concurrent, use_hash_tag, tag_use_same_hash, reuse_dirsize>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values};
     kernels::launch_batch_kernel(*this, func, num_keys, stream);
   }
@@ -133,7 +133,7 @@ struct gpu_linearhashtable {
               const size_type num_keys,
               cudaStream_t stream = 0,
               bool update_if_exists = false) {
-    kernels::GpuLinearHashtable::insert_device_func<gpu_linearhashtable, use_hash_tag, tag_use_same_hash, do_merge_chains, reuse_dirsize>
+    kernels::GpuExtendHashtable::insert_device_func<gpu_extendhashtable, use_hash_tag, tag_use_same_hash, do_merge_chains, reuse_dirsize>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .update_if_exists = update_if_exists};
     kernels::launch_batch_kernel(*this, func, num_keys, stream);
   }
@@ -148,7 +148,7 @@ struct gpu_linearhashtable {
              const size_type* key_lengths,
              const size_type num_keys,
              cudaStream_t stream = 0) {
-    kernels::GpuLinearHashtable::erase_device_func<gpu_linearhashtable, use_hash_tag, tag_use_same_hash, do_merge_chains, do_merge_buckets, reuse_dirsize>
+    kernels::GpuExtendHashtable::erase_device_func<gpu_extendhashtable, use_hash_tag, tag_use_same_hash, do_merge_chains, do_merge_buckets, reuse_dirsize>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths};
     kernels::launch_batch_kernel(*this, func, num_keys, stream);
   }
@@ -167,7 +167,7 @@ struct gpu_linearhashtable {
                    const size_type num_requests,
                    cudaStream_t stream = 0,
                    bool insert_update_if_exists = false) {
-    kernels::GpuLinearHashtable::mixed_device_func<gpu_linearhashtable, use_hash_tag, tag_use_same_hash, do_merge_chains, erase_do_merge_buckets, reuse_dirsize>
+    kernels::GpuExtendHashtable::mixed_device_func<gpu_extendhashtable, use_hash_tag, tag_use_same_hash, do_merge_chains, erase_do_merge_buckets, reuse_dirsize>
       func{.d_types = request_types, .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .d_results = results, .insert_update_if_exists = insert_update_if_exists};
     kernels::launch_batch_kernel(*this, func, num_requests, stream);
   }
@@ -892,7 +892,7 @@ struct gpu_linearhashtable {
   template <typename func>
   void traverse_nodes(func task) {
     static constexpr auto block_size = tile_size_;
-    kernels::GpuLinearHashtable::traverse_nodes_kernel<block_size><<<1, block_size>>>(*this, task);
+    kernels::GpuExtendHashtable::traverse_nodes_kernel<block_size><<<1, block_size>>>(*this, task);
     cudaDeviceSynchronize();
   }
 
@@ -1005,7 +1005,7 @@ struct gpu_linearhashtable {
   void initialize() {
     const uint32_t num_blocks = initial_directory_size_;
     const uint32_t block_size = tile_size_;
-    kernels::GpuLinearHashtable::initialize_kernel<block_size><<<num_blocks, block_size>>>(*this);
+    kernels::GpuExtendHashtable::initialize_kernel<block_size><<<num_blocks, block_size>>>(*this);
     cuda_try(cudaDeviceSynchronize());
   }
 
@@ -1017,8 +1017,8 @@ struct gpu_linearhashtable {
   device_allocator_instance_type allocator_;
   device_reclaimer_instance_type reclaimer_;
 
-  template <uint32_t _tile_size, typename linearhashtable>
-  friend __global__ void kernels::GpuLinearHashtable::initialize_kernel(linearhashtable);
+  template <uint32_t _tile_size, typename extendhashtable>
+  friend __global__ void kernels::GpuExtendHashtable::initialize_kernel(extendhashtable);
 
   template <bool do_reclaim, uint32_t _tile_size, typename device_func, typename index_type>
   friend __global__ void kernels::batch_kernel(index_type index,
@@ -1027,4 +1027,4 @@ struct gpu_linearhashtable {
 
 };
 
-} // namespace GpuLinearHashtable
+} // namespace GpuExtendHashtable

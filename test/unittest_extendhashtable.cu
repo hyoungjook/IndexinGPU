@@ -15,7 +15,7 @@
  *   limitations under the License.
  */
 
-#include <gpu_linearhashtable.hpp>
+#include <gpu_extendhashtable.hpp>
 #include <gtest/gtest.h>
 #include <cmd.hpp>
 #include <cstdint>
@@ -176,8 +176,8 @@ using simple_dummy_reclaim_type = simple_dummy_reclaimer;
 using simple_debra_reclaim_type = simple_debra_reclaimer<>;
 
 typedef testing::Types<
-    MapData<GpuLinearHashtable::gpu_linearhashtable<simple_slab_linear_alloc_type, simple_debra_reclaim_type, 32>>,
-    MapData<GpuLinearHashtable::gpu_linearhashtable<simple_slab_linear_alloc_type, simple_debra_reclaim_type, 16>>>
+    MapData<GpuExtendHashtable::gpu_extendhashtable<simple_slab_linear_alloc_type, simple_debra_reclaim_type, 32>>,
+    MapData<GpuExtendHashtable::gpu_extendhashtable<simple_slab_linear_alloc_type, simple_debra_reclaim_type, 16>>>
     Implementations;
 
 TYPED_TEST_SUITE(MapTest, Implementations);
