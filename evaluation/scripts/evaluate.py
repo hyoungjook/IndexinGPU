@@ -261,18 +261,17 @@ def read_configs_and_results(args):
         exit(1)
     return json_data
 
-def filter(configs_and_results: list[dict], desired_config: dict):
+def filter(configs_and_results: list[dict], desired_config: dict, op_type: ConfigType):
     for config_and_result in configs_and_results:
         config = config_and_result['config']
         match = True
         for desired_config_type, desired_config_value in desired_config.items():
-            if desired_config_type not in config:
+            if config.get(desired_config_type.name) != config_value_to_str(desired_config_value):
                 match = False
                 break
-            if config[desired_config_type] != desired_config_value:
-                match = False
-                break
-        if match:
-            return config_and_result
-    # None found
+        if not match:
+            continue
+        if int(config.get(op_type.name, 0)) == 0:
+            continue
+        return config_and_result['result']
     return None
