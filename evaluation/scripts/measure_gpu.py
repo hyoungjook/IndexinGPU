@@ -1,6 +1,6 @@
 from evaluate import *
 
-NUM_REPEATS = 100
+NUM_REPEATS = 20
 
 MILLION = 1000000
 DEFAULT_NUM_KEYS = 10 * MILLION
@@ -33,7 +33,10 @@ def generate_configs():
                        IndexType.gpu_chainhashtable,
                        IndexType.gpu_cuckoohashtable,
                        IndexType.gpu_extendhashtable]:
-        for table_size in [100000, MILLION, 10 * MILLION, 100 * MILLION]:
+        for table_size in [DEFAULT_NUM_KEYS / 1000,
+                           DEFAULT_NUM_KEYS / 100,
+                           DEFAULT_NUM_KEYS / 10,
+                           DEFAULT_NUM_KEYS]:
             configs.append({
                 ConfigType.index_type: index_type,
                 ConfigType.num_keys: table_size,

@@ -1,10 +1,10 @@
 from evaluate import *
 
-NUM_REPEATS = 100
+NUM_REPEATS = 20
 
 MILLION = 1000000
 DEFAULT_NUM_KEYS = 10 * MILLION
-DEFAULT_KEY_LENGHT = 4
+DEFAULT_KEY_LENGHT = 8
 DEFAULT_DELETE_RATIO = 0.1
 
 def generate_configs():
@@ -31,7 +31,10 @@ def generate_configs():
     for index_type in [IndexType.cpu_art,
                        IndexType.cpu_masstree,
                        IndexType.cpu_libcuckoo]:
-        for table_size in [100000, MILLION, 10 * MILLION, 100 * MILLION]:
+        for table_size in [DEFAULT_NUM_KEYS / 1000,
+                           DEFAULT_NUM_KEYS / 100,
+                           DEFAULT_NUM_KEYS / 10,
+                           DEFAULT_NUM_KEYS]:
             configs.append({
                 ConfigType.index_type: index_type,
                 ConfigType.num_keys: table_size,

@@ -84,7 +84,7 @@ EXECUTABLE_INFO = {
         ]
     },
     BenchExecutable.cpu_baseline: {
-        'path': 'universal_bench_with_cpu_baseline',
+        'path': 'bin/universal_bench_with_cpu_baseline',
         'indexes': [
             IndexType.cpu_libcuckoo,
             IndexType.cpu_masstree,
