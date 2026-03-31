@@ -95,6 +95,7 @@ struct gpu_blink_tree_adapter {
       reinterpret_cast<pair_type<key_slice_type, value_type>*>(results), nullptr,
       count, num_keys, 0, configs_.lookup_concurrent);
   }
+  void print_stats() {}
 
  private:
   #define FORALL_ARGUMENTS_GPU_BLINKTREE(x) \

@@ -101,6 +101,7 @@ struct gpu_dycuckoo_adapter {
       gpu_dycuckoo_dynamic_find(index_, keys, results, num_keys);
     }
   }
+  void print_stats() {}
 
  private:
   #define FORALL_ARGUMENTS_GPU_DYCUCKOO(x) \

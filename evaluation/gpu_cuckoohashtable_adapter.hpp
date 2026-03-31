@@ -94,6 +94,15 @@ struct gpu_cuckoohashtable_adapter {
       }, t1);
     });
   }
+  void print_stats() {
+    allocator_->print_stats();
+    if (configs_.tile_size == 32) {
+      reinterpret_cast<index32_type*>(index_)->validate();
+    }
+    else {
+      reinterpret_cast<index16_type*>(index_)->validate();
+    }
+  }
 
  private:
   #define FORALL_ARGUMENTS_GPU_CUCKOOHASHTABLE(x) \

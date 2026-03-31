@@ -172,7 +172,6 @@ def run_one(args, config):
     executable_path = str(Path(args.build_dir) / executable_path)
     cmd = []
     cmd.append(str(executable_path))
-    cmd.append('verbose=1')
     for config_type in ConfigType:
         if config_type in config:
             config_cmd = config_type.name
@@ -219,23 +218,26 @@ def run_one(args, config):
 
 def run_all_and_add_to_json(args, configs, result_file_name):
     # run all
-    parsed_configs = []
-    results = []
+    os.makedirs(args.result_dir, exist_ok=True)
+    result_file = Path(args.result_dir) / f'{result_file_name}.json'
     for config in configs:
         parsed_config, result = run_one(args, config)
-        results.append(result)
-        parsed_configs.append(parsed_config)
         for config_type, config_value in config.items():
             assert config_type.name in parsed_config and \
                 parsed_config[config_type.name] == config_value_to_str(config_value)
-    # add to json
-    json_data = []
-    for config, result in zip(parsed_configs, results):
-        json_data.append({'config': config, 'result': result})
-    os.makedirs(args.result_dir, exist_ok=True)
-    result_file = Path(args.result_dir) / f'{result_file_name}.json'
-    with Path(result_file).open("w", encoding="utf-8") as f:
-        json.dump(json_data, f, ensure_ascii=False, indent=2)
+        # add to json
+        json_data = []
+        if result_file.exists():
+            try:
+                with result_file.open("r", encoding="utf-8") as f:
+                    json_data = json.load(f)
+                if not isinstance(json_data, list):
+                    raise ValueError("JSON root must be a list")
+            except (json.JSONDecodeError, OSError):
+                json_data = []
+        json_data.append({'config': parsed_config, 'result': result})
+        with result_file.open("w", encoding="utf-8") as f:
+            json.dump(json_data, f, ensure_ascii=False, indent=2)
 
 def parse_args_for_plot():
     parser = argparse.ArgumentParser()

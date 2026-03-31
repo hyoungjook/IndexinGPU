@@ -80,6 +80,11 @@ struct gpu_extendhashtable {
       , initial_directory_size_(initial_directory_size)
       , resize_policy_(resize_policy)
       , load_factor_threshold_(load_factor_threshold) {
+    if (initial_directory_size == 0 || initial_directory_size % 32 != 0) {
+      fprintf(stderr, "Invalid initial_directory_size %u for GPUExtendHT: "
+                      "Must be multiple of 32\n", initial_directory_size);
+      exit(1);
+    }
     if ((resize_policy >= 0 && (resize_policy > 2.0f || resize_policy <= 1.0f)) ||
         (resize_policy < 0 && (static_cast<size_type>(-resize_policy) % 32 != 0))) {
       fprintf(stderr, "Invalid resize_policy %f for GPUExtendHT: "

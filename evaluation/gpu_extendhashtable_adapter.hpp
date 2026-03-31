@@ -105,13 +105,22 @@ struct gpu_extendhashtable_adapter {
       }, t1);
     });
   }
+  void print_stats() {
+    allocator_->print_stats();
+    if (configs_.tile_size == 32) {
+      reinterpret_cast<index32_type*>(index_)->validate();
+    }
+    else {
+      reinterpret_cast<index16_type*>(index_)->validate();
+    }
+  }
 
  private:
   #define FORALL_ARGUMENTS_GPU_EXTENDHASHTABLE(x) \
     x(allocator_pool_ratio, float, 0.9f) \
     x(tile_size, uint32_t, 32) \
     x(lookup_concurrent, bool, true) \
-    x(initial_directory_size, uint32_t, (1000000 / 15)) \
+    x(initial_directory_size, uint32_t, 1024) \
     x(resize_policy, float, 2.0f) \
     x(load_factor_threshold, float, 2.5f) \
     /* hash_tag_level: 0(slice0_tag), 1(hash_tag), 2(samehash_tag) */ \

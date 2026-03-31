@@ -117,7 +117,8 @@ struct suffix_node_warp {
       // compare elements
       bool this_more = (tile_.thread_rank() < this_length - 1);
       bool key_more = (tile_.thread_rank() < key_length - 1);
-      bool valid_cmp = (tile_.thread_rank() < node_max_len_) &&
+      bool valid_cmp = (skip_elems <= tile_.thread_rank()) &&
+                       (tile_.thread_rank() < node_max_len_) &&
                        (tile_.thread_rank() < cmp_length);
       elem_type other = valid_cmp ? (key[tile_.thread_rank()]) : 0;
       bool match = valid_cmp &&

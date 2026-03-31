@@ -55,7 +55,8 @@ void run_bench(adapter_type& adapter,
                std::size_t repeats_insert,
                std::size_t repeats_delete,
                std::size_t repeats_lookup,
-               std::size_t repeats_scan) {
+               std::size_t repeats_scan,
+               bool verbose) {
   auto print_rate_Mops = [&](std::string name, std::size_t size, float seconds, std::size_t repeats) {
     auto rate = static_cast<float>(size) / 1e6 / (seconds / repeats);
     std::cout << name << ": " << rate << " Mop/s" << std::endl;
@@ -70,6 +71,10 @@ void run_bench(adapter_type& adapter,
     insert_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
     insert_seconds += insert_timer.get_elapsed_s();
+
+    if (r == 0 && verbose) {
+      adapter.print_stats();
+    }
 
     if (r < repeats_delete) {
       gpu_timer delete_timer;
@@ -125,7 +130,7 @@ void run_bench(adapter_type& adapter,
 int main(int argc, char** argv) {
   auto arguments = std::vector<std::string>(argv, argv + argc);
   int device_id = get_arg_value<int>(arguments, "device").value_or(0);
-  bool verbose = get_arg_value<bool>(arguments, "verbose").value_or(true);
+  bool verbose = get_arg_value<bool>(arguments, "verbose").value_or(false);
   #define PARSE_ARGUMENTS(arg, type, default_value) \
   auto arg = get_arg_value<type>(arguments, #arg).value_or(default_value);
   FORALL_ARGUMENTS(PARSE_ARGUMENTS)
@@ -157,17 +162,15 @@ int main(int argc, char** argv) {
   repeats_insert = std::max(repeats_insert, repeats_delete);
   check_argument(0.0 < delete_ratio && delete_ratio <= 1.0);
   std::size_t num_deletes = static_cast<std::size_t>(delete_ratio * num_keys);
-  if (verbose) {
-    std::cout << "arguments:" << std::endl;
-    #define PRINT_ARGUMENT(arg, type, default_value) \
-    std::cout << "  " #arg "=" << arg << std::endl;
-    FORALL_ARGUMENTS(PRINT_ARGUMENT)
-    #undef PRINT_ARGUMENT
-    #define ADAPTER_PRINT_ARGS(index) \
-    if (index_type == #index) { index##_adapter_.print_args(); }
-    FORALL_INDEXES(ADAPTER_PRINT_ARGS)
-    #undef ADAPTER_PRINT_ARGS
-  }
+  std::cout << "arguments:" << std::endl;
+  #define PRINT_ARGUMENT(arg, type, default_value) \
+  std::cout << "  " #arg "=" << arg << std::endl;
+  FORALL_ARGUMENTS(PRINT_ARGUMENT)
+  #undef PRINT_ARGUMENT
+  #define ADAPTER_PRINT_ARGS(index) \
+  if (index_type == #index) { index##_adapter_.print_args(); }
+  FORALL_INDEXES(ADAPTER_PRINT_ARGS)
+  #undef ADAPTER_PRINT_ARGS
 
   // generate keys and queries
   std::vector<key_slice_type> h_keys;
@@ -223,7 +226,7 @@ int main(int argc, char** argv) {
       keylen_max, d_keys, d_key_lengths, d_values, num_keys, num_deletes, \
       d_lookup_keys, d_lookup_key_lengths, num_lookups, \
       d_scan_upper_keys_if_btree, scan_count, num_scans, d_results, \
-      repeats_insert, repeats_delete, repeats_lookup, repeats_scan); \
+      repeats_insert, repeats_delete, repeats_lookup, repeats_scan, verbose); \
   }
   FORALL_INDEXES(ADAPTER_RUN_BENCH)
   #undef ADAPTER_RUN_BENCH
