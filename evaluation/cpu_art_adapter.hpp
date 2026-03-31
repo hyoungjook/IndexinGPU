@@ -22,6 +22,7 @@
 #include <string>
 #include <vector>
 #include <cmd.hpp>
+#include <generate_workload.hpp>
 #include <ROWEX/Tree.h>
 
 struct cpu_art_adapter {
@@ -41,6 +42,7 @@ struct cpu_art_adapter {
     keys_ = keys;
     key_lengths_ = key_lengths;
     values_ = values;
+    key_stride_ = configs_.keylen_max;
   }
   void initialize() {
     tree_ = std::make_unique<ART_ROWEX::Tree>(&load_key);
@@ -58,7 +60,7 @@ struct cpu_art_adapter {
   }
   void insert(const key_slice_type* key, size_type key_length, value_type value) {
     (void)value;
-    auto tid = static_cast<TID>(key - keys_) + 1;
+    auto tid = (static_cast<TID>(key - keys_) / configs_.keylen_max) + 1;
     Key art_key = make_key(key, key_length);
     tree_->insert(art_key, tid, current_threadinfo());
   }
@@ -89,8 +91,15 @@ struct cpu_art_adapter {
 
  private:
   struct configs {
+    std::size_t keylen_max; // parse again here; do not print
     configs() {}
-    configs(std::vector<std::string>& arguments) {}
+    configs(std::vector<std::string>& arguments) {
+      #define PARSE_DEFAULT_ARGUMENTS(arg, type, default_value) \
+      [[maybe_unused]] auto tmp_##arg = get_arg_value<type>(arguments, #arg).value_or(default_value);
+      FORALL_ARGUMENTS(PARSE_DEFAULT_ARGUMENTS)
+      #undef PARSE_DEFAULT_ARGUMENTS
+      keylen_max = tmp_keylen_max;
+    }
     void print() const {}
   };
 
@@ -125,7 +134,7 @@ struct cpu_art_adapter {
   }
   static void load_key(TID tid, Key& key) {
     auto tuple_idx = static_cast<std::size_t>(tid - 1);
-    key.set(reinterpret_cast<const char*>(&keys_[tuple_idx]), sizeof(key_slice_type) * key_lengths_[tuple_idx]);
+    key.set(reinterpret_cast<const char*>(&keys_[tuple_idx * key_stride_]), sizeof(key_slice_type) * key_lengths_[tuple_idx]);
   }
 
   configs configs_;
@@ -133,8 +142,10 @@ struct cpu_art_adapter {
   static const key_slice_type* keys_;
   static const size_type* key_lengths_;
   static const value_type* values_;
+  static size_type key_stride_;
 };
 
 const cpu_art_adapter::key_slice_type* cpu_art_adapter::keys_;
 const cpu_art_adapter::size_type* cpu_art_adapter::key_lengths_;
 const cpu_art_adapter::value_type* cpu_art_adapter::values_;
+cpu_art_adapter::size_type cpu_art_adapter::key_stride_;
