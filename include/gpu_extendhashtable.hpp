@@ -811,7 +811,6 @@ struct gpu_extendhashtable {
                                                        uint32_t& num_total_keys) {
     using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
-    bool current_node_store_deferred = false;
     while (true) {
       if constexpr (count_keys) { num_total_keys += node.num_keys(); }
       uint32_t to_check = node.match_key_in_node(first_slice, more_key);
@@ -826,7 +825,6 @@ struct gpu_extendhashtable {
           if (suffix.streq(key + suffix_offset, key_length - suffix_offset)) {
             // found
             suffix_if_found = suffix;
-            // current_node_store_deferred: USER SHOULD STORE the node returned
             return cur_location;
           }
           to_check &= ~(1u << cur_location);
@@ -836,13 +834,8 @@ struct gpu_extendhashtable {
         // if length == 1, match means match
         if (to_check != 0) {
           // found
-          // current_node_store_deferred: USER SHOULD STORE the node returned
           return __ffs(to_check) - 1;
         }
-      }
-      if (current_node_store_deferred) {
-        node.template store_to_allocator<false>();  // future unlock will do memory_order_release
-        current_node_store_deferred = false;
       }
       // done searching this node, move on to next
       if (!node.has_next()) { break; }
@@ -851,7 +844,7 @@ struct gpu_extendhashtable {
       next_node.template load_from_allocator<false>();  // first load after lock did memory_order_acquire
       if (node.is_mergeable(next_node)) {
         node.merge(next_node);
-        current_node_store_deferred = true;
+        node.template store_to_allocator<false>();  // future unlock will do memory_order_release
         reclaimer.retire(next_index, tile);
       }
       else {
