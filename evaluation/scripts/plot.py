@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter, LogFormatterSciNotation
 
 IndexType_gpu_masstree_no_suffix = 'gpu_masstree_no_suffix'
+IndexType_gpu_extendht_no_hashtag = 'gpu_extendht_no_hashtag'
 INDEX_LABELS = {
     IndexType.gpu_masstree: "GPUMasstree",
     IndexType.gpu_chainhashtable: "GPUChainHT",
@@ -15,7 +16,8 @@ INDEX_LABELS = {
     IndexType.cpu_art: "(CPU)ART",
     IndexType.cpu_masstree: "(CPU)Masstree",
     IndexType.cpu_libcuckoo: "(CPU)Libcuckoo",
-    IndexType_gpu_masstree_no_suffix: "GPUMasstree (no suffix)"
+    IndexType_gpu_masstree_no_suffix: "GPUMasstree (no suffix)",
+    IndexType_gpu_extendht_no_hashtag: "GPUExtendHT (no hashtag)",
 }
 INDEX_STYLES = {
     IndexType.gpu_masstree: {"color": "#0B6E4F", "marker": "o"},
@@ -26,6 +28,7 @@ INDEX_STYLES = {
     IndexType.cpu_masstree: {"color": "#6C9A8B", "marker": "X"},
     IndexType.cpu_libcuckoo: {"color": "#9C6644", "marker": "v"},
     IndexType_gpu_masstree_no_suffix: {"color": "#549A84", "marker": "*"},
+    IndexType_gpu_extendht_no_hashtag: {"color": "#CE973E", "marker": "d"},
 }
 
 def _table_size_label(value, _):
@@ -123,7 +126,9 @@ def key_length_plots(configs_and_results, plot_file):
     key_lengths_xdata = [int(4 * l) for l in EXP_KEY_LENGTHS]
     all_index_types = INDEX_TYPES_ROBUST + INDEX_TYPES_CPU_BASELINE
     no_prefix_lookup_tputs[IndexType_gpu_masstree_no_suffix] = []
+    no_prefix_lookup_tputs[IndexType_gpu_extendht_no_hashtag] = []
     prefix_lookup_tputs[IndexType_gpu_masstree_no_suffix] = []
+    prefix_lookup_tputs[IndexType_gpu_extendht_no_hashtag] = []
     for index_type in all_index_types:
         no_prefix_lookup_tputs[index_type] = []
         prefix_lookup_tputs[index_type] = []
@@ -140,9 +145,17 @@ def key_length_plots(configs_and_results, plot_file):
                 desired_config[OptionalConfigType.enable_suffix] = 1
                 result = filter(configs_and_results, desired_config, ConfigType.repeats_lookup)
                 no_prefix_lookup_tputs[index_type].append(float(result['lookup']))
-                desired_config[OptionalConfigType.enable_suffix] = 0
+                if GPU_MASSTREE_NOSUFFIX_TEST(0, key_length):
+                    desired_config[OptionalConfigType.enable_suffix] = 0
+                    result = filter(configs_and_results, desired_config, ConfigType.repeats_lookup)
+                    no_prefix_lookup_tputs[IndexType_gpu_masstree_no_suffix].append(float(result['lookup']))
+            elif index_type == IndexType.gpu_extendhashtable:
+                desired_config[OptionalConfigType.hash_tag_level] = 2
                 result = filter(configs_and_results, desired_config, ConfigType.repeats_lookup)
-                no_prefix_lookup_tputs[IndexType_gpu_masstree_no_suffix].append(float(result['lookup']))
+                no_prefix_lookup_tputs[index_type].append(float(result['lookup']))
+                desired_config[OptionalConfigType.hash_tag_level] = 0
+                result = filter(configs_and_results, desired_config, ConfigType.repeats_lookup)
+                no_prefix_lookup_tputs[IndexType_gpu_extendht_no_hashtag].append(float(result['lookup']))
             else:
                 result = filter(configs_and_results, desired_config, ConfigType.repeats_lookup)
                 no_prefix_lookup_tputs[index_type].append(float(result['lookup']))
@@ -158,9 +171,17 @@ def key_length_plots(configs_and_results, plot_file):
                 desired_config[OptionalConfigType.enable_suffix] = 1
                 result = filter(configs_and_results, desired_config, ConfigType.repeats_lookup)
                 prefix_lookup_tputs[index_type].append(float(result['lookup']))
-                desired_config[OptionalConfigType.enable_suffix] = 0
+                if GPU_MASSTREE_NOSUFFIX_TEST(key_length - 1, key_length):
+                    desired_config[OptionalConfigType.enable_suffix] = 0
+                    result = filter(configs_and_results, desired_config, ConfigType.repeats_lookup)
+                    prefix_lookup_tputs[IndexType_gpu_masstree_no_suffix].append(float(result['lookup']))
+            elif index_type == IndexType.gpu_extendhashtable:
+                desired_config[OptionalConfigType.hash_tag_level] = 2
                 result = filter(configs_and_results, desired_config, ConfigType.repeats_lookup)
-                prefix_lookup_tputs[IndexType_gpu_masstree_no_suffix].append(float(result['lookup']))
+                prefix_lookup_tputs[index_type].append(float(result['lookup']))
+                desired_config[OptionalConfigType.hash_tag_level] = 0
+                result = filter(configs_and_results, desired_config, ConfigType.repeats_lookup)
+                prefix_lookup_tputs[IndexType_gpu_extendht_no_hashtag].append(float(result['lookup']))
             else:
                 result = filter(configs_and_results, desired_config, ConfigType.repeats_lookup)
                 prefix_lookup_tputs[index_type].append(float(result['lookup']))
@@ -170,10 +191,12 @@ def key_length_plots(configs_and_results, plot_file):
     legend_labels = []
     def convert_mops_to_gops(values):
         return [v / 1000 for v in values]
-    for index_type in all_index_types + [IndexType_gpu_masstree_no_suffix]:
+    for index_type in all_index_types + [IndexType_gpu_masstree_no_suffix, IndexType_gpu_extendht_no_hashtag]:
+        ydata = convert_mops_to_gops(no_prefix_lookup_tputs[index_type])
+        xdata = key_lengths_xdata[0:len(ydata)]
         line, = axes[0].plot(
-            key_lengths_xdata,
-            convert_mops_to_gops(no_prefix_lookup_tputs[index_type]),
+            xdata,
+            ydata,
             label=INDEX_LABELS[index_type],
             linewidth=2,
             markersize=6,
@@ -183,10 +206,12 @@ def key_length_plots(configs_and_results, plot_file):
         axes[0].set_xlabel("Key Length")
         legend_handles.append(line)
         legend_labels.append(INDEX_LABELS[index_type])
-    for index_type in all_index_types + [IndexType_gpu_masstree_no_suffix]:
+    for index_type in all_index_types + [IndexType_gpu_masstree_no_suffix, IndexType_gpu_extendht_no_hashtag]:
+        ydata = convert_mops_to_gops(prefix_lookup_tputs[index_type])
+        xdata = key_lengths_xdata[0:len(ydata)]
         axes[1].plot(
-            key_lengths_xdata,
-            convert_mops_to_gops(prefix_lookup_tputs[index_type]),
+            xdata,
+            ydata,
             label=INDEX_LABELS[index_type],
             linewidth=2,
             markersize=6,

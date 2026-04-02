@@ -2,7 +2,7 @@ from evaluate import *
 
 NUM_REPEATS = 10
 MILLION = 1000000
-DEFAULT_NUM_KEYS = 10 * MILLION
+DEFAULT_NUM_KEYS = 100 * MILLION
 DEFAULT_KEY_LENGHT = 8
 DEFAULT_DELETE_RATIO = 0.1
 DEFAULT_SCAN_COUNT = 10
@@ -40,3 +40,9 @@ EXP_TABLE_SIZES = [
 EXP_KEY_LENGTHS = [
     1, 2, 4, 8, 16
 ]
+def GPU_MASSTREE_NOSUFFIX_TEST(prefix, keylen):
+    if prefix == 0:
+        return keylen <= 4
+    elif prefix == keylen - 1:
+        return True
+    assert False

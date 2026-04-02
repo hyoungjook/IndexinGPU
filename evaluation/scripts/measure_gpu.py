@@ -38,7 +38,7 @@ def generate_configs():
     for index_type in INDEX_TYPES_ROBUST:
         for key_length in EXP_KEY_LENGTHS:
             for prefix_length in [0, key_length - 1]:
-                configs.append({
+                common_config = {
                     ConfigType.index_type: index_type,
                     ConfigType.num_keys: DEFAULT_NUM_KEYS,
                     ConfigType.keylen_prefix: prefix_length,
@@ -49,20 +49,18 @@ def generate_configs():
                     ConfigType.repeats_delete: 0,
                     ConfigType.repeats_lookup: NUM_REPEATS,
                     ConfigType.repeats_scan: 0,
-                })
+                }
+                configs.append(common_config)
                 if index_type == IndexType.gpu_masstree:
+                    if GPU_MASSTREE_NOSUFFIX_TEST(prefix_length, key_length):
+                        configs.append({
+                            **common_config,
+                            OptionalConfigType.enable_suffix: 0
+                        })
+                if index_type == IndexType.gpu_extendhashtable:
                     configs.append({
-                        ConfigType.index_type: index_type,
-                        ConfigType.num_keys: DEFAULT_NUM_KEYS,
-                        ConfigType.keylen_prefix: prefix_length,
-                        ConfigType.keylen_min: key_length,
-                        ConfigType.keylen_max: key_length,
-                        ConfigType.num_lookups: DEFAULT_NUM_KEYS,
-                        ConfigType.repeats_insert: 0,
-                        ConfigType.repeats_delete: 0,
-                        ConfigType.repeats_lookup: NUM_REPEATS,
-                        ConfigType.repeats_scan: 0,
-                        OptionalConfigType.enable_suffix: 0
+                        **common_config,
+                        OptionalConfigType.hash_tag_level: 0
                     })
     return configs
 
