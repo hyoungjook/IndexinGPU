@@ -26,6 +26,7 @@
 
 struct gpu_chainhashtable_adapter {
   static constexpr bool is_ordered = false;
+  static constexpr bool support_mixed = true;
   using key_slice_type = uint32_t;
   using value_type = uint32_t;
   using size_type = uint32_t;
@@ -96,6 +97,20 @@ struct gpu_chainhashtable_adapter {
       }, t1);
     });
   }
+  void mixed_batch(const kernels::request_type* types,
+                   const key_slice_type* keys,
+                   uint32_t keylen_max,
+                   const size_type* key_lengths,
+                   value_type* values,
+                   std::size_t num_keys) {
+    adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
+      adapter_util::dispatch_bool(configs_.use_hash_tag, [&](auto t2, auto h2) {
+        adapter_util::dispatch_bool(configs_.merge_chains, [&](auto t3, auto h3, auto m3) {
+          do_mixed<t3.value, h3.value, m3.value>(types, keys, keylen_max, key_lengths, values, nullptr, num_keys);
+        }, t2, h2);
+      }, t1);
+    });
+  }
   void print_stats() {
     allocator_->print_stats();
     if (configs_.tile_size == 32) {
@@ -129,7 +144,7 @@ struct gpu_chainhashtable_adapter {
       [[maybe_unused]] auto tmp_##arg = get_arg_value<type>(arguments, #arg).value_or(default_value);
       FORALL_ARGUMENTS(PARSE_DEFAULT_ARGUMENTS)
       #undef PARSE_DEFAULT_ARGUMENTS
-      num_keys = tmp_num_keys;
+      num_keys = tmp_num_prefill + tmp_num_insdel;
       check_argument(tile_size == 32 || tile_size == 16);
       check_argument(0 < initial_array_fill_factor);
     }
@@ -158,6 +173,12 @@ struct gpu_chainhashtable_adapter {
   void do_find(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
       ->template find<lookup_concurrent, use_hash_tag>(args...);
+  }
+
+  template <uint32_t tile_size, bool use_hash_tag, bool merge_chains, typename... arg_types>
+  void do_mixed(arg_types... args) {
+    reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
+      ->template mixed_batch<use_hash_tag, merge_chains>(args...);
   }
 
   configs configs_;

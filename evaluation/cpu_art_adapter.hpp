@@ -27,6 +27,7 @@
 
 struct cpu_art_adapter {
   static constexpr bool is_ordered = true;
+  static constexpr bool support_mixed = true;
   using key_slice_type = uint32_t;
   using value_type = uint32_t;
   using size_type = uint32_t;

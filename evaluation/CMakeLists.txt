@@ -10,7 +10,6 @@ set(EVALUATION_INCLUDE_DIRS
 add_executable(universal_bench universal_bench.cu)
 set_target_properties(universal_bench PROPERTIES FOLDER "evaluation")
 target_include_directories(universal_bench PRIVATE ${EVALUATION_INCLUDE_DIRS})
-target_compile_definitions(universal_bench PRIVATE UNIVERSAL_BENCH_WITH_ROBUST_INDEX)
 target_link_libraries(universal_bench PRIVATE robust_gpu_indexing)
 
 set(UNIVERSAL_BENCH_WITH_GPU_BASELINE_SOURCES

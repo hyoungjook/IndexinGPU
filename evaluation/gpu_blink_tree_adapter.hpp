@@ -36,6 +36,7 @@ struct node_type {
 
 struct gpu_blink_tree_adapter {
   static constexpr bool is_ordered = true;
+  static constexpr bool support_mixed = false;
   using key_slice_type = uint32_t;
   using value_type = uint32_t;
   using size_type = uint32_t;

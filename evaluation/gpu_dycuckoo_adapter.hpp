@@ -28,6 +28,7 @@
 
 struct gpu_dycuckoo_adapter {
   static constexpr bool is_ordered = false;
+  static constexpr bool support_mixed = false;
   using key_slice_type = uint32_t;
   using value_type = uint32_t;
   using size_type = uint32_t;

@@ -25,6 +25,7 @@
 
 struct gpu_masstree_adapter {
   static constexpr bool is_ordered = true;
+  static constexpr bool support_mixed = true;
   using key_slice_type = uint32_t;
   using value_type = uint32_t;
   using size_type = uint32_t;
@@ -114,6 +115,22 @@ struct gpu_masstree_adapter {
       }, t1);
     });
   }
+  void mixed_batch(const kernels::request_type* types,
+                   const key_slice_type* keys,
+                   uint32_t keylen_max,
+                   const size_type* key_lengths,
+                   value_type* values,
+                   std::size_t num_keys) {
+    adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
+      adapter_util::dispatch_bool(configs_.enable_suffix, [&](auto t2, auto s2) {
+        adapter_util::dispatch_uint32<0, 1, 2, 3>(configs_.merge_level, [&](auto t3, auto s3, auto m3) {
+          adapter_util::dispatch_bool(configs_.reuse_root, [&](auto t4, auto s4, auto m4, auto r4) {
+            do_mixed<t4.value, s4.value, m4.value, r4.value>(types, keys, keylen_max, key_lengths, values, nullptr, num_keys);
+          }, t3, s3, m3);
+        }, t2, s2);
+      }, t1);
+    });
+  }
   void print_stats() {
     allocator_->print_stats();
     if (configs_.tile_size == 32) {
@@ -177,6 +194,12 @@ struct gpu_masstree_adapter {
   void do_scan(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
       ->template scan<false, lookup_concurrent, reuse_root>(args...);
+  }
+
+  template <uint32_t tile_size, bool enable_suffix, uint32_t merge_level, bool reuse_root, typename... arg_types>
+  void do_mixed(arg_types... args) {
+    reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
+      ->template mixed_batch<enable_suffix, merge_level >= 3, merge_level >= 2, reuse_root>(args...);
   }
 
   configs configs_;

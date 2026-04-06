@@ -26,34 +26,11 @@
 #include <vector>
 #include <thread>
 #include <macros.hpp>
+#include <kernels.hpp>
 
 using key_slice_type = uint32_t;
 using value_type = uint32_t;
 using size_type = uint32_t;
-
-#define FORALL_ARGUMENTS(x) \
-  /* key distribution */ \
-  x(num_keys, std::size_t, 1000000) \
-  x(keylen_prefix, uint32_t, 0) \
-  x(keylen_min, uint32_t, 1) \
-  x(keylen_max, uint32_t, 1) \
-  x(keylen_theta, double, 0.0) \
-  /* delete config */ \
-  x(delete_ratio, double, 0.1) \
-  /* lookup distribution */ \
-  x(num_lookups, std::size_t, 1000000) \
-  x(lookup_theta, double, 0.0) \
-  x(lookup_exist_ratio, double, 1.0) \
-  /* scan config */ \
-  x(num_scans, std::size_t, 1000000) \
-  x(scan_count, uint32_t, 1) \
-  /* repeats */ \
-  x(repeats_insert, std::size_t, 10) \
-  x(repeats_delete, std::size_t, 10) \
-  x(repeats_lookup, std::size_t, 10) \
-  x(repeats_scan, std::size_t, 0) \
-  /* index config */ \
-  x(index_type, std::string, "gpu_masstree")
 
 namespace universal {
 
@@ -193,26 +170,14 @@ void generate_lookup_keys(std::vector<key_slice_type>& lookup_keys,
                           std::vector<key_slice_type>& keys,
                           std::vector<size_type>& key_lengths,
                           std::size_t num_keys,
-                          uint32_t keylen_prefix,
-                          uint32_t keylen_min,
                           uint32_t keylen_max,
-                          double keylen_theta,
                           std::size_t num_queries,
-                          double lookup_theta,
-                          double lookup_exist_ratio,
-                          bool big_endian) {
+                          double lookup_theta) {
   // randomly select lookup key from given keys
-  // not-existing key is made with unique index num_keys
-  check_argument(0.0 <= lookup_exist_ratio && lookup_exist_ratio <= 1.0);
-  const uint32_t unique_slices = (num_keys < std::numeric_limits<key_slice_type>::max()) ? 1 : 2;
-  // generate queries
   lookup_keys = std::vector<key_slice_type>(num_queries * keylen_max);
   lookup_key_lengths = std::vector<size_type>(num_queries);
   std::atomic<std::size_t> num_generated(0);
-  std::uniform_real_distribution<double> exist_dist(0.0, 1.0);
   zipfian_int_distribution<std::size_t> key_choose_dist(0, num_keys - 1, lookup_theta);
-  zipfian_int_distribution<uint32_t> length_dist(keylen_min, keylen_max, keylen_theta);
-  std::uniform_int_distribution<key_slice_type> slice_dist(0, std::numeric_limits<key_slice_type>::max());
   const unsigned num_workers = std::max(1u, std::thread::hardware_concurrency());
   std::vector<std::thread> workers;
   for (unsigned tid = 0; tid < num_workers; tid++) {
@@ -223,43 +188,11 @@ void generate_lookup_keys(std::vector<key_slice_type>& lookup_keys,
         auto lookup_idx = num_generated.fetch_add(1);
         if (lookup_idx >= num_queries) { break; }
         auto* lookup_key = &lookup_keys[lookup_idx * keylen_max];
-        // decide existance
-        if (exist_dist(per_thd_rng) < lookup_exist_ratio) {
-          // copy randomly from key
-          std::size_t key_idx = key_choose_dist(per_thd_rng);
-          uint32_t length = key_lengths[key_idx];
-          lookup_key_lengths[lookup_idx] = length;
-          memcpy(lookup_key, &keys[key_idx * keylen_max], sizeof(key_slice_type) * length);
-        }
-        else {
-          // create non-exist key
-          uint32_t length = length_dist(per_thd_rng);
-          lookup_key_lengths[lookup_idx] = length;
-          for (uint32_t slice = 0; slice < length; slice++) {
-            // key[0:keylen_prefix) = prefix
-            // key[keylen_prefix:length-unique_slices) = random
-            // key[length-unique_slices:length-1] = num_keys
-            if (slice < keylen_prefix) {
-              lookup_key[slice] = keys[slice];
-            }
-            else if (slice < length - unique_slices) {
-              lookup_key[slice] = slice_dist(per_thd_rng);
-            }
-            else if (slice == length - 2) {
-              lookup_key[slice] = static_cast<key_slice_type>(num_keys >> (sizeof(key_slice_type) * 8));
-            }
-            else {
-              lookup_key[slice] = static_cast<key_slice_type>(num_keys);
-            }
-          }
-          // big endian
-          if (big_endian) {
-            for (uint32_t slice = 0; slice < length; slice++) {
-              uint32_t key_slice = lookup_key[slice];
-              lookup_key[slice] = __builtin_bswap32(key_slice);
-            }
-          }
-        }
+        // copy randomly from key
+        std::size_t key_idx = key_choose_dist(per_thd_rng);
+        uint32_t length = key_lengths[key_idx];
+        lookup_key_lengths[lookup_idx] = length;
+        memcpy(lookup_key, &keys[key_idx * keylen_max], sizeof(key_slice_type) * length);
       }
     }, tid);
   }
@@ -267,5 +200,110 @@ void generate_lookup_keys(std::vector<key_slice_type>& lookup_keys,
     w.join();
   }
 }
+
+void generate_mixed_keys(std::vector<kernels::request_type>& mix_types,
+                         std::vector<key_slice_type>& mix_keys,
+                         std::vector<size_type>& mix_key_lengths,
+                         std::vector<value_type>& mix_values,
+                         std::vector<key_slice_type>& keys,
+                         std::vector<size_type>& key_lengths,
+                         std::vector<value_type>& values,
+                         std::size_t num_keys,
+                         uint32_t keylen_max,
+                         std::size_t num_mixed,
+                         double mix_read_ratio,
+                         bool mix_presort,
+                         double lookup_theta) {
+  check_argument(0 <= mix_read_ratio && mix_read_ratio <= 1.0);
+  std::size_t num_lookups = static_cast<std::size_t>(mix_read_ratio * num_mixed);
+  std::size_t num_insdel = (num_mixed - num_lookups) / 2;
+  num_lookups = num_mixed - num_insdel * 2;
+  std::vector<std::size_t> shuffle_order(num_mixed);
+  for (std::size_t i = 0; i < num_mixed; i++) shuffle_order[i] = i;
+  if (!mix_presort) {
+    std::mt19937 rng(0);
+    std::shuffle(shuffle_order.begin(), shuffle_order.end(), rng);
+  }
+  mix_types = std::vector<kernels::request_type>(num_mixed);
+  mix_keys = std::vector<key_slice_type>(num_mixed * keylen_max);
+  mix_key_lengths = std::vector<size_type>(num_mixed);
+  mix_values = std::vector<value_type>(num_mixed);
+  std::vector<key_slice_type> tmp_lookup_keys;
+  std::vector<size_type> tmp_lookup_key_lengths;
+  if (num_lookups > 0) {
+    generate_lookup_keys(tmp_lookup_keys, tmp_lookup_key_lengths, keys, key_lengths,
+      num_keys, keylen_max, num_lookups, lookup_theta);
+  }
+  for (std::size_t idx = 0; idx < num_mixed; idx++) {
+    auto dst_idx = shuffle_order[idx];
+    if (idx < num_lookups) {
+      mix_types[dst_idx] = kernels::request_type_find;
+      mix_key_lengths[dst_idx] = tmp_lookup_key_lengths[idx];
+      memcpy(&mix_keys[dst_idx * keylen_max], &tmp_lookup_keys[idx * keylen_max], sizeof(key_slice_type) * keylen_max);
+    }
+    else if (idx < num_lookups + num_insdel) {
+      mix_types[dst_idx] = kernels::request_type_insert;
+      auto insert_idx = num_keys + idx - num_lookups;
+      mix_key_lengths[dst_idx] = key_lengths[insert_idx];
+      memcpy(&mix_keys[dst_idx * keylen_max], &keys[insert_idx * keylen_max], sizeof(key_slice_type) * keylen_max);
+      mix_values[dst_idx] = values[dst_idx];
+    }
+    else {
+      mix_types[dst_idx] = kernels::request_type_erase;
+      auto delete_idx = idx - (num_lookups + num_insdel);
+      mix_key_lengths[dst_idx] = key_lengths[delete_idx];
+      memcpy(&mix_keys[dst_idx * keylen_max], &keys[delete_idx * keylen_max], sizeof(key_slice_type) * keylen_max);
+    }
+  }
+}
+
+#define FORALL_ARGUMENTS(x) \
+  /* key distribution */ \
+  x(num_prefill, std::size_t, 10000000) \
+  x(keylen_prefix, uint32_t, 0) \
+  x(keylen_min, uint32_t, 1) \
+  x(keylen_max, uint32_t, 1) \
+  x(keylen_theta, double, 0.0) \
+  /* lookup test */ \
+  x(num_lookups, uint32_t, 1000000) \
+  x(lookup_theta, double, 0.0) \
+  /* scan test */ \
+  x(num_scans, uint32_t, 1000000) \
+  x(scan_count, uint32_t, 1) \
+  /* insert delete test */ \
+  x(num_insdel, uint32_t, 1000000) \
+  /* mixed test */ \
+  x(num_mixed, uint32_t, 1000000) \
+  x(mix_read_ratio, double, 0.5) \
+  x(mix_presort, bool, true) \
+  /* repeats */ \
+  x(rep_lookup, uint32_t, 0) \
+  x(rep_scan, uint32_t, 0) \
+  x(rep_insdel, uint32_t, 0) \
+  x(rep_mixed, uint32_t, 0) \
+  /* index config */ \
+  x(index_type, std::string, "gpu_masstree")
+
+struct args_type {
+  #define DECLARE_ARGUMENT(arg, type, default_value) \
+  type arg;
+  FORALL_ARGUMENTS(DECLARE_ARGUMENT)
+  #undef DECLARE_ARGUMENT
+
+  args_type(std::vector<std::string>& arg_strings) {
+    #define PARSE_ARGUMENT(arg, type, default_value) \
+    arg = get_arg_value<type>(arg_strings, #arg).value_or(default_value);
+    FORALL_ARGUMENTS(PARSE_ARGUMENT)
+    #undef PARSE_ARGUMENT
+  }
+
+  void print() {
+    std::cout << "arguments:" << std::endl;
+    #define PRINT_ARGUMENT(arg, type, default_value) \
+    std::cout << "  " #arg "=" << arg << std::endl;
+    FORALL_ARGUMENTS(PRINT_ARGUMENT)
+    #undef PRINT_ARGUMENT
+  }
+};
 
 } // namespace universal
