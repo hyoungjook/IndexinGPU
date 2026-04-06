@@ -52,7 +52,10 @@ fi
   -I"${ROOT_DIR}/baselines/libcuckoo" \
   -I"${MASSTREE_DIR}" \
   -I"${ARTSYNC_DIR}" \
-  "${ROOT_DIR}/evaluation/universal_bench_cpu.cpp" \
+  -DUNIVERSAL_BENCH_WITH_CPU_BASELINE \
+  -DNOGPU \
+  -x c++ \
+  "${ROOT_DIR}/evaluation/universal_bench.cu" \
   "${MASSTREE_SOURCES[@]}" \
   "${ROWEX_SOURCES[@]}" \
   -o "${OUTPUT_PATH}" \

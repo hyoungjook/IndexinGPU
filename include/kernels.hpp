@@ -25,12 +25,6 @@
 namespace cg = cooperative_groups;
 namespace kernels {
 
-enum request_type: uint8_t {
-  request_type_insert = 0,
-  request_type_erase = 1,
-  request_type_find = 2
-};
-
 static constexpr auto target_blocks_per_sm = 8;
 
 template <bool do_reclaim, uint32_t tile_size, typename device_func, typename index_type>

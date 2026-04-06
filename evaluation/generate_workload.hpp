@@ -26,7 +26,6 @@
 #include <vector>
 #include <thread>
 #include <macros.hpp>
-#include <kernels.hpp>
 
 using key_slice_type = uint32_t;
 using value_type = uint32_t;

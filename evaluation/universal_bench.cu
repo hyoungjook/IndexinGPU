@@ -14,18 +14,24 @@
  *   limitations under the License.
  */
 
-#include <cuda_profiler_api.h>
 #include <stdlib.h>
-#include <thrust/sequence.h>
 #include <algorithm>
 #include <cstdint>
 #include <numeric>
 #include <vector>
 #include <cmd.hpp>
 #include <macros.hpp>
-#include <gpu_timer.hpp>
 #include <generate_workload.hpp>
-#if defined(UNIVERSAL_BENCH_WITH_GPU_BASELINE)
+#if !defined(NOGPU)
+#include <cuda_profiler_api.h>
+#include <thrust/sequence.h>
+#include <gpu_timer.hpp>
+#endif
+#if defined(UNIVERSAL_BENCH_WITH_CPU_BASELINE)
+#include <cpu_libcuckoo_adapter.hpp>
+#include <cpu_masstree_adapter.hpp>
+#include <cpu_art_adapter.hpp>
+#elif defined(UNIVERSAL_BENCH_WITH_GPU_BASELINE)
 #include <gpu_blink_tree_adapter.hpp>
 #include <gpu_dycuckoo_adapter.hpp>
 #else
@@ -37,16 +43,7 @@
 
 namespace universal {
 
-struct gpu_lap_timer {
-  void start() {
-    timer_.start_timer();
-  }
-  void stop() {
-    timer_.stop_timer();
-  }
-  void record() {
-    times_.push_back(timer_.get_elapsed_s());
-  }
+struct lap_timer {
   float get_avg() {
     float sum = 0;
     for (auto t: times_) sum += t;
@@ -68,9 +65,58 @@ struct gpu_lap_timer {
     auto max_rate = static_cast<float>(size) / 1e6 / get_min();
     std::cout << name << ": " << avg_rate << " Mop/s (" << min_rate << ", " << max_rate << ")" << std::endl;
   }
-  gpu_timer timer_;
   std::vector<float> times_;
 };
+
+#if !defined(NOGPU)
+struct gpu_lap_timer: public lap_timer {
+  void start() {
+    timer_.start_timer();
+  }
+  void stop() {
+    timer_.stop_timer();
+  }
+  void record() {
+    times_.push_back(timer_.get_elapsed_s());
+  }
+  gpu_timer timer_;
+};
+#endif
+
+struct cpu_lap_timer: public lap_timer {
+  void start() {
+    start_ = std::chrono::high_resolution_clock::now();
+  }
+  void stop() {
+    end_ = std::chrono::high_resolution_clock::now();
+  }
+  void record() {
+    times_.push_back(std::chrono::duration_cast<std::chrono::duration<float>>(end_ - start_).count());
+  }
+  std::chrono::time_point<std::chrono::high_resolution_clock> start_, end_;
+};
+
+#if defined(UNIVERSAL_BENCH_WITH_CPU_BASELINE)
+using timer_type = cpu_lap_timer;
+#else
+using timer_type = gpu_lap_timer;
+#endif
+
+template <class F, class ThreadEnter, class ThreadExit>
+void helper_multithread(F&& f, std::size_t num_tasks, ThreadEnter&& thread_enter, ThreadExit&& thread_exit) {
+  const unsigned num_workers = std::max(1u, std::thread::hardware_concurrency());
+  std::vector<std::thread> workers;
+  for (unsigned tid = 0; tid < num_workers; tid++) {
+    workers.emplace_back([&](unsigned thread_id) {
+      thread_enter();
+      for (std::size_t task_idx = thread_id; task_idx < num_tasks; task_idx += num_workers) {
+        std::forward<F>(f)(task_idx);
+      }
+      thread_exit();
+    }, tid);
+  }
+  for (auto& w: workers) { w.join(); }
+}
 
 template <typename adapter_type>
 void prefill(adapter_type& adapter,
@@ -79,8 +125,9 @@ void prefill(adapter_type& adapter,
              std::vector<value_type>& h_values,
              uint32_t keylen_max,
              std::size_t num_prefill) {
-  static const uint32_t prefill_batch = 16 * 1024 * 1024;
   adapter.initialize();
+  #if !defined(NOGPU)
+  static const uint32_t prefill_batch = 16 * 1024 * 1024;
   for (std::size_t begin = 0; begin < num_prefill; begin += prefill_batch) {
     auto batch_size = std::min<std::size_t>(num_prefill - begin, prefill_batch);
     auto d_keys = thrust::device_vector<key_slice_type>(
@@ -92,6 +139,12 @@ void prefill(adapter_type& adapter,
     adapter.insert(d_keys.data().get(), keylen_max, d_key_lengths.data().get(), d_values.data().get(), batch_size);
     cuda_try(cudaDeviceSynchronize());
   }
+  #else
+  helper_multithread([&](std::size_t task_idx) {
+      adapter.insert(&h_keys[task_idx * keylen_max], h_key_lengths[task_idx], h_values[task_idx]);
+    }, num_prefill,
+    [&]() { adapter.thread_enter(); }, [&]() { adapter.thread_exit(); });
+  #endif
 }
 
 template <typename adapter_type>
@@ -110,25 +163,47 @@ void run_bench(adapter_type& adapter,
                std::size_t result_buffer_size) {
   // measure lookup & scan
   if (args.rep_lookup > 0 || args.rep_scan > 0) {
-    gpu_lap_timer lookup_timer, scan_timer;
+    timer_type lookup_timer, scan_timer;
     prefill(adapter, h_keys, h_key_lengths, h_values, args.keylen_max, args.num_prefill);
+    #if !defined(NOGPU)
     auto d_lookup_keys = thrust::device_vector<key_slice_type>(h_lookup_keys.begin(), h_lookup_keys.end());
     auto d_lookup_key_lengths = thrust::device_vector<size_type>(h_lookup_key_lengths.begin(), h_lookup_key_lengths.end());
     auto d_results = thrust::device_vector<value_type>(result_buffer_size);
     auto d_scan_upper_keys_if_btree = thrust::device_vector<key_slice_type>(h_scan_upper_keys_if_btree.begin(), h_scan_upper_keys_if_btree.end());
+    #else
+    std::vector<value_type> h_results(result_buffer_size);
+    #endif
     for (uint32_t r = 0; r < args.rep_lookup; r++) {
       lookup_timer.start();
+      #if !defined(NOGPU)
       adapter.find(d_lookup_keys.data().get(), args.keylen_max, d_lookup_key_lengths.data().get(), d_results.data().get(), args.num_lookups);
+      #else
+      helper_multithread([&](std::size_t task_idx) {
+          h_results[task_idx] = adapter.find(&h_lookup_keys[task_idx * args.keylen_max], h_lookup_key_lengths[task_idx]);
+        }, args.num_lookups,
+        [&]() { adapter.thread_enter(); }, [&]() { adapter.thread_exit(); });
+      #endif
       lookup_timer.stop();
+      #if !defined(NOGPU)
       cuda_try(cudaDeviceSynchronize());
+      #endif
       lookup_timer.record();
     }
     if constexpr (adapter_type::is_ordered) {
       for (uint32_t r = 0; r < args.rep_scan; r++) {
         scan_timer.start();
+        #if !defined(NOGPU)
         adapter.scan(d_lookup_keys.data().get(), args.keylen_max, d_lookup_key_lengths.data().get(), args.scan_count, d_results.data().get(), args.num_scans, d_scan_upper_keys_if_btree.data().get());
+        #else
+        helper_multithread([&](std::size_t task_idx) {
+            adapter.scan(&h_lookup_keys[task_idx * args.keylen_max], h_lookup_key_lengths[task_idx], args.scan_count, &h_results[task_idx * args.scan_count]);
+          }, args.num_scans,
+          [&]() { adapter.thread_enter(); }, [&]() { adapter.thread_exit(); });
+        #endif
         scan_timer.stop();
+        #if !defined(NOGPU)
         cuda_try(cudaDeviceSynchronize());
+        #endif
         scan_timer.record();
       }
     }
@@ -144,10 +219,11 @@ void run_bench(adapter_type& adapter,
   // measure insert & delete
   if (args.rep_insdel > 0) {
     check_argument(args.num_prefill > args.num_insdel);
-    gpu_lap_timer insert_timer, delete_timer;
+    timer_type insert_timer, delete_timer;
     for (uint32_t r = 0; r < args.rep_insdel; r++) {
       prefill(adapter, h_keys, h_key_lengths, h_values, args.keylen_max, args.num_prefill);
       {
+        #if !defined(NOGPU)
         auto d_insert_keys = thrust::device_vector<key_slice_type>(
           h_keys.begin() + (args.keylen_max * args.num_prefill),
           h_keys.begin() + (args.keylen_max * (args.num_prefill + args.num_insdel)));
@@ -157,21 +233,42 @@ void run_bench(adapter_type& adapter,
         auto d_insert_values = thrust::device_vector<value_type>(
           h_values.begin() + args.num_prefill,
           h_values.begin() + (args.num_prefill + args.num_insdel));
+        #endif
         insert_timer.start();
+        #if !defined(NOGPU)
         adapter.insert(d_insert_keys.data().get(), args.keylen_max, d_insert_key_lengths.data().get(), d_insert_values.data().get(), args.num_insdel);
+        #else
+        helper_multithread([&](std::size_t task_idx) {
+            adapter.insert(&h_keys[(args.num_prefill + task_idx) * args.keylen_max], h_key_lengths[args.num_prefill + task_idx], h_values[args.num_prefill + task_idx]);
+          }, args.num_insdel,
+          [&]() { adapter.thread_enter(); }, [&]() { adapter.thread_exit(); });
+        #endif
         insert_timer.stop();
+        #if !defined(NOGPU)
         cuda_try(cudaDeviceSynchronize());
+        #endif
         insert_timer.record();
       }
       {
+        #if !defined(NOGPU)
         auto d_delete_keys = thrust::device_vector<key_slice_type>(
           h_keys.begin(), h_keys.begin() + (args.keylen_max * args.num_insdel));
         auto d_delete_key_lengths = thrust::device_vector<size_type>(
           h_key_lengths.begin(), h_key_lengths.begin() + args.num_insdel);
+        #endif
         delete_timer.start();
+        #if !defined(NOGPU)
         adapter.erase(d_delete_keys.data().get(), args.keylen_max, d_delete_key_lengths.data().get(), args.num_insdel);
+        #else
+        helper_multithread([&](std::size_t task_idx) {
+            adapter.erase(&h_keys[task_idx * args.keylen_max], h_key_lengths[task_idx]);
+          }, args.num_insdel,
+          [&]() { adapter.thread_enter(); }, [&]() { adapter.thread_exit(); });
+        #endif
         delete_timer.stop();
+        #if !defined(NOGPU)
         cuda_try(cudaDeviceSynchronize());
+        #endif
         delete_timer.record();
       }
       adapter.destroy();
@@ -184,9 +281,10 @@ void run_bench(adapter_type& adapter,
   if constexpr (adapter_type::support_mixed) {
     if (args.rep_mixed > 0) {
       check_argument(args.num_prefill > args.num_mixed);
-      gpu_lap_timer mix_timer;
+      timer_type mix_timer;
       for (uint32_t r = 0; r < args.rep_mixed; r++) {
         prefill(adapter, h_keys, h_key_lengths, h_values, args.keylen_max, args.num_prefill);
+        #if !defined(NOGPU)
         auto d_mix_types = thrust::device_vector<kernels::request_type>(
           h_mix_types.begin(), h_mix_types.end());
         auto d_mix_keys = thrust::device_vector<key_slice_type>(
@@ -195,10 +293,28 @@ void run_bench(adapter_type& adapter,
           h_mix_key_lengths.begin(), h_mix_key_lengths.end());
         auto d_mix_values = thrust::device_vector<value_type>(
           h_mix_values.begin(), h_mix_values.end());
+        #endif
         mix_timer.start();
+        #if !defined(NOGPU)
         adapter.mixed_batch(d_mix_types.data().get(), d_mix_keys.data().get(), args.keylen_max, d_mix_key_lengths.data().get(), d_mix_values.data().get(), args.num_mixed);
+        #else
+        helper_multithread([&](std::size_t task_idx) {
+            if (h_mix_types[task_idx] == kernels::request_type_find) {
+              h_mix_values[task_idx] = adapter.find(&h_mix_keys[task_idx * args.keylen_max], h_mix_key_lengths[task_idx]);
+            }
+            else if (h_mix_types[task_idx] == kernels::request_type_insert) {
+              adapter.insert(&h_mix_keys[task_idx * args.keylen_max], h_mix_key_lengths[task_idx], h_values[task_idx]);
+            }
+            else {
+              adapter.erase(&h_mix_keys[task_idx * args.keylen_max], h_mix_key_lengths[task_idx]);
+            }
+          }, args.num_mixed,
+          [&]() { adapter.thread_enter(); }, [&]() { adapter.thread_exit(); });
+        #endif
         mix_timer.stop();
+        #if !defined(NOGPU)
         cuda_try(cudaDeviceSynchronize());
+        #endif
         mix_timer.record();
         adapter.destroy();
       }
@@ -213,12 +329,16 @@ int main(int argc, char** argv) {
   auto arg_strings = std::vector<std::string>(argv, argv + argc);
   universal::args_type args(arg_strings);
 
-  #if defined(UNIVERSAL_BENCH_WITH_GPU_BASELINE)
+  #if defined(UNIVERSAL_BENCH_WITH_CPU_BASELINE)
   #define FORALL_INDEXES(x) \
-  x(gpu_blink_tree) x(gpu_dycuckoo)
+    x(cpu_libcuckoo) x(cpu_masstree) x(cpu_art)
+  #elif defined(UNIVERSAL_BENCH_WITH_GPU_BASELINE)
+  #define FORALL_INDEXES(x) \
+    x(gpu_blink_tree) x(gpu_dycuckoo)
   #else
   #define FORALL_INDEXES(x) \
-  x(gpu_masstree) x(gpu_chainhashtable) x(gpu_cuckoohashtable) x(gpu_extendhashtable)
+    x(gpu_masstree) x(gpu_chainhashtable) \
+    x(gpu_cuckoohashtable) x(gpu_extendhashtable)
   #endif
 
   #define INDEX_NAME_CHECK(index) (args.index_type == #index) ||
