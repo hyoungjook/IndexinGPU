@@ -270,7 +270,7 @@ void generate_mixed_keys(std::vector<kernels::request_type>& mix_types,
     generate_lookup_keys(tmp_lookup_keys, tmp_lookup_key_lengths, keys, key_lengths,
       num_keys, keylen_max, num_lookups, lookup_theta);
   }
-  helper_multithread([&](std::size_t idx, unsigned thread_id) {
+  helper_multithread([&](std::size_t idx, [[maybe_unused]] unsigned thread_id) {
     auto dst_idx = shuffle_order[idx];
     if (idx < num_lookups) {
       mix_types[dst_idx] = kernels::request_type_find;

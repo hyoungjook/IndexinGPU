@@ -20,19 +20,114 @@ index a35cdbf..3aef064 100644
      uint32_t nextPrime(uint32_t n)
      {
          bool state=isPrime(n);
+diff --git a/dynamicHash_lock/core/dynamic_hash.cuh b/dynamicHash_lock/core/dynamic_hash.cuh
+index 16f566c..12d02f5 100644
+--- a/dynamicHash_lock/core/dynamic_hash.cuh
++++ b/dynamicHash_lock/core/dynamic_hash.cuh
+@@ -28,7 +28,10 @@ namespace DynamicHash{
+     static constexpr uint32_t CgSize = 16;
+     static constexpr uint32_t MaxEvictNum = 100;
+ 
+-    static constexpr key_t empty_key = DataLayout<>::empty_key;
++    DEVICEQUALIFIER INLINEQUALIFIER
++    key_t empty_key_value(){
++        return key_t{};
++    }
+     static constexpr uint32_t val_lens = DataLayout<>::val_lens;
+ 
+     static constexpr uint32_t bucket_size = DataLayout<>::bucket_size;
+@@ -90,13 +93,15 @@ namespace DynamicHash{
+             uint32_t insert_hash = group.shfl(hash_val, leader);
+             key_bucket_t* key_insert_bucket = cuckoo_table.key_table_group[table_no] + insert_hash;
+             value_bucket_t *value_bucket = cuckoo_table.value_table_group[table_no] + insert_hash;
+-            key_t insert_key = group.shfl(key, leader);
+             key_t probe_key = (key_insert_bucket->bucket_data)[group.thread_rank()];
+-            uint32_t group_mask2 = group.ballot(probe_key == empty_key);
++            uint32_t group_mask2 = group.ballot(probe_key == empty_key_value());
+             //write data to smem
+             if(group.thread_rank() == leader){
++                smem.key_to_write[threadIdx.x / CgSize] = key;
+                 smem.value_to_write[threadIdx.x / CgSize] = value;
+             }
++            group.sync();
++            key_t insert_key = smem.key_to_write[threadIdx.x / CgSize];
+             if(group_mask2 != 0){
+                 uint32_t insert_thread = __ffs(group_mask2) - 1;
+                 if(group.thread_rank() == insert_thread){
+@@ -224,7 +229,7 @@ namespace DynamicHash{
+             if(group_mask != 0){
+                 uint32_t group_leader = __ffs(group_mask) - 1;
+                 if(lane_id == group_leader){
+-                    (key_bucket->bucket_data)[ptr * cg_size + lane_id] = empty_key;
++                    (key_bucket->bucket_data)[ptr * cg_size + lane_id] = empty_key_value();
+                 }
+                 return true;
+             }
+@@ -288,7 +293,7 @@ namespace DynamicHash{
+             value_bucket_t *value_bucket = value_old_table + group_index_in_all;
+             for(int32_t ptr = lane_id; ptr < bucket_size; ptr += cg_size){
+                 key_t key = (key_bucket->bucket_data)[ptr];
+-                if(key != empty_key){
++                if(key != empty_key_value()){
+                     uint32_t new_hash_val = ch::caculate_hash((uint32_t)key, table_to_resize_no, new_table_len);
+                     //todo: maybe a bug
+                     key_new_table[new_hash_val].bucket_data[ptr] = key;
+@@ -346,7 +351,7 @@ namespace DynamicHash{
+             value_old_bucket = value_old_table + ptr;
+             bool active = true;
+             key_t probe_key = (key_old_bucket->bucket_data)[group.thread_rank()];
+-            if(probe_key == empty_key){
++            if(probe_key == empty_key_value()){
+                 active = false;
+             }
+             uint32_t insert_pre_table_no, pair;
+@@ -372,4 +377,4 @@ namespace DynamicHash{
+     }
+ };
+ 
+-#endif
+\ No newline at end of file
++#endif
 diff --git a/dynamicHash_lock/data/data_layout.cuh b/dynamicHash_lock/data/data_layout.cuh
-index 67ae991..8c44db2 100644
+index 67ae991..45c09dc 100644
 --- a/dynamicHash_lock/data/data_layout.cuh
 +++ b/dynamicHash_lock/data/data_layout.cuh
-@@ -8,7 +8,7 @@
+@@ -8,8 +8,8 @@
  template<
          typename Key = uint32_t,
          uint32_t KeyBits = 32,
 -        uint32_t ValBits = 128,
+-        Key EmptyKey = 0,
 +        uint32_t ValBits = 32,
-         Key EmptyKey = 0,
++        uint32_t EmptyKey = 0,
          uint32_t EmptyValue = 0,
          uint32_t BucketSize = 16,
+         uint32_t TableNum = 4,
+@@ -24,7 +24,8 @@ public:
+     static constexpr uint32_t key_bits = KeyBits;
+     static constexpr uint32_t val_bits = ValBits;
+     static constexpr uint32_t val_lens = ValBits / 32;
+-    static constexpr key_t empty_key = EmptyKey;
++    static_assert(EmptyKey == 0, "The lock DataLayout currently expects a zero-valued empty key.");
++    static constexpr key_t empty_key = key_t{};
+     static constexpr uint32_t empty_val = EmptyValue;
+     static constexpr uint32_t lock_tag = lockTag;
+     static constexpr uint32_t unlock_tag = unlockTag;
+@@ -74,6 +75,7 @@ public:
+             uint32_t CgSize = 16>
+     class Smem{
+     public:
++        key_t key_to_write[ThreadNum / CgSize];
+         value_t value_to_write[ThreadNum / CgSize];
+     };
+ 
+@@ -120,4 +122,4 @@ public:
+     };
+ };
+ 
+-#endif
+\ No newline at end of file
++#endif
 diff --git a/dynamicHash_lock/include/dynamic_helpers.cuh b/dynamicHash_lock/include/dynamic_helpers.cuh
 index a35cdbf..3aef064 100644
 --- a/dynamicHash_lock/include/dynamic_helpers.cuh
