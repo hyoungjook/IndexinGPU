@@ -89,6 +89,7 @@ struct cpu_art_adapter {
                        reinterpret_cast<TID*>(results), count, num_results,
                        current_threadinfo());
   }
+  void print_stats() {}
 
  private:
   struct configs {

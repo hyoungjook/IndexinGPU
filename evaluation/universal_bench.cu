@@ -98,25 +98,11 @@ struct cpu_lap_timer: public lap_timer {
 
 #if defined(UNIVERSAL_BENCH_WITH_CPU_BASELINE)
 using timer_type = cpu_lap_timer;
+static bool varlen_key_big_endian = true;
 #else
 using timer_type = gpu_lap_timer;
+static bool varlen_key_big_endian = false;
 #endif
-
-template <class F, class ThreadEnter, class ThreadExit>
-void helper_multithread(F&& f, std::size_t num_tasks, ThreadEnter&& thread_enter, ThreadExit&& thread_exit) {
-  const unsigned num_workers = std::max(1u, std::thread::hardware_concurrency());
-  std::vector<std::thread> workers;
-  for (unsigned tid = 0; tid < num_workers; tid++) {
-    workers.emplace_back([&](unsigned thread_id) {
-      thread_enter();
-      for (std::size_t task_idx = thread_id; task_idx < num_tasks; task_idx += num_workers) {
-        std::forward<F>(f)(task_idx);
-      }
-      thread_exit();
-    }, tid);
-  }
-  for (auto& w: workers) { w.join(); }
-}
 
 template <typename adapter_type>
 void prefill(adapter_type& adapter,
@@ -140,11 +126,22 @@ void prefill(adapter_type& adapter,
     cuda_try(cudaDeviceSynchronize());
   }
   #else
-  helper_multithread([&](std::size_t task_idx) {
+  helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
       adapter.insert(&h_keys[task_idx * keylen_max], h_key_lengths[task_idx], h_values[task_idx]);
     }, num_prefill,
     [&]() { adapter.thread_enter(); }, [&]() { adapter.thread_exit(); });
   #endif
+}
+
+template <typename adapter_type>
+void check_space(adapter_type& adapter,
+                 std::vector<key_slice_type>& h_keys,
+                 std::vector<size_type>& h_key_lengths,
+                 std::vector<value_type>& h_values,
+                 args_type& args) {
+  prefill(adapter, h_keys, h_key_lengths, h_values, args.keylen_max, args.num_prefill);
+  adapter.print_stats();
+  adapter.destroy();
 }
 
 template <typename adapter_type>
@@ -160,7 +157,8 @@ void run_bench(adapter_type& adapter,
                std::vector<size_type> h_mix_key_lengths,
                std::vector<value_type> h_mix_values,
                args_type& args,
-               std::size_t result_buffer_size) {
+               std::size_t result_buffer_size,
+               bool verbose) {
   // measure lookup & scan
   if (args.rep_lookup > 0 || args.rep_scan > 0) {
     timer_type lookup_timer, scan_timer;
@@ -178,7 +176,7 @@ void run_bench(adapter_type& adapter,
       #if !defined(NOGPU)
       adapter.find(d_lookup_keys.data().get(), args.keylen_max, d_lookup_key_lengths.data().get(), d_results.data().get(), args.num_lookups);
       #else
-      helper_multithread([&](std::size_t task_idx) {
+      helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
           h_results[task_idx] = adapter.find(&h_lookup_keys[task_idx * args.keylen_max], h_lookup_key_lengths[task_idx]);
         }, args.num_lookups,
         [&]() { adapter.thread_enter(); }, [&]() { adapter.thread_exit(); });
@@ -188,6 +186,7 @@ void run_bench(adapter_type& adapter,
       cuda_try(cudaDeviceSynchronize());
       #endif
       lookup_timer.record();
+      if (verbose) { std::cout << "lookup tested " << r + 1 << "/" << args.rep_lookup << std::endl; }
     }
     if constexpr (adapter_type::is_ordered) {
       for (uint32_t r = 0; r < args.rep_scan; r++) {
@@ -195,7 +194,7 @@ void run_bench(adapter_type& adapter,
         #if !defined(NOGPU)
         adapter.scan(d_lookup_keys.data().get(), args.keylen_max, d_lookup_key_lengths.data().get(), args.scan_count, d_results.data().get(), args.num_scans, d_scan_upper_keys_if_btree.data().get());
         #else
-        helper_multithread([&](std::size_t task_idx) {
+        helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
             adapter.scan(&h_lookup_keys[task_idx * args.keylen_max], h_lookup_key_lengths[task_idx], args.scan_count, &h_results[task_idx * args.scan_count]);
           }, args.num_scans,
           [&]() { adapter.thread_enter(); }, [&]() { adapter.thread_exit(); });
@@ -205,6 +204,7 @@ void run_bench(adapter_type& adapter,
         cuda_try(cudaDeviceSynchronize());
         #endif
         scan_timer.record();
+        if (verbose) { std::cout << "scan tested " << r + 1 << "/" << args.rep_scan << std::endl; }
       }
     }
     adapter.destroy();
@@ -238,7 +238,7 @@ void run_bench(adapter_type& adapter,
         #if !defined(NOGPU)
         adapter.insert(d_insert_keys.data().get(), args.keylen_max, d_insert_key_lengths.data().get(), d_insert_values.data().get(), args.num_insdel);
         #else
-        helper_multithread([&](std::size_t task_idx) {
+        helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
             adapter.insert(&h_keys[(args.num_prefill + task_idx) * args.keylen_max], h_key_lengths[args.num_prefill + task_idx], h_values[args.num_prefill + task_idx]);
           }, args.num_insdel,
           [&]() { adapter.thread_enter(); }, [&]() { adapter.thread_exit(); });
@@ -260,7 +260,7 @@ void run_bench(adapter_type& adapter,
         #if !defined(NOGPU)
         adapter.erase(d_delete_keys.data().get(), args.keylen_max, d_delete_key_lengths.data().get(), args.num_insdel);
         #else
-        helper_multithread([&](std::size_t task_idx) {
+        helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
             adapter.erase(&h_keys[task_idx * args.keylen_max], h_key_lengths[task_idx]);
           }, args.num_insdel,
           [&]() { adapter.thread_enter(); }, [&]() { adapter.thread_exit(); });
@@ -272,6 +272,7 @@ void run_bench(adapter_type& adapter,
         delete_timer.record();
       }
       adapter.destroy();
+      if (verbose) { std::cout << "insert/delete tested " << r + 1 << "/" << args.rep_insdel << std::endl; }
     }
     insert_timer.print_rate_Mops("insert", args.num_insdel);
     delete_timer.print_rate_Mops("delete", args.num_insdel);
@@ -298,7 +299,7 @@ void run_bench(adapter_type& adapter,
         #if !defined(NOGPU)
         adapter.mixed_batch(d_mix_types.data().get(), d_mix_keys.data().get(), args.keylen_max, d_mix_key_lengths.data().get(), d_mix_values.data().get(), args.num_mixed);
         #else
-        helper_multithread([&](std::size_t task_idx) {
+        helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
             if (h_mix_types[task_idx] == kernels::request_type_find) {
               h_mix_values[task_idx] = adapter.find(&h_mix_keys[task_idx * args.keylen_max], h_mix_key_lengths[task_idx]);
             }
@@ -317,6 +318,7 @@ void run_bench(adapter_type& adapter,
         #endif
         mix_timer.record();
         adapter.destroy();
+        if (verbose) { std::cout << "mix tested " << r + 1 << "/" << args.rep_mixed << std::endl; }
       }
       mix_timer.print_rate_Mops("mixed", args.num_mixed);
     }
@@ -328,6 +330,8 @@ void run_bench(adapter_type& adapter,
 int main(int argc, char** argv) {
   auto arg_strings = std::vector<std::string>(argv, argv + argc);
   universal::args_type args(arg_strings);
+  bool verbose = get_arg_value<bool>(arg_strings, "verbose").value_or(false);
+  bool only_check_space = get_arg_value<bool>(arg_strings, "only_check_space").value_or(false);
 
   #if defined(UNIVERSAL_BENCH_WITH_CPU_BASELINE)
   #define FORALL_INDEXES(x) \
@@ -358,10 +362,13 @@ int main(int argc, char** argv) {
   if (args.index_type == #index) { index##_adapter_.print_args(); }
   FORALL_INDEXES(ADAPTER_PRINT_ARGS)
   #undef ADAPTER_PRINT_ARGS
-  check_argument(args.rep_lookup > 0 || args.rep_scan > 0 ||
-                 args.rep_insdel > 0 || args.rep_mixed > 0);
+  if (!only_check_space) {
+    check_argument(args.rep_lookup > 0 || args.rep_scan > 0 ||
+                   args.rep_insdel > 0 || args.rep_mixed > 0);
+  }
 
   // generate keys and queries
+  if (verbose) { std::cout << "Generating workload..." << std::endl; }
   std::vector<key_slice_type> h_keys;
   std::vector<size_type> h_key_lengths;
   std::vector<value_type> h_values;
@@ -379,7 +386,7 @@ int main(int argc, char** argv) {
   universal::generate_key_values(
     h_keys, h_key_lengths, h_values,
     num_keys, args.keylen_prefix, args.keylen_min, args.keylen_max, args.keylen_theta,
-    false);
+    universal::varlen_key_big_endian);
   // 2. generate lookup keys: max(num_lookups, num_scans)
   std::size_t num_lookups_keys = std::max<std::size_t>(
     (args.rep_lookup > 0) ? args.num_lookups : 0,
@@ -409,12 +416,25 @@ int main(int argc, char** argv) {
       args.num_prefill, args.keylen_max, args.num_mixed, args.mix_read_ratio, args.mix_presort, args.lookup_theta);
   }
 
+  // only check space?
+  if (only_check_space) {
+    if (verbose) { std::cout << "Checking space consumption..." << std::endl; }
+    #define ADAPTER_CHECK_SPACE(index) \
+    if (args.index_type == #index) { \
+      universal::check_space(index##_adapter_, h_keys, h_key_lengths, h_values, args); \
+    }
+    FORALL_INDEXES(ADAPTER_CHECK_SPACE)
+    #undef ADAPTER_CHECK_SPACE
+    return 0;
+  }
+
   // run benchmark
+  if (verbose) { std::cout << "Running benchmark..." << std::endl; }
   #define ADAPTER_RUN_BENCH(index) \
   if (args.index_type == #index) { \
     universal::run_bench(index##_adapter_, \
       h_keys, h_key_lengths, h_values, h_lookup_keys, h_lookup_key_lengths, h_scan_upper_keys_if_btree, \
-      h_mix_types, h_mix_keys, h_mix_key_lengths, h_mix_values, args, result_buffer_size); \
+      h_mix_types, h_mix_keys, h_mix_key_lengths, h_mix_values, args, result_buffer_size, verbose); \
   }
   FORALL_INDEXES(ADAPTER_RUN_BENCH)
   #undef ADAPTER_RUN_BENCH

@@ -91,6 +91,7 @@ struct cpu_libcuckoo_adapter {
     index_->find(key_type{key, key_length}, value);
     return value;
   }
+  void print_stats() {}
 
  private:
   #define FORALL_ARGUMENTS_CPU_LIBCUCKOO(x) \

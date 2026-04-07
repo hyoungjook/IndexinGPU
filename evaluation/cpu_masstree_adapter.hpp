@@ -108,6 +108,7 @@ struct cpu_masstree_adapter {
     table_->scan(make_key(key, key_length), true, visitor, ti);
     std::fill(results + visitor.num_results, results + count, invalid_value);
   }
+  void print_stats() {}
 
  private:
   struct configs {
