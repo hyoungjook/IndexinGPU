@@ -49,6 +49,33 @@ void helper_multithread(F&& f, std::size_t num_tasks, ThreadEnter&& thread_enter
   for (auto& w: workers) { w.join(); }
 }
 
+std::size_t feistel_permute(std::size_t x, std::size_t N, uint64_t seed) {
+  if (N <= 1) return 0;
+  auto mix = [](std::uint64_t v) {
+      v ^= v >> 33;
+      v *= 0xff51afd7ed558ccdULL;
+      v ^= v >> 33;
+      v *= 0xc4ceb9fe1a85ec53ULL;
+      v ^= v >> 33;
+      return v;
+  };
+  unsigned half = 0;
+  while ((std::size_t(1) << (2 * half)) < N) ++half;
+  uint64_t mask = (static_cast<uint64_t>(1) << half) - 1;
+  while (true) {
+    uint64_t L = x >> half, R = x & mask;
+    for (int r = 0; r < 4; ++r) {
+      uint64_t t = L;
+      L = R;
+      R = t ^ (mix(R + seed + r) & mask);
+    }
+    x = (L << half) | R;
+    if (x < N) {
+      return x;
+    }
+  }
+}
+
 template <typename T>
 struct zipfian_int_distribution {
   // theta = 0 equals to uniform distribution
@@ -121,10 +148,6 @@ void generate_key_values(std::vector<key_slice_type>& keys,
     std::uniform_int_distribution<key_slice_type> prefix_dist(0, std::numeric_limits<key_slice_type>::max());
     prefix[slice] = prefix_dist(main_thd_rng);
   }
-  // generate unique_id
-  std::vector<std::size_t> unique_id_mix(num_keys);
-  for (std::size_t i = 0; i < num_keys; i++) unique_id_mix[i] = i;
-  std::shuffle(unique_id_mix.begin(), unique_id_mix.end(), main_thd_rng);
   // generate keys
   keys = std::vector<key_slice_type>(num_keys * keylen_max);
   key_lengths = std::vector<size_type>(num_keys);
@@ -142,6 +165,9 @@ void generate_key_values(std::vector<key_slice_type>& keys,
       // decide key length
       uint32_t length = length_dist(rng);
       key_lengths[key_idx] = length;
+      // unique_id is random permutation of [0, num_keys)
+      // this replaces single-threaded std::shuffle().
+      auto unique_id = feistel_permute(key_idx, num_keys, 0);
       // fill slices
       for (uint32_t slice = 0; slice < length; slice++) {
         //  key[0:keylen_prefix) = prefix[]
@@ -154,10 +180,10 @@ void generate_key_values(std::vector<key_slice_type>& keys,
           key[slice] = slice_dist(rng);
         }
         else if (slice == length - 2) {
-          key[slice] = static_cast<key_slice_type>(unique_id_mix[key_idx] >> (sizeof(key_slice_type) * 8));
+          key[slice] = static_cast<key_slice_type>(unique_id >> (sizeof(key_slice_type) * 8));
         }
         else {
-          key[slice] = static_cast<key_slice_type>(unique_id_mix[key_idx]);
+          key[slice] = static_cast<key_slice_type>(unique_id);
         }
       }
       // big endian
