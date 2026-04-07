@@ -43,7 +43,7 @@ struct gpu_blink_tree_adapter {
   static constexpr uint32_t tile_size = 16;
   using node_type = GpuBTree::node_type<key_slice_type, value_type, tile_size>;
   static constexpr std::size_t gpu_memory_capacity = 80ULL * 1024 * 1024 * 1024;
-  static constexpr std::size_t allocator_pool_bytes = static_cast<std::size_t>(0.9 * gpu_memory_capacity);
+  static constexpr std::size_t allocator_pool_bytes = static_cast<std::size_t>(0.8 * gpu_memory_capacity);
   static constexpr std::size_t allocator_max_count = allocator_pool_bytes / sizeof(node_type);
   using allocator_type = device_bump_allocator<node_type, allocator_max_count>;
   using index_type = GpuBTree::gpu_blink_tree<key_slice_type, value_type, tile_size, allocator_type>;
@@ -106,8 +106,8 @@ struct gpu_blink_tree_adapter {
 
  private:
   #define FORALL_ARGUMENTS_GPU_BLINKTREE(x) \
-    x(lookup_concurrent, bool, true) \
-    x(erase_concurrent, bool, true)
+    x(lookup_concurrent, bool, false) \
+    x(erase_concurrent, bool, false)
   struct configs {
     #define DECLARE_ARGUMENTS(arg, type, default_value) type arg;
     FORALL_ARGUMENTS_GPU_BLINKTREE(DECLARE_ARGUMENTS)

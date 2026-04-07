@@ -68,6 +68,7 @@ class ResultType(Enum):
     delete = auto()
     lookup = auto()
     scan = auto()
+    mixed = auto()
 
 EXECUTABLE_INFO = {
     BenchExecutable.robust: {
@@ -164,6 +165,8 @@ def parse_args_for_measure():
         help='Path of the program build directory.')
     parser.add_argument('--result-dir', type=str, required=True,
         help='Path of directory to add the result JSON file.')
+    parser.add_argument('--start-from', type=int, default=0,
+        help='Skip n configs at the beginning, used for debugging')
     args = parser.parse_args()
     return args
 
@@ -270,9 +273,10 @@ def read_configs_and_results(args):
         exit(1)
     return json_data
 
-def filter(configs_and_results: list[dict], desired_config: dict, op_type: ConfigType):
+def filter(configs_and_results: list[dict], desired_config: dict, result_type: ResultType):
     for config_and_result in configs_and_results:
         config = config_and_result['config']
+        result = config_and_result['result']
         match = True
         for desired_config_type, desired_config_value in desired_config.items():
             if config.get(desired_config_type.name) != config_value_to_str(desired_config_value):
@@ -280,7 +284,7 @@ def filter(configs_and_results: list[dict], desired_config: dict, op_type: Confi
                 break
         if not match:
             continue
-        if int(config.get(op_type.name, 0)) == 0:
+        if result_type.name not in result:
             continue
-        return config_and_result['result']
-    return None
+        return result
+    assert False
