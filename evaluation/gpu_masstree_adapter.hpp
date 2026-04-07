@@ -144,8 +144,8 @@ struct gpu_masstree_adapter {
  private:
   #define FORALL_ARGUMENTS_GPU_MASSTREE(x) \
     x(allocator_pool_ratio, float, 0.9f) \
-    x(tile_size, uint32_t, 32) \
-    x(lookup_concurrent, bool, true) \
+    x(tile_size, uint32_t, 16) \
+    x(lookup_concurrent, bool, false) \
     x(enable_suffix, bool, true) \
     /* merge_level: 0(naive) 1(concurrent) 2(merge) 3(remove_root) */ \
     x(merge_level, uint32_t, 3) \

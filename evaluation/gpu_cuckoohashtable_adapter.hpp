@@ -119,9 +119,9 @@ struct gpu_cuckoohashtable_adapter {
 
  private:
   #define FORALL_ARGUMENTS_GPU_CUCKOOHASHTABLE(x) \
-    x(allocator_pool_ratio, float, 0.5f) \
-    x(tile_size, uint32_t, 32) \
-    x(lookup_concurrent, bool, true) \
+    x(allocator_pool_ratio, float, 0.8f) \
+    x(tile_size, uint32_t, 16) \
+    x(lookup_concurrent, bool, false) \
     x(initial_array_fill_factor, float, 0.8f) \
     x(use_hash_tag, bool, true)
   struct configs {
@@ -139,7 +139,7 @@ struct gpu_cuckoohashtable_adapter {
       [[maybe_unused]] auto tmp_##arg = get_arg_value<type>(arguments, #arg).value_or(default_value);
       FORALL_ARGUMENTS(PARSE_DEFAULT_ARGUMENTS)
       #undef PARSE_DEFAULT_ARGUMENTS
-      num_keys = tmp_num_prefill + tmp_num_insdel;
+      num_keys = tmp_max_keys;
       check_argument(tile_size == 32 || tile_size == 16);
       check_argument(0 < initial_array_fill_factor && initial_array_fill_factor <= 0.9f);
     }

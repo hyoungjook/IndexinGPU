@@ -4,6 +4,7 @@ import glob
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 
@@ -24,21 +25,23 @@ class IndexType(Enum):
     cpu_art = auto()
 
 class ConfigType(Enum):
-    num_keys = auto()
+    max_keys = auto()
     keylen_prefix = auto()
     keylen_min = auto()
     keylen_max = auto()
     keylen_theta = auto()
-    delete_ratio = auto()
     num_lookups = auto()
     lookup_theta = auto()
-    lookup_exist_ratio = auto()
     num_scans = auto()
     scan_count = auto()
-    repeats_insert = auto()
-    repeats_delete = auto()
-    repeats_lookup = auto()
-    repeats_scan = auto()
+    num_insdel = auto()
+    num_mixed = auto()
+    mix_read_ratio = auto()
+    mix_presort = auto()
+    rep_lookup = auto()
+    rep_scan = auto()
+    rep_insdel = auto()
+    rep_mixed = auto()
     index_type = auto()
 
 class OptionalConfigType(Enum):
@@ -208,11 +211,15 @@ def run_one(args, config):
             parsed_config[config_name] = config_value
         elif 'Mop/s' in result_line:
             result_tokens = result_line.split(' ')
-            assert len(result_tokens) == 3
+            assert len(result_tokens) == 5
             result_type = result_tokens[0][:-1]
             assert result_type in [r.name for r in ResultType]
-            result_value = float(result_tokens[1])
-            result[result_type] = result_value
+            avg_value = float(result_tokens[1])
+            min_value = float(re.sub(r'[(),]', '', result_tokens[3]))
+            max_value = float(re.sub(r'[(),]', '', result_tokens[4]))
+            result[result_type] = {'avg': avg_value,
+                                   'min': min_value,
+                                   'max': max_value}
     print(f'parsed_config: {parsed_config}, result: {result}')
     return parsed_config, result
 

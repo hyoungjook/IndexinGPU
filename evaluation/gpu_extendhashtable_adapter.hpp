@@ -135,8 +135,8 @@ struct gpu_extendhashtable_adapter {
  private:
   #define FORALL_ARGUMENTS_GPU_EXTENDHASHTABLE(x) \
     x(allocator_pool_ratio, float, 0.9f) \
-    x(tile_size, uint32_t, 32) \
-    x(lookup_concurrent, bool, true) \
+    x(tile_size, uint32_t, 16) \
+    x(lookup_concurrent, bool, false) \
     x(initial_directory_size, uint32_t, 1024) \
     x(resize_policy, float, 2.0f) \
     x(load_factor_threshold, float, 2.5f) \

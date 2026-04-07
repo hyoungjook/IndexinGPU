@@ -226,6 +226,18 @@ void generate_lookup_keys(std::vector<key_slice_type>& lookup_keys,
   }, num_queries, [](){}, [](){});
 }
 
+std::size_t mix_get_num_insdel(std::size_t num_mixed, double mix_read_ratio) {
+  std::size_t num_lookups_tmp = static_cast<std::size_t>(mix_read_ratio * num_mixed);
+  std::size_t num_insdel = (num_mixed - num_lookups_tmp) / 2;
+  return num_insdel;
+}
+
+std::size_t mix_get_num_lookups(std::size_t num_mixed, double mix_read_ratio) {
+  std::size_t num_insdel = mix_get_num_insdel(num_mixed, mix_read_ratio);
+  std::size_t num_lookups = num_mixed - num_insdel * 2;
+  return num_lookups;
+}
+
 void generate_mixed_keys(std::vector<kernels::request_type>& mix_types,
                          std::vector<key_slice_type>& mix_keys,
                          std::vector<size_type>& mix_key_lengths,
@@ -240,9 +252,8 @@ void generate_mixed_keys(std::vector<kernels::request_type>& mix_types,
                          bool mix_presort,
                          double lookup_theta) {
   check_argument(0 <= mix_read_ratio && mix_read_ratio <= 1.0);
-  std::size_t num_lookups = static_cast<std::size_t>(mix_read_ratio * num_mixed);
-  std::size_t num_insdel = (num_mixed - num_lookups) / 2;
-  num_lookups = num_mixed - num_insdel * 2;
+  auto num_lookups = mix_get_num_lookups(num_mixed, mix_read_ratio);
+  auto num_insdel = mix_get_num_insdel(num_mixed, mix_read_ratio);
   std::vector<std::size_t> shuffle_order(num_mixed);
   for (std::size_t i = 0; i < num_mixed; i++) shuffle_order[i] = i;
   if (!mix_presort) {
@@ -268,7 +279,7 @@ void generate_mixed_keys(std::vector<kernels::request_type>& mix_types,
     }
     else if (idx < num_lookups + num_insdel) {
       mix_types[dst_idx] = kernels::request_type_insert;
-      auto insert_idx = num_keys + idx - num_lookups;
+      auto insert_idx = num_keys - 1 - (idx - num_lookups);
       mix_key_lengths[dst_idx] = key_lengths[insert_idx];
       memcpy(&mix_keys[dst_idx * keylen_max], &keys[insert_idx * keylen_max], sizeof(key_slice_type) * keylen_max);
       mix_values[dst_idx] = values[dst_idx];
@@ -284,7 +295,7 @@ void generate_mixed_keys(std::vector<kernels::request_type>& mix_types,
 
 #define FORALL_ARGUMENTS(x) \
   /* key distribution */ \
-  x(num_prefill, std::size_t, 10000000) \
+  x(max_keys, std::size_t, 10000000) \
   x(keylen_prefix, uint32_t, 0) \
   x(keylen_min, uint32_t, 1) \
   x(keylen_max, uint32_t, 1) \

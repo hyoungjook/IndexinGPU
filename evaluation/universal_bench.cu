@@ -110,12 +110,12 @@ void prefill(adapter_type& adapter,
              std::vector<size_type>& h_key_lengths,
              std::vector<value_type>& h_values,
              uint32_t keylen_max,
-             std::size_t num_prefill) {
+             std::size_t num_keys) {
   adapter.initialize();
   #if !defined(NOGPU)
-  static const uint32_t prefill_batch = 16 * 1024 * 1024;
-  for (std::size_t begin = 0; begin < num_prefill; begin += prefill_batch) {
-    auto batch_size = std::min<std::size_t>(num_prefill - begin, prefill_batch);
+  static const uint32_t prefill_batch = 100 * 1000 * 1000;
+  for (std::size_t begin = 0; begin < num_keys; begin += prefill_batch) {
+    auto batch_size = std::min<std::size_t>(num_keys - begin, prefill_batch);
     auto d_keys = thrust::device_vector<key_slice_type>(
       h_keys.begin() + (keylen_max * begin), h_keys.begin() + (keylen_max * (begin + batch_size)));
     auto d_key_lengths = thrust::device_vector<size_type>(
@@ -128,7 +128,7 @@ void prefill(adapter_type& adapter,
   #else
   helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
       adapter.insert(&h_keys[task_idx * keylen_max], h_key_lengths[task_idx], h_values[task_idx]);
-    }, num_prefill,
+    }, num_keys,
     [&]() { adapter.thread_enter(); }, [&]() { adapter.thread_exit(); });
   #endif
 }
@@ -139,7 +139,7 @@ void check_space(adapter_type& adapter,
                  std::vector<size_type>& h_key_lengths,
                  std::vector<value_type>& h_values,
                  args_type& args) {
-  prefill(adapter, h_keys, h_key_lengths, h_values, args.keylen_max, args.num_prefill);
+  prefill(adapter, h_keys, h_key_lengths, h_values, args.keylen_max, args.max_keys);
   adapter.print_stats();
   adapter.destroy();
 }
@@ -162,7 +162,7 @@ void run_bench(adapter_type& adapter,
   // measure lookup & scan
   if (args.rep_lookup > 0 || args.rep_scan > 0) {
     timer_type lookup_timer, scan_timer;
-    prefill(adapter, h_keys, h_key_lengths, h_values, args.keylen_max, args.num_prefill);
+    prefill(adapter, h_keys, h_key_lengths, h_values, args.keylen_max, args.max_keys);
     #if !defined(NOGPU)
     auto d_lookup_keys = thrust::device_vector<key_slice_type>(h_lookup_keys.begin(), h_lookup_keys.end());
     auto d_lookup_key_lengths = thrust::device_vector<size_type>(h_lookup_key_lengths.begin(), h_lookup_key_lengths.end());
@@ -218,28 +218,30 @@ void run_bench(adapter_type& adapter,
 
   // measure insert & delete
   if (args.rep_insdel > 0) {
-    check_argument(args.num_prefill > args.num_insdel);
     timer_type insert_timer, delete_timer;
+    std::size_t num_prefill = args.max_keys - args.num_insdel;
     for (uint32_t r = 0; r < args.rep_insdel; r++) {
-      prefill(adapter, h_keys, h_key_lengths, h_values, args.keylen_max, args.num_prefill);
+      prefill(adapter, h_keys, h_key_lengths, h_values, args.keylen_max, num_prefill);
       {
         #if !defined(NOGPU)
         auto d_insert_keys = thrust::device_vector<key_slice_type>(
-          h_keys.begin() + (args.keylen_max * args.num_prefill),
-          h_keys.begin() + (args.keylen_max * (args.num_prefill + args.num_insdel)));
+          h_keys.begin() + (args.keylen_max * num_prefill),
+          h_keys.begin() + (args.keylen_max * args.max_keys));
         auto d_insert_key_lengths = thrust::device_vector<size_type>(
-          h_key_lengths.begin() + args.num_prefill,
-          h_key_lengths.begin() + (args.num_prefill + args.num_insdel));
+          h_key_lengths.begin() + num_prefill,
+          h_key_lengths.begin() + args.max_keys);
         auto d_insert_values = thrust::device_vector<value_type>(
-          h_values.begin() + args.num_prefill,
-          h_values.begin() + (args.num_prefill + args.num_insdel));
+          h_values.begin() + num_prefill,
+          h_values.begin() + args.max_keys);
         #endif
         insert_timer.start();
         #if !defined(NOGPU)
         adapter.insert(d_insert_keys.data().get(), args.keylen_max, d_insert_key_lengths.data().get(), d_insert_values.data().get(), args.num_insdel);
         #else
         helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
-            adapter.insert(&h_keys[(args.num_prefill + task_idx) * args.keylen_max], h_key_lengths[args.num_prefill + task_idx], h_values[args.num_prefill + task_idx]);
+            adapter.insert(&h_keys[(num_prefill + task_idx) * args.keylen_max],
+                           h_key_lengths[num_prefill + task_idx],
+                           h_values[num_prefill + task_idx]);
           }, args.num_insdel,
           [&]() { adapter.thread_enter(); }, [&]() { adapter.thread_exit(); });
         #endif
@@ -261,7 +263,8 @@ void run_bench(adapter_type& adapter,
         adapter.erase(d_delete_keys.data().get(), args.keylen_max, d_delete_key_lengths.data().get(), args.num_insdel);
         #else
         helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
-            adapter.erase(&h_keys[task_idx * args.keylen_max], h_key_lengths[task_idx]);
+            adapter.erase(&h_keys[task_idx * args.keylen_max],
+                          h_key_lengths[task_idx]);
           }, args.num_insdel,
           [&]() { adapter.thread_enter(); }, [&]() { adapter.thread_exit(); });
         #endif
@@ -281,10 +284,10 @@ void run_bench(adapter_type& adapter,
   // measure mixed
   if constexpr (adapter_type::support_mixed) {
     if (args.rep_mixed > 0) {
-      check_argument(args.num_prefill > args.num_mixed);
+      std::size_t num_prefill = args.max_keys - mix_get_num_insdel(args.num_mixed, args.mix_read_ratio);
       timer_type mix_timer;
       for (uint32_t r = 0; r < args.rep_mixed; r++) {
-        prefill(adapter, h_keys, h_key_lengths, h_values, args.keylen_max, args.num_prefill);
+        prefill(adapter, h_keys, h_key_lengths, h_values, args.keylen_max, num_prefill);
         #if !defined(NOGPU)
         auto d_mix_types = thrust::device_vector<kernels::request_type>(
           h_mix_types.begin(), h_mix_types.end());
@@ -362,6 +365,8 @@ int main(int argc, char** argv) {
   if (args.index_type == #index) { index##_adapter_.print_args(); }
   FORALL_INDEXES(ADAPTER_PRINT_ARGS)
   #undef ADAPTER_PRINT_ARGS
+  check_argument(args.num_insdel <= args.max_keys &&
+                 args.num_mixed <= args.max_keys);
   if (!only_check_space) {
     check_argument(args.rep_lookup > 0 || args.rep_scan > 0 ||
                    args.rep_insdel > 0 || args.rep_mixed > 0);
@@ -379,13 +384,10 @@ int main(int argc, char** argv) {
   std::vector<key_slice_type> h_mix_keys;
   std::vector<size_type> h_mix_key_lengths;
   std::vector<value_type> h_mix_values;
-  // 1. generate keys: (num_prefill + max(num_insdel, num_mixed))
-  std::size_t num_keys = args.num_prefill + std::max<std::size_t>(
-    (args.rep_insdel > 0) ? args.num_insdel : 0,
-    (args.rep_mixed > 0) ? args.num_mixed : 0);
+  // 1. generate keys: max_keys
   universal::generate_key_values(
     h_keys, h_key_lengths, h_values,
-    num_keys, args.keylen_prefix, args.keylen_min, args.keylen_max, args.keylen_theta,
+    args.max_keys, args.keylen_prefix, args.keylen_min, args.keylen_max, args.keylen_theta,
     universal::varlen_key_big_endian);
   // 2. generate lookup keys: max(num_lookups, num_scans)
   std::size_t num_lookups_keys = std::max<std::size_t>(
@@ -394,7 +396,7 @@ int main(int argc, char** argv) {
   if (num_lookups_keys > 0) {
     universal::generate_lookup_keys(
       h_lookup_keys, h_lookup_key_lengths, h_keys, h_key_lengths,
-      args.num_prefill, args.keylen_max, num_lookups_keys, args.lookup_theta);
+      args.max_keys, args.keylen_max, num_lookups_keys, args.lookup_theta);
   }
   if (args.index_type == "gpu_blink_tree" && args.rep_scan > 0) {
     check_argument(args.keylen_max == 1);
@@ -413,7 +415,7 @@ int main(int argc, char** argv) {
   if (args.rep_mixed > 0) {
     universal::generate_mixed_keys(
       h_mix_types, h_mix_keys, h_mix_key_lengths, h_mix_values, h_keys, h_key_lengths, h_values,
-      args.num_prefill, args.keylen_max, args.num_mixed, args.mix_read_ratio, args.mix_presort, args.lookup_theta);
+      args.max_keys, args.keylen_max, args.num_mixed, args.mix_read_ratio, args.mix_presort, args.lookup_theta);
   }
 
   // only check space?
