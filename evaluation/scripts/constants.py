@@ -67,6 +67,8 @@ EXP_GPU_MASSTREE_OPTS = [
         OptionalConfigType.reuse_root: 0
     },
 ]
+EXP_GPU_MASSTREE_OPTS_CUMNUM = len(EXP_GPU_MASSTREE_OPTS)
+EXP_GPU_MASSTREE_OPTS_LABELS = [chr(i) for i in range(ord('A'), ord('A') + EXP_GPU_MASSTREE_OPTS_CUMNUM)]
 EXP_GPU_EXTENDHT_OPTS = [
     {
         ConfigType.keylen_prefix: 0,
@@ -93,6 +95,8 @@ EXP_GPU_EXTENDHT_OPTS = [
         OptionalConfigType.reuse_dirsize: 0
     },
 ]
+EXP_GPU_EXTENDHT_OPTS_CUMNUM = EXP_GPU_MASSTREE_OPTS_CUMNUM + len(EXP_GPU_EXTENDHT_OPTS)
+EXP_GPU_EXTENDHT_OPTS_LABELS = [chr(i) for i in range(ord('A') + EXP_GPU_MASSTREE_OPTS_CUMNUM, ord('A') + EXP_GPU_EXTENDHT_OPTS_CUMNUM)]
 
 EXP_MIX_READ_RATIOS = [
     0, 0.25, 0.5, 0.75, 1
@@ -111,3 +115,13 @@ EXP_MIX_OPTS = [
         ConfigType.mix_presort: 1,
     },
 ]
+
+EXP_MERGE_LEVELS = {
+    IndexType.gpu_masstree: [0, 3],
+    IndexType.gpu_extendhashtable: [0, 2],
+}
+EXP_MERGE_ERASE_RATIOS = [
+    0.25, 0.5, 0.75, 1
+]
+EXP_MERGE_ERASE_NUMS = [int(er * DEFAULT_MAXKEY_LONG) for er in EXP_MERGE_ERASE_RATIOS]
+

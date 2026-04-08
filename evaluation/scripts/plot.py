@@ -157,12 +157,10 @@ def suffix_plots(configs_and_results, plot_file_prefix):
                 for metric_type in ['avg', 'min', 'max']:
                     tputs[idx][metric_type].append(float(result[result_type.name][metric_type]))
     # plot
-    masstree_labels = [chr(i) for i in range(ord('A'), ord('A') + len(EXP_GPU_MASSTREE_OPTS))]
-    extendht_labels = [chr(i) for i in range(ord('A') + len(EXP_GPU_MASSTREE_OPTS), ord('A') + len(EXP_GPU_MASSTREE_OPTS) + len(EXP_GPU_EXTENDHT_OPTS))]
     for idx, index_type, result_type, opt_configs in plot_specs:
         fig, ax = plt.subplots(1, 1, figsize=(1.5, 1.2), constrained_layout=True)
         ydata = _convert_mops_to_bops(tputs[idx]['avg'])
-        xlabel = masstree_labels if index_type == IndexType.gpu_masstree else extendht_labels
+        xlabel = EXP_GPU_MASSTREE_OPTS_LABELS if index_type == IndexType.gpu_masstree else EXP_GPU_EXTENDHT_OPTS_LABELS
         xdata = range(len(xlabel))
         ax.bar(xdata, ydata)
         ax.set_ylim(bottom=0)
@@ -236,10 +234,92 @@ def tile_plots(configs_and_results, plot_file_prefix):
     plt.savefig(f'{plot_file_prefix}{len(index_types)}.pdf', bbox_inches='tight')
     plt.close(fig)
 
+def merge_plots(configs_and_results, plot_file_prefix):
+    tputs = {}
+    spaces = {}
+    index_types = [IndexType.gpu_masstree, IndexType.gpu_extendhashtable]
+    for index_type in index_types:
+        for merge_level in EXP_MERGE_LEVELS[index_type]:
+            tputs[(index_type, merge_level)] = {
+                'avg': [], 'min': [], 'max': []
+            }
+            spaces[(index_type, merge_level)] = []
+            for erase_num in EXP_MERGE_ERASE_NUMS:
+                desired_config = {
+                    ConfigType.index_type: index_type,
+                    ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+                    ConfigType.keylen_prefix: 0,
+                    ConfigType.keylen_min: 1,
+                    ConfigType.keylen_max: 1,
+                    ConfigType.num_insdel: erase_num,
+                    OptionalConfigType.merge_level: merge_level,
+                }
+                result = filter(configs_and_results, desired_config, ResultType.delete)
+                for metric_type in ['avg', 'min', 'max']:
+                    tputs[(index_type, merge_level)][metric_type].append(float(result['delete'][metric_type]))
+                result = filter(configs_and_results, desired_config, ResultType.space)
+                spaces[(index_type, merge_level)].append(float(result['space']))
+    # plot
+    labels = ['Naive', 'Merge']
+    styles = [
+        {"color": "#549A84", "marker": "*", "linestyle": "-"},
+        {"color": "#CE973E", "marker": "d", "linestyle": "-"},
+    ]
+    legend_handles = []
+    legend_labels = []
+    for idx, index_type in enumerate(index_types):
+        fig, ax = plt.subplots(1, 1, figsize=(2, 1), constrained_layout=True)
+        for merge_idx, merge_level in enumerate(EXP_MERGE_LEVELS[index_type]):
+            ydata = _convert_mops_to_bops(tputs[(index_type, merge_level)]['avg'])
+            xdata = EXP_MERGE_ERASE_RATIOS
+            line, = ax.plot(
+                xdata, ydata,
+                label=labels[merge_idx],
+                linewidth=2, markersize=6,
+                **styles[merge_idx]
+            )
+            if labels[merge_idx] not in legend_labels:
+                legend_handles.append(line)
+                legend_labels.append(labels[merge_idx])
+        _, ymax = ax.get_ylim()
+        ax.set_ylim(bottom=0, top=ymax * 1.1)
+        ax.set_xlim(left=0, right=1)
+        ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
+        ax.grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
+        plt.savefig(f'{plot_file_prefix}{idx}.pdf', bbox_inches='tight')
+        plt.close(fig)
+    for idx, index_type in enumerate(index_types):
+        fig, ax = plt.subplots(1, 1, figsize=(2, 1), constrained_layout=True)
+        default_space = spaces[(index_type, 0)][0]
+        for merge_idx, merge_level in enumerate(EXP_MERGE_LEVELS[index_type]):
+            ydata = [1.0] + [s / default_space for s in spaces[(index_type, merge_level)]]
+            xdata = [0.0] + EXP_MERGE_ERASE_RATIOS
+            line, = ax.plot(
+                xdata, ydata,
+                label=labels[merge_idx],
+                linewidth=2, markersize=6,
+                **styles[merge_idx]
+            )
+            if labels[merge_idx] not in legend_labels:
+                legend_handles.append(line)
+                legend_labels.append(labels[merge_idx])
+        ax.set_ylim(bottom=0, top=1.1)
+        ax.set_xlim(left=0, right=1)
+        ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
+        ax.grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
+        plt.savefig(f'{plot_file_prefix}{len(index_types) + idx}.pdf', bbox_inches='tight')
+        plt.close(fig)
+    fig, ax = plt.subplots(1, 1, figsize=(4, 0.3), constrained_layout=True)
+    ax.legend(legend_handles, legend_labels, loc='center', ncol=len(legend_labels))
+    ax.axis('off')
+    plt.savefig(f'{plot_file_prefix}{2 * len(index_types)}.pdf', bbox_inches='tight')
+    plt.close(fig)
+
 def generate_plots(args, configs_and_results):
     key_length_plots(configs_and_results, Path(args.result_dir) / 'plot_keylength')
     suffix_plots(configs_and_results, Path(args.result_dir) / 'plot_suffix')
     tile_plots(configs_and_results, Path(args.result_dir) / 'plot_tile')
+    merge_plots(configs_and_results, Path(args.result_dir) / 'plot_merge')
 
 if __name__ == "__main__":
     args = parse_args_for_plot()

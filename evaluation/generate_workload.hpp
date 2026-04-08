@@ -308,6 +308,7 @@ void generate_mixed_keys(std::vector<kernels::request_type>& mix_types,
   x(scan_count, uint32_t, 1) \
   /* insert delete test */ \
   x(num_insdel, uint32_t, 0) \
+  x(check_space_after_del, bool, false) \
   /* mixed test */ \
   x(num_mixed, uint32_t, 0) \
   x(mix_read_ratio, double, 0.5) \

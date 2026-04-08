@@ -77,20 +77,22 @@ def generate_configs():
             }
             for opt_config in EXP_MIX_OPTS:
                 configs.append({**common_config, **opt_config})
-    ## Delete merge
-    #for index_type in [IndexType.gpu_masstree, IndexType.gpu_extendhashtable]:
-    #    common_config = {
-    #        ConfigType.index_type: index_type,
-    #        ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
-    #        ConfigType.keylen_prefix: 0,
-    #        ConfigType.keylen_min: DEFAULT_KEY_LENGTH,
-    #        ConfigType.keylen_max: DEFAULT_KEY_LENGTH,
-    #        ConfigType.num_insdel: DEFAULT_BATCH_SIZE,
-    #        ConfigType.rep_insdel: NUM_REPEATS,
-    #    }
-    #    merge_levels = [0, 2] if index_type == IndexType.gpu_masstree else [0, 1]
-    #    for merge_level in merge_levels:
-    #        configs.append({**common_config, OptionalConfigType.merge_level: merge_level})
+    # Delete merge
+    for index_type in [IndexType.gpu_masstree, IndexType.gpu_extendhashtable]:
+        for erase_num in EXP_MERGE_ERASE_NUMS:
+            common_config = {
+                ConfigType.index_type: index_type,
+                ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+                ConfigType.keylen_prefix: 0,
+                ConfigType.keylen_min: 1,
+                ConfigType.keylen_max: 1,
+                ConfigType.num_insdel: erase_num,
+                ConfigType.rep_insdel: NUM_REPEATS,
+                ConfigType.check_space_after_del: 1,
+            }
+            merge_levels = EXP_MERGE_LEVELS[index_type]
+            for merge_level in merge_levels:
+                configs.append({**common_config, OptionalConfigType.merge_level: merge_level})
     return configs
 
 if __name__ == "__main__":

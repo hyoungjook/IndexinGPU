@@ -43,6 +43,7 @@ class ConfigType(Enum):
     rep_insdel = auto()
     rep_mixed = auto()
     index_type = auto()
+    check_space_after_del = auto()
 
 class OptionalConfigType(Enum):
     allocator_pool_ratio = auto()
@@ -69,6 +70,7 @@ class ResultType(Enum):
     lookup = auto()
     scan = auto()
     mixed = auto()
+    space = auto()
 
 EXECUTABLE_INFO = {
     BenchExecutable.robust: {
@@ -223,6 +225,14 @@ def run_one(args, config):
             result[result_type] = {'avg': avg_value,
                                    'min': min_value,
                                    'max': max_value}
+        elif 'simple_slab' in result_line:
+            assert ConfigType.check_space_after_del in config
+            result_tokens = result_line.split(' ')
+            for token in result_tokens:
+                if '%' in token:
+                    result['space'] = float(re.sub(r'[()%]', '', token))
+                    break
+            assert 'space' in result
     print(f'parsed_config: {parsed_config}, result: {result}')
     return parsed_config, result
 

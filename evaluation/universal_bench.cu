@@ -274,6 +274,9 @@ void run_bench(adapter_type& adapter,
         #endif
         delete_timer.record();
       }
+      if (r == 0 && args.check_space_after_del) {
+        adapter.print_stats();
+      }
       adapter.destroy();
       if (verbose) { std::cout << "insert/delete tested " << r + 1 << "/" << args.rep_insdel << std::endl; }
     }

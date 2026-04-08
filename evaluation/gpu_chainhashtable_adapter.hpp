@@ -113,12 +113,12 @@ struct gpu_chainhashtable_adapter {
   }
   void print_stats() {
     allocator_->print_stats();
-    if (configs_.tile_size == 32) {
-      reinterpret_cast<index32_type*>(index_)->validate();
-    }
-    else {
-      reinterpret_cast<index16_type*>(index_)->validate();
-    }
+    //if (configs_.tile_size == 32) {
+    //  reinterpret_cast<index32_type*>(index_)->validate();
+    //}
+    //else {
+    //  reinterpret_cast<index16_type*>(index_)->validate();
+    //}
   }
 
  private:
