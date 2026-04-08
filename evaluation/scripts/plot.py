@@ -29,13 +29,6 @@ INDEX_STYLES = {
     #IndexType_gpu_dycuckoo_with_lock: {"color": "#7993EF", "marker": "H", "linestyle": ":"},
 }
 
-def _table_size_label(value, _):
-    if value >= MILLION:
-        return f"{int(value / MILLION)}M"
-    if value >= 1000:
-        return f"{int(value / 1000)}K"
-    return str(int(value))
-
 def _convert_mops_to_bops(values):
         return [v / 1000 for v in values]
 
@@ -134,8 +127,119 @@ def key_length_plots(configs_and_results, plot_file_prefix):
     plt.savefig(f'{plot_file_prefix}{len(plot_spec)}.pdf', bbox_inches='tight')
     plt.close(fig)
 
+def suffix_plots(configs_and_results, plot_file_prefix):
+    tputs = {}
+    plot_specs = [
+        (0, IndexType.gpu_masstree, ResultType.lookup, EXP_GPU_MASSTREE_OPTS),
+        (1, IndexType.gpu_extendhashtable, ResultType.lookup, EXP_GPU_EXTENDHT_OPTS),
+        (2, IndexType.gpu_extendhashtable, ResultType.insert, EXP_GPU_EXTENDHT_OPTS),
+    ]
+    for idx, index_type, result_type, opt_configs in plot_specs:
+        tputs[idx] = {
+            'avg': [], 'min': [], 'max': []
+        }
+        desired_config = {
+            ConfigType.index_type: index_type,
+            ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+            ConfigType.keylen_min: DEFAULT_KEY_LENGTH,
+            ConfigType.keylen_max: DEFAULT_KEY_LENGTH,
+        }
+        if result_type == ResultType.lookup:
+            desired_config[ConfigType.num_lookups] = DEFAULT_BATCH_SIZE
+        else:
+            desired_config[ConfigType.num_insdel] = DEFAULT_BATCH_SIZE
+        for opt_config in opt_configs:
+            if opt_config is None:
+                for metric_type in ['avg', 'min', 'max']:
+                    tputs[idx][metric_type].append(0)
+            else:
+                result = filter(configs_and_results, {**desired_config, **opt_config}, result_type)
+                for metric_type in ['avg', 'min', 'max']:
+                    tputs[idx][metric_type].append(float(result[result_type.name][metric_type]))
+    # plot
+    masstree_labels = [chr(i) for i in range(ord('A'), ord('A') + len(EXP_GPU_MASSTREE_OPTS))]
+    extendht_labels = [chr(i) for i in range(ord('A') + len(EXP_GPU_MASSTREE_OPTS), ord('A') + len(EXP_GPU_MASSTREE_OPTS) + len(EXP_GPU_EXTENDHT_OPTS))]
+    for idx, index_type, result_type, opt_configs in plot_specs:
+        fig, ax = plt.subplots(1, 1, figsize=(1.5, 1.2), constrained_layout=True)
+        ydata = _convert_mops_to_bops(tputs[idx]['avg'])
+        xlabel = masstree_labels if index_type == IndexType.gpu_masstree else extendht_labels
+        xdata = range(len(xlabel))
+        ax.bar(xdata, ydata)
+        ax.set_ylim(bottom=0)
+        ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
+        ax.set_xticks(xdata)
+        ax.set_xticklabels(xlabel)
+        plt.savefig(f'{plot_file_prefix}{idx}.pdf', bbox_inches='tight')
+        plt.close(fig)
+
+def tile_plots(configs_and_results, plot_file_prefix):
+    tputs = {}
+    index_types = [IndexType.gpu_masstree, IndexType.gpu_extendhashtable]
+    for index_type in index_types:
+        for opt_idx, opt_config in enumerate(EXP_MIX_OPTS):
+            tputs[(index_type, opt_idx)] = {
+                'avg': [], 'min': [], 'max': []
+            }
+            for mix_read_ratio in EXP_MIX_READ_RATIOS:
+                desired_config = {
+                    ConfigType.index_type: index_type,
+                    ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+                    ConfigType.keylen_prefix: 0,
+                    ConfigType.keylen_min: DEFAULT_KEY_LENGTH,
+                    ConfigType.keylen_max: DEFAULT_KEY_LENGTH,
+                    ConfigType.num_mixed: DEFAULT_BATCH_SIZE,
+                    ConfigType.mix_read_ratio: mix_read_ratio,
+                }
+                result = filter(configs_and_results, {**desired_config, **opt_config}, ResultType.mixed)
+                for metric_type in ['avg', 'min', 'max']:
+                    tputs[(index_type, opt_idx)][metric_type].append(float(result['mixed'][metric_type]))
+    # plot
+    labels = ['Warp', 'HalfWarp', 'HalfWarp+PreSort']
+    styles = [
+        {"color": "#549A84", "marker": "*", "linestyle": "-"},
+        {"color": "#CE973E", "marker": "d", "linestyle": "-"},
+        {"color": "#7993EF", "marker": "H", "linestyle": "-"},
+    ]
+    legend_handles = []
+    legend_labels = []
+    for idx, index_type in enumerate(index_types):
+        fig, ax = plt.subplots(1, 1, figsize=(2, 1.2), constrained_layout=True)
+        for opt_idx in range(len(EXP_MIX_OPTS)):
+            ydata = _convert_mops_to_bops(tputs[(index_type, opt_idx)]['avg'])
+            xdata = EXP_MIX_READ_RATIOS
+            line, = ax.plot(
+                xdata, ydata,
+                label=labels[opt_idx],
+                linewidth=2, markersize=6,
+                **styles[opt_idx]
+            )
+            if labels[opt_idx] not in legend_labels:
+                legend_handles.append(line)
+                legend_labels.append(labels[opt_idx])
+        ax.set_ylim(bottom = 0)
+        ax.set_xlim(left=0, right=1)
+        _, ymax = ax.get_ylim()
+        ytick_candidates = [0.2, 0.4]
+        for ytick in ytick_candidates:
+            num_ticks = int(ymax // ytick)
+            if 2 <= num_ticks and num_ticks <= 3:
+                yticks = [ytick * x for x in range(num_ticks + 1)]
+                break
+        ax.set_yticks(yticks)
+        ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
+        ax.grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
+        plt.savefig(f'{plot_file_prefix}{idx}.pdf', bbox_inches='tight')
+        plt.close(fig)
+    fig, ax = plt.subplots(1, 1, figsize=(4, 0.3), constrained_layout=True)
+    ax.legend(legend_handles, legend_labels, loc='center', ncol=len(legend_labels))
+    ax.axis('off')
+    plt.savefig(f'{plot_file_prefix}{len(index_types)}.pdf', bbox_inches='tight')
+    plt.close(fig)
+
 def generate_plots(args, configs_and_results):
     key_length_plots(configs_and_results, Path(args.result_dir) / 'plot_keylength')
+    suffix_plots(configs_and_results, Path(args.result_dir) / 'plot_suffix')
+    tile_plots(configs_and_results, Path(args.result_dir) / 'plot_tile')
 
 if __name__ == "__main__":
     args = parse_args_for_plot()

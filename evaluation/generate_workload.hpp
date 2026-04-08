@@ -301,15 +301,15 @@ void generate_mixed_keys(std::vector<kernels::request_type>& mix_types,
   x(keylen_max, uint32_t, 1) \
   x(keylen_theta, double, 0.0) \
   /* lookup test */ \
-  x(num_lookups, uint32_t, 1000000) \
+  x(num_lookups, uint32_t, 0) \
   x(lookup_theta, double, 0.0) \
   /* scan test */ \
-  x(num_scans, uint32_t, 1000000) \
+  x(num_scans, uint32_t, 0) \
   x(scan_count, uint32_t, 1) \
   /* insert delete test */ \
-  x(num_insdel, uint32_t, 1000000) \
+  x(num_insdel, uint32_t, 0) \
   /* mixed test */ \
-  x(num_mixed, uint32_t, 1000000) \
+  x(num_mixed, uint32_t, 0) \
   x(mix_read_ratio, double, 0.5) \
   x(mix_presort, bool, true) \
   /* repeats */ \
