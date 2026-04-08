@@ -82,7 +82,7 @@ struct cpu_masstree_adapter {
     ti.rcu_stop();
   }
 
-  void insert(const key_slice_type* key, size_type key_length, value_type value) {
+  void insert(const key_slice_type* key, size_type key_length, value_type value, std::size_t tuple_id) {
     threadinfo& ti = current_threadinfo();
     cursor_type cursor(*table_, make_key(key, key_length));
     cursor.find_insert(ti);

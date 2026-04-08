@@ -80,7 +80,7 @@ struct cpu_libcuckoo_adapter {
   }
   void thread_enter() noexcept {}
   void thread_exit() noexcept {}
-  void insert(const key_slice_type* key, size_type key_length, value_type value) {
+  void insert(const key_slice_type* key, size_type key_length, value_type value, std::size_t tuple_id) {
     index_->insert_or_assign(key_type{key, key_length}, value);
   }
   void erase(const key_slice_type* key, size_type key_length) {

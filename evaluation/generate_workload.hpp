@@ -242,6 +242,7 @@ void generate_mixed_keys(std::vector<kernels::request_type>& mix_types,
                          std::vector<key_slice_type>& mix_keys,
                          std::vector<size_type>& mix_key_lengths,
                          std::vector<value_type>& mix_values,
+                         std::vector<std::size_t>& mix_key_tuple_ids,
                          std::vector<key_slice_type>& keys,
                          std::vector<size_type>& key_lengths,
                          std::vector<value_type>& values,
@@ -264,6 +265,7 @@ void generate_mixed_keys(std::vector<kernels::request_type>& mix_types,
   mix_keys = std::vector<key_slice_type>(num_mixed * keylen_max);
   mix_key_lengths = std::vector<size_type>(num_mixed);
   mix_values = std::vector<value_type>(num_mixed);
+  mix_key_tuple_ids = std::vector<std::size_t>(num_mixed);
   std::vector<key_slice_type> tmp_lookup_keys;
   std::vector<size_type> tmp_lookup_key_lengths;
   if (num_lookups > 0) {
@@ -282,7 +284,8 @@ void generate_mixed_keys(std::vector<kernels::request_type>& mix_types,
       auto insert_idx = num_keys - 1 - (idx - num_lookups);
       mix_key_lengths[dst_idx] = key_lengths[insert_idx];
       memcpy(&mix_keys[dst_idx * keylen_max], &keys[insert_idx * keylen_max], sizeof(key_slice_type) * keylen_max);
-      mix_values[dst_idx] = values[dst_idx];
+      mix_values[dst_idx] = values[insert_idx];
+      mix_key_tuple_ids[dst_idx] = insert_idx;
     }
     else {
       mix_types[dst_idx] = kernels::request_type_erase;

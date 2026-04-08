@@ -59,9 +59,9 @@ struct cpu_art_adapter {
     state.threadinfo.reset();
     state.tree = nullptr;
   }
-  void insert(const key_slice_type* key, size_type key_length, value_type value) {
+  void insert(const key_slice_type* key, size_type key_length, value_type value, std::size_t tuple_id) {
     (void)value;
-    auto tid = (static_cast<TID>(key - keys_) / configs_.keylen_max) + 1;
+    auto tid = static_cast<TID>(tuple_id) + 1;
     Key art_key = make_key(key, key_length);
     tree_->insert(art_key, tid, current_threadinfo());
   }

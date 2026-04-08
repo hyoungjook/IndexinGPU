@@ -127,7 +127,7 @@ void prefill(adapter_type& adapter,
   }
   #else
   helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
-      adapter.insert(&h_keys[task_idx * keylen_max], h_key_lengths[task_idx], h_values[task_idx]);
+      adapter.insert(&h_keys[task_idx * keylen_max], h_key_lengths[task_idx], h_values[task_idx], task_idx);
     }, num_keys,
     [&]() { adapter.thread_enter(); }, [&]() { adapter.thread_exit(); });
   #endif
@@ -156,6 +156,7 @@ void run_bench(adapter_type& adapter,
                std::vector<key_slice_type> h_mix_keys,
                std::vector<size_type> h_mix_key_lengths,
                std::vector<value_type> h_mix_values,
+               std::vector<std::size_t> h_mix_key_tuple_ids,
                args_type& args,
                std::size_t result_buffer_size,
                bool verbose) {
@@ -239,9 +240,11 @@ void run_bench(adapter_type& adapter,
         adapter.insert(d_insert_keys.data().get(), args.keylen_max, d_insert_key_lengths.data().get(), d_insert_values.data().get(), args.num_insdel);
         #else
         helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
-            adapter.insert(&h_keys[(num_prefill + task_idx) * args.keylen_max],
-                           h_key_lengths[num_prefill + task_idx],
-                           h_values[num_prefill + task_idx]);
+            auto tuple_id = num_prefill + task_idx;
+            adapter.insert(&h_keys[tuple_id * args.keylen_max],
+                           h_key_lengths[tuple_id],
+                           h_values[tuple_id],
+                           tuple_id);
           }, args.num_insdel,
           [&]() { adapter.thread_enter(); }, [&]() { adapter.thread_exit(); });
         #endif
@@ -310,7 +313,7 @@ void run_bench(adapter_type& adapter,
               h_mix_values[task_idx] = adapter.find(&h_mix_keys[task_idx * args.keylen_max], h_mix_key_lengths[task_idx]);
             }
             else if (h_mix_types[task_idx] == kernels::request_type_insert) {
-              adapter.insert(&h_mix_keys[task_idx * args.keylen_max], h_mix_key_lengths[task_idx], h_values[task_idx]);
+              adapter.insert(&h_mix_keys[task_idx * args.keylen_max], h_mix_key_lengths[task_idx], h_mix_values[task_idx], h_mix_key_tuple_ids[task_idx]);
             }
             else {
               adapter.erase(&h_mix_keys[task_idx * args.keylen_max], h_mix_key_lengths[task_idx]);
@@ -387,6 +390,7 @@ int main(int argc, char** argv) {
   std::vector<key_slice_type> h_mix_keys;
   std::vector<size_type> h_mix_key_lengths;
   std::vector<value_type> h_mix_values;
+  std::vector<std::size_t> h_mix_key_tuple_ids;
   // 1. generate keys: max_keys
   universal::generate_key_values(
     h_keys, h_key_lengths, h_values,
@@ -417,7 +421,7 @@ int main(int argc, char** argv) {
   // 4. generate mixed keys
   if (args.rep_mixed > 0) {
     universal::generate_mixed_keys(
-      h_mix_types, h_mix_keys, h_mix_key_lengths, h_mix_values, h_keys, h_key_lengths, h_values,
+      h_mix_types, h_mix_keys, h_mix_key_lengths, h_mix_values, h_mix_key_tuple_ids, h_keys, h_key_lengths, h_values,
       args.max_keys, args.keylen_max, args.num_mixed, args.mix_read_ratio, args.mix_presort, args.lookup_theta);
   }
 
@@ -447,7 +451,7 @@ int main(int argc, char** argv) {
   if (args.index_type == #index) { \
     universal::run_bench(index##_adapter_, \
       h_keys, h_key_lengths, h_values, h_lookup_keys, h_lookup_key_lengths, h_scan_upper_keys_if_btree, \
-      h_mix_types, h_mix_keys, h_mix_key_lengths, h_mix_values, args, result_buffer_size, verbose); \
+      h_mix_types, h_mix_keys, h_mix_key_lengths, h_mix_values, h_mix_key_tuple_ids, args, result_buffer_size, verbose); \
   }
   FORALL_INDEXES(ADAPTER_RUN_BENCH)
   #undef ADAPTER_RUN_BENCH
