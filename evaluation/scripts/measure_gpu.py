@@ -3,7 +3,6 @@ from constants import *
 
 def generate_configs():
     configs = []
-    # different key lengths
     for key_length in EXP_KEY_LENGTHS:
         for index_type in INDEX_TYPES_ROBUST + INDEX_TYPES_GPU_BASELINE:
             if key_length > 1 and index_type not in IS_INDEX_TYPE_SUPPORT_LONGKEY:

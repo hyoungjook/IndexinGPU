@@ -1,8 +1,7 @@
 from evaluate import *
 from constants import *
-import matplotlib.patches as mpatch
 import matplotlib.pyplot as plt
-from matplotlib.ticker import FuncFormatter
+import matplotlib.ticker as ticker
 
 INDEX_LABELS = {
     IndexType.gpu_masstree: "GPUMasstree",
@@ -10,7 +9,7 @@ INDEX_LABELS = {
     IndexType.gpu_cuckoohashtable: "GPUCuckooHT",
     IndexType.gpu_extendhashtable: "GPUExtendHT",
     IndexType.gpu_blink_tree: "GPUBtree",
-    IndexType.gpu_dycuckoo: "GPUDyCuckoo",
+    IndexType.gpu_dycuckoo: "DyCuckoo",
     IndexType.cpu_art: "(CPU)ART",
     IndexType.cpu_masstree: "(CPU)Masstree",
     IndexType.cpu_libcuckoo: "(CPU)Libcuckoo",
@@ -40,7 +39,7 @@ def _table_size_label(value, _):
 def _convert_mops_to_bops(values):
         return [v / 1000 for v in values]
 
-def key_length_plots(configs_and_results, plot_file):
+def key_length_plots(configs_and_results, plot_file_prefix):
     tputs = {}
     for index_type in INDEX_TYPES_ROBUST + INDEX_TYPES_GPU_BASELINE:
         tputs[index_type] = {}
@@ -82,11 +81,21 @@ def key_length_plots(configs_and_results, plot_file):
     key_lengths_bytes = [4 * l for l in EXP_KEY_LENGTHS]
     legend_handles = []
     legend_labels = []
-    fig, axes = plt.subplots(2, 5, figsize=(12, 4), constrained_layout=True)
-    index_types = [i for i in INDEX_TYPES_ROBUST + INDEX_TYPES_GPU_BASELINE if i in IS_INDEX_TYPE_ORDERED]
-    result_types = [ResultType.lookup, ResultType.insert, ResultType.delete, ResultType.mixed, ResultType.scan]
-    for i in range(len(result_types)):
-        result_type = result_types[i]
+    tree_indexes = [i for i in INDEX_TYPES_ROBUST + INDEX_TYPES_GPU_BASELINE if i in IS_INDEX_TYPE_ORDERED]
+    hashtable_indexes = [i for i in INDEX_TYPES_ROBUST + INDEX_TYPES_GPU_BASELINE if i not in IS_INDEX_TYPE_ORDERED]
+    plot_spec = [
+        (0, tree_indexes, ResultType.lookup),
+        (1, tree_indexes, ResultType.insert),
+        (2, tree_indexes, ResultType.delete),
+        (3, tree_indexes, ResultType.mixed),
+        (4, tree_indexes, ResultType.scan),
+        (5, hashtable_indexes, ResultType.lookup),
+        (6, hashtable_indexes, ResultType.insert),
+        (7, hashtable_indexes, ResultType.delete),
+        (8, hashtable_indexes, ResultType.mixed),
+    ]
+    for idx, index_types, result_type, in plot_spec:
+        fig, ax = plt.subplots(1, 1, figsize=(2, 1.5), constrained_layout=True)
         for index_type in index_types:
             if result_type not in tputs[index_type]:
                 continue
@@ -95,7 +104,7 @@ def key_length_plots(configs_and_results, plot_file):
                 ydata.append(-1)
             xdata = key_lengths_bytes[0:len(ydata)]
             index_label = INDEX_LABELS[index_type]
-            line, = axes[0, i].plot(
+            line, = ax.plot(
                 xdata, ydata,
                 label=index_label,
                 linewidth=2, markersize=6,
@@ -104,40 +113,29 @@ def key_length_plots(configs_and_results, plot_file):
             if index_label not in legend_labels:
                 legend_handles.append(line)
                 legend_labels.append(index_label)
-        axes[0, i].set_ylim(bottom = 0)
-        axes[0, i].set_title(result_type.name)
-        axes[0, i].grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
-    axes[0, 0].set_ylabel('Throughput (Bop/s)')
-    index_types = [i for i in INDEX_TYPES_ROBUST + INDEX_TYPES_GPU_BASELINE if i not in IS_INDEX_TYPE_ORDERED]
-    result_types = [ResultType.lookup, ResultType.insert, ResultType.delete, ResultType.mixed]
-    for i in range(len(result_types)):
-        result_type = result_types[i]
-        for index_type in index_types:
-            if result_type not in tputs[index_type]:
-                continue
-            ydata = _convert_mops_to_bops(tputs[index_type][result_type]['avg'])
-            xdata = key_lengths_bytes[0:len(ydata)]
-            index_label = INDEX_LABELS[index_type]
-            line, = axes[1, i].plot(
-                xdata, ydata,
-                label=index_label,
-                linewidth=2, markersize=6,
-                **INDEX_STYLES[index_type]
-            )
-            if index_label not in legend_labels:
-                legend_handles.append(line)
-                legend_labels.append(index_label)
-        axes[1, i].set_ylim(bottom = 0)
-        axes[1, i].set_xlabel('Key Length (B)')
-        axes[1, i].grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
-            
-    axes[1, 0].set_ylabel('Throughput (Bop/s)')
-    fig.legend(legend_handles, legend_labels, loc='lower center', ncol=7, bbox_to_anchor=(0.5, 1))
-    plt.savefig(plot_file, bbox_inches='tight')
+        ax.set_ylim(bottom = 0)
+        ax.set_xlim(left = 0)
+        _, ymax = ax.get_ylim()
+        ytick_candidates = [0.2, 0.5, 1.0]
+        for ytick in ytick_candidates:
+            num_ticks = int(ymax // ytick)
+            if 2 <= num_ticks and num_ticks <= 4:
+                yticks = [ytick * x for x in range(num_ticks + 1)]
+                break
+        ax.set_yticks(yticks)
+        ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
+        ax.set_xticks([0, 20, 40, 60])
+        ax.grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
+        plt.savefig(f'{plot_file_prefix}{idx}.pdf', bbox_inches='tight')
+        plt.close(fig)
+    fig, ax = plt.subplots(1, 1, figsize=(2, 1.5), constrained_layout=True)
+    ax.legend(legend_handles, legend_labels, loc='center', ncol = 1)
+    ax.axis('off')
+    plt.savefig(f'{plot_file_prefix}{len(plot_spec)}.pdf', bbox_inches='tight')
     plt.close(fig)
 
 def generate_plots(args, configs_and_results):
-    key_length_plots(configs_and_results, Path(args.result_dir) / 'plot_keylengths.pdf')
+    key_length_plots(configs_and_results, Path(args.result_dir) / 'plot_keylength')
 
 if __name__ == "__main__":
     args = parse_args_for_plot()

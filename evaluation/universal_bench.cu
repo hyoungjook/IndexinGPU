@@ -432,6 +432,14 @@ int main(int argc, char** argv) {
 
   // run benchmark
   if (verbose) { std::cout << "Running benchmark..." << std::endl; }
+  #define ADAPTER_REGISTER_DATASET(index) \
+  if (args.index_type == #index) { \
+    index##_adapter_.register_dataset(h_keys.data(), h_key_lengths.data(), h_values.data()); \
+  }
+  #if defined(UNIVERSAL_BENCH_WITH_CPU_BASELINE)
+  FORALL_INDEXES(ADAPTER_REGISTER_DATASET)
+  #endif
+  #undef ADAPTER_REGISTER_DATASET
   #define ADAPTER_RUN_BENCH(index) \
   if (args.index_type == #index) { \
     universal::run_bench(index##_adapter_, \
