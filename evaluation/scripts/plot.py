@@ -1,5 +1,8 @@
 from evaluate import *
 from constants import *
+import matplotlib.legend_handler as mlegh
+import matplotlib.lines as mline
+import matplotlib.patches as mpatch
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
@@ -28,6 +31,23 @@ INDEX_STYLES = {
 
 def _convert_mops_to_bops(values):
         return [v / 1000 for v in values]
+
+def _make_fixed_plot_area_figure(plot_width, plot_height, *, include_xlabel=False, include_ylabel=False):
+    # Keep the drawable axes area fixed and grow the outer figure only when labels are present.
+    left_margin = 0.56 if include_ylabel else 0.32
+    bottom_margin = 0.42 if include_xlabel else 0.25
+    right_margin = 0.08
+    top_margin = 0.06
+    fig_width = left_margin + plot_width + right_margin
+    fig_height = bottom_margin + plot_height + top_margin
+    fig = plt.figure(figsize=(fig_width, fig_height))
+    ax = fig.add_axes([
+        left_margin / fig_width,
+        bottom_margin / fig_height,
+        plot_width / fig_width,
+        plot_height / fig_height,
+    ])
+    return fig, ax
 
 def key_length_plots(configs_and_results, plot_file_prefix):
     tputs = {}
@@ -75,32 +95,43 @@ def key_length_plots(configs_and_results, plot_file_prefix):
     tree_indexes = [i for i in all_index_types if i in IS_INDEX_TYPE_ORDERED]
     hashtable_indexes = [i for i in all_index_types if i not in IS_INDEX_TYPE_ORDERED]
     plot_spec = [
-        (0, tree_indexes, ResultType.lookup),
-        (1, tree_indexes, ResultType.insert),
-        (2, tree_indexes, ResultType.delete),
-        (3, tree_indexes, ResultType.mixed),
-        (4, tree_indexes, ResultType.scan),
-        (5, hashtable_indexes, ResultType.lookup),
-        (6, hashtable_indexes, ResultType.insert),
-        (7, hashtable_indexes, ResultType.delete),
-        (8, hashtable_indexes, ResultType.mixed),
+        (0, tree_indexes, ResultType.lookup, False, True),
+        (1, tree_indexes, ResultType.insert, False, False),
+        (2, tree_indexes, ResultType.delete, False, False),
+        (3, tree_indexes, ResultType.mixed, False, False),
+        (4, tree_indexes, ResultType.scan, False, False),
+        (5, hashtable_indexes, ResultType.lookup, True, True),
+        (6, hashtable_indexes, ResultType.insert, True, False),
+        (7, hashtable_indexes, ResultType.delete, True, False),
+        (8, hashtable_indexes, ResultType.mixed, True, False),
     ]
-    for idx, index_types, result_type, in plot_spec:
-        fig, ax = plt.subplots(1, 1, figsize=(2, 1.5), constrained_layout=True)
+    plot_names = [
+        'tree-lookup', 'tree-insert', 'tree-delete', 'tree-mixed', 'tree-scan',
+        'ht-lookup', 'ht-insert', 'ht-delete', 'ht-mixed'
+    ]
+    for idx, index_types, result_type, set_xlabel, set_ylabel in plot_spec:
+        fig, ax = _make_fixed_plot_area_figure(1.7, 1.3,
+            include_xlabel=set_xlabel,
+            include_ylabel=set_ylabel,
+        )
         for index_type in index_types:
             if result_type not in tputs[index_type]:
                 continue
             ydata = _convert_mops_to_bops(tputs[index_type][result_type]['avg'])
-            if len(ydata) < len(key_lengths_bytes):
-                ydata.append(-1)
+            markevery = range(len(ydata))
+            if len(markevery) == 1:
+                ydata.append(ydata[0] * 0.7)
             xdata = key_lengths_bytes[0:len(ydata)]
             index_label = INDEX_LABELS[index_type]
             line, = ax.plot(
                 xdata, ydata,
                 label=index_label,
+                markevery=markevery,
                 linewidth=2, markersize=6,
                 **INDEX_STYLES[index_type]
             )
+            if len(markevery) == 1:
+                ax.text(xdata[1], ydata[1], "X", fontsize=10, color='red', fontweight='bold', ha='center', va='center')
             if index_label not in legend_labels:
                 legend_handles.append(line)
                 legend_labels.append(index_label)
@@ -117,12 +148,16 @@ def key_length_plots(configs_and_results, plot_file_prefix):
         ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
         ax.set_xticks([0, 20, 40, 60])
         ax.grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
-        plt.savefig(f'{plot_file_prefix}{idx}.pdf', bbox_inches='tight')
+        if set_xlabel:
+            ax.set_xlabel('Key Length (B)')
+        if set_ylabel:
+            ax.set_ylabel(r'Throughput ($10^9$/s)')
+        fig.savefig(f'{plot_file_prefix}-{plot_names[idx]}.pdf', bbox_inches='tight')
         plt.close(fig)
-    fig, ax = plt.subplots(1, 1, figsize=(10, 0.3), constrained_layout=True)
-    ax.legend(legend_handles, legend_labels, loc='center', ncol=len(legend_labels))
+    fig, ax = plt.subplots(1, 1, figsize=(2.3, 2), constrained_layout=True)
+    ax.legend(legend_handles, legend_labels, loc='center', ncol=1)
     ax.axis('off')
-    plt.savefig(f'{plot_file_prefix}{len(plot_spec)}.pdf', bbox_inches='tight')
+    plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
     plt.close(fig)
 
 def suffix_plots(configs_and_results, plot_file_prefix):
@@ -131,6 +166,9 @@ def suffix_plots(configs_and_results, plot_file_prefix):
         (0, IndexType.gpu_masstree, ResultType.lookup, EXP_GPU_MASSTREE_OPTS),
         (1, IndexType.gpu_extendhashtable, ResultType.lookup, EXP_GPU_EXTENDHT_OPTS),
         (2, IndexType.gpu_extendhashtable, ResultType.insert, EXP_GPU_EXTENDHT_OPTS),
+    ]
+    plot_names = [
+        'mt-lookup', 'et-lookup', 'et-insert'
     ]
     for idx, index_type, result_type, opt_configs in plot_specs:
         tputs[idx] = {
@@ -165,12 +203,13 @@ def suffix_plots(configs_and_results, plot_file_prefix):
         ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
         ax.set_xticks(xdata)
         ax.set_xticklabels(xlabel)
-        plt.savefig(f'{plot_file_prefix}{idx}.pdf', bbox_inches='tight')
+        plt.savefig(f'{plot_file_prefix}-{plot_names[idx]}.pdf', bbox_inches='tight')
         plt.close(fig)
 
 def tile_plots(configs_and_results, plot_file_prefix):
     tputs = {}
     index_types = [IndexType.gpu_masstree, IndexType.gpu_extendhashtable]
+    plot_names = ['mt', 'et']
     for index_type in index_types:
         for opt_idx, opt_config in enumerate(EXP_MIX_OPTS):
             tputs[(index_type, opt_idx)] = {
@@ -190,7 +229,7 @@ def tile_plots(configs_and_results, plot_file_prefix):
                 for metric_type in ['avg', 'min', 'max']:
                     tputs[(index_type, opt_idx)][metric_type].append(float(result['mixed'][metric_type]))
     # plot
-    labels = ['Warp', 'HalfWarp', 'HalfWarp+PreSort']
+    labels = ['FullWarp', 'HalfWarp', 'HalfWarp+PreSort']
     styles = [
         {"color": "#549A84", "marker": "*", "linestyle": "-"},
         {"color": "#CE973E", "marker": "d", "linestyle": "-"},
@@ -199,7 +238,10 @@ def tile_plots(configs_and_results, plot_file_prefix):
     legend_handles = []
     legend_labels = []
     for idx, index_type in enumerate(index_types):
-        fig, ax = plt.subplots(1, 1, figsize=(2, 1.2), constrained_layout=True)
+        fig, ax = _make_fixed_plot_area_figure(1.7, 1.3,
+            include_xlabel=True,
+            include_ylabel=(idx == 0)
+        )
         for opt_idx in range(len(EXP_MIX_OPTS)):
             ydata = _convert_mops_to_bops(tputs[(index_type, opt_idx)]['avg'])
             xdata = EXP_MIX_READ_RATIOS
@@ -223,19 +265,23 @@ def tile_plots(configs_and_results, plot_file_prefix):
                 break
         ax.set_yticks(yticks)
         ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
+        ax.set_xlabel('Lookup Ratio')
+        if idx == 0:
+            ax.set_ylabel(r'Throughput ($10^9$/s)')
         ax.grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
-        plt.savefig(f'{plot_file_prefix}{idx}.pdf', bbox_inches='tight')
+        plt.savefig(f'{plot_file_prefix}-{plot_names[idx]}.pdf', bbox_inches='tight')
         plt.close(fig)
     fig, ax = plt.subplots(1, 1, figsize=(4, 0.3), constrained_layout=True)
     ax.legend(legend_handles, legend_labels, loc='center', ncol=len(legend_labels))
     ax.axis('off')
-    plt.savefig(f'{plot_file_prefix}{len(index_types)}.pdf', bbox_inches='tight')
+    plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
     plt.close(fig)
 
 def merge_plots(configs_and_results, plot_file_prefix):
     tputs = {}
     spaces = {}
     index_types = [IndexType.gpu_masstree, IndexType.gpu_extendhashtable]
+    plot_names = ['mt', 'et']
     for index_type in index_types:
         for merge_level in EXP_MERGE_LEVELS[index_type]:
             tputs[(index_type, merge_level)] = {
@@ -257,60 +303,90 @@ def merge_plots(configs_and_results, plot_file_prefix):
                     tputs[(index_type, merge_level)][metric_type].append(float(result['delete'][metric_type]))
                 result = filter(configs_and_results, desired_config, ResultType.space)
                 spaces[(index_type, merge_level)].append(float(result['space']))
+
+    def _set_yaxis_ticks(ax, ymax, ytick_candidates):
+        top = ymax
+        ax.set_ylim(bottom=0, top=top)
+        for ytick in ytick_candidates:
+            num_ticks = int(top // ytick)
+            if 2 <= num_ticks <= 4:
+                ax.set_yticks([ytick * x for x in range(num_ticks + 1)])
+                return
+
     # plot
     labels = ['Naive', 'Merge']
     styles = [
         {"color": "#549A84", "marker": "*", "linestyle": "-"},
         {"color": "#CE973E", "marker": "d", "linestyle": "-"},
     ]
-    legend_handles = []
-    legend_labels = []
+    x_line = EXP_MERGE_ERASE_RATIOS
+    x_space = [0.0] + EXP_MERGE_ERASE_RATIOS
     for idx, index_type in enumerate(index_types):
-        fig, ax = plt.subplots(1, 1, figsize=(2, 1), constrained_layout=True)
-        for merge_idx, merge_level in enumerate(EXP_MERGE_LEVELS[index_type]):
-            ydata = _convert_mops_to_bops(tputs[(index_type, merge_level)]['avg'])
-            xdata = EXP_MERGE_ERASE_RATIOS
-            line, = ax.plot(
-                xdata, ydata,
-                label=labels[merge_idx],
-                linewidth=2, markersize=6,
-                **styles[merge_idx]
-            )
-            if labels[merge_idx] not in legend_labels:
-                legend_handles.append(line)
-                legend_labels.append(labels[merge_idx])
-        _, ymax = ax.get_ylim()
-        ax.set_ylim(bottom=0, top=ymax * 1.1)
-        ax.set_xlim(left=0, right=1)
-        ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
-        ax.grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
-        plt.savefig(f'{plot_file_prefix}{idx}.pdf', bbox_inches='tight')
-        plt.close(fig)
-    for idx, index_type in enumerate(index_types):
-        fig, ax = plt.subplots(1, 1, figsize=(2, 1), constrained_layout=True)
+        fig, ax_tput = _make_fixed_plot_area_figure(1.7, 1.3,
+            include_xlabel=True,
+            include_ylabel=True)
+        ax_space = ax_tput.twinx()
+        ax_tput.set_zorder(2)
+        ax_space.set_zorder(1)
+        ax_tput.patch.set_alpha(0)
+
         default_space = spaces[(index_type, 0)][0]
+        max_tput = 0.0
+        max_space = 1.0
         for merge_idx, merge_level in enumerate(EXP_MERGE_LEVELS[index_type]):
-            ydata = [1.0] + [s / default_space for s in spaces[(index_type, merge_level)]]
-            xdata = [0.0] + EXP_MERGE_ERASE_RATIOS
-            line, = ax.plot(
-                xdata, ydata,
+            tput_ydata = _convert_mops_to_bops(tputs[(index_type, merge_level)]['avg'])
+            line, = ax_tput.plot(
+                x_line, tput_ydata,
                 label=labels[merge_idx],
                 linewidth=2, markersize=6,
                 **styles[merge_idx]
             )
-            if labels[merge_idx] not in legend_labels:
-                legend_handles.append(line)
-                legend_labels.append(labels[merge_idx])
-        ax.set_ylim(bottom=0, top=1.1)
-        ax.set_xlim(left=0, right=1)
-        ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
-        ax.grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
-        plt.savefig(f'{plot_file_prefix}{len(index_types) + idx}.pdf', bbox_inches='tight')
+            space_ydata = [1.0] + [s / default_space for s in spaces[(index_type, merge_level)]]
+            ax_space.fill_between(
+                x_space,
+                space_ydata,
+                color=styles[merge_idx]["color"],
+                alpha=0.35,
+            )
+            max_tput = max(max_tput, max(tput_ydata))
+            max_space = max(max_space, max(space_ydata))
+
+        ax_tput.set_xlim(left=0, right=1)
+        ax_tput.set_xticks(x_space)
+        ax_tput.xaxis.set_major_formatter(ticker.FormatStrFormatter('%.2g'))
+        _set_yaxis_ticks(ax_tput, max_tput * 1.2, [0.2, 0.5, 1.0])
+        _set_yaxis_ticks(ax_space, max_space, [0.2, 0.25, 0.5])
+        ax_tput.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
+        ax_space.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
+        ax_tput.set_xlabel('Erase Ratio')
+        if idx == 0:
+            ax_tput.set_ylabel(r'Throughput ($10^9$/s)')
+        else:
+            ax_space.set_ylabel('Relative Space')
+        ax_tput.grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
+        plt.savefig(f'{plot_file_prefix}-{plot_names[idx]}.pdf', bbox_inches='tight')
         plt.close(fig)
-    fig, ax = plt.subplots(1, 1, figsize=(4, 0.3), constrained_layout=True)
-    ax.legend(legend_handles, legend_labels, loc='center', ncol=len(legend_labels))
+
+    legend_handles = [
+        (
+            mline.Line2D([], [], linewidth=2, markersize=6, **styles[0]),
+            mpatch.Patch(facecolor=styles[0]["color"], edgecolor='none', alpha=0.35),
+        ),
+        (
+            mline.Line2D([], [], linewidth=2, markersize=6, **styles[1]),
+            mpatch.Patch(facecolor=styles[1]["color"], edgecolor='none', alpha=0.35),
+        ),
+    ]
+    fig, ax = plt.subplots(1, 1, figsize=(4.6, 0.6), constrained_layout=True)
+    ax.legend(
+        legend_handles,
+        labels,
+        loc='center',
+        ncol=2,
+        handler_map={tuple: mlegh.HandlerTuple(ndivide=None)},
+    )
     ax.axis('off')
-    plt.savefig(f'{plot_file_prefix}{2 * len(index_types)}.pdf', bbox_inches='tight')
+    plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
     plt.close(fig)
 
 def generate_plots(args, configs_and_results):
