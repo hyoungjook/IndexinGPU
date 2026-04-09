@@ -127,9 +127,10 @@ void prefill(adapter_type& adapter,
   }
   #else
   helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
-      adapter.insert(&h_keys[task_idx * keylen_max], h_key_lengths[task_idx], h_values[task_idx], task_idx);
+      adapter.insert(&h_keys[task_idx * keylen_max], h_key_lengths[task_idx], h_values[task_idx], task_idx, thread_id);
     }, num_keys,
-    [&]() { adapter.thread_enter(); }, [&]() { adapter.thread_exit(); });
+    [&](unsigned thread_id) { adapter.thread_enter(thread_id); },
+    [&](unsigned thread_id) { adapter.thread_exit(thread_id); });
   #endif
 }
 
@@ -178,9 +179,10 @@ void run_bench(adapter_type& adapter,
       adapter.find(d_lookup_keys.data().get(), args.keylen_max, d_lookup_key_lengths.data().get(), d_results.data().get(), args.num_lookups);
       #else
       helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
-          h_results[task_idx] = adapter.find(&h_lookup_keys[task_idx * args.keylen_max], h_lookup_key_lengths[task_idx]);
+          h_results[task_idx] = adapter.find(&h_lookup_keys[task_idx * args.keylen_max], h_lookup_key_lengths[task_idx], thread_id);
         }, args.num_lookups,
-        [&]() { adapter.thread_enter(); }, [&]() { adapter.thread_exit(); });
+        [&](unsigned thread_id) { adapter.thread_enter(thread_id); },
+        [&](unsigned thread_id) { adapter.thread_exit(thread_id); });
       #endif
       lookup_timer.stop();
       #if !defined(NOGPU)
@@ -196,9 +198,10 @@ void run_bench(adapter_type& adapter,
         adapter.scan(d_lookup_keys.data().get(), args.keylen_max, d_lookup_key_lengths.data().get(), args.scan_count, d_results.data().get(), args.num_scans, d_scan_upper_keys_if_btree.data().get());
         #else
         helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
-            adapter.scan(&h_lookup_keys[task_idx * args.keylen_max], h_lookup_key_lengths[task_idx], args.scan_count, &h_results[task_idx * args.scan_count]);
+            adapter.scan(&h_lookup_keys[task_idx * args.keylen_max], h_lookup_key_lengths[task_idx], args.scan_count, &h_results[task_idx * args.scan_count], thread_id);
           }, args.num_scans,
-          [&]() { adapter.thread_enter(); }, [&]() { adapter.thread_exit(); });
+          [&](unsigned thread_id) { adapter.thread_enter(thread_id); },
+          [&](unsigned thread_id) { adapter.thread_exit(thread_id); });
         #endif
         scan_timer.stop();
         #if !defined(NOGPU)
@@ -244,9 +247,11 @@ void run_bench(adapter_type& adapter,
             adapter.insert(&h_keys[tuple_id * args.keylen_max],
                            h_key_lengths[tuple_id],
                            h_values[tuple_id],
-                           tuple_id);
+                           tuple_id,
+                           thread_id);
           }, args.num_insdel,
-          [&]() { adapter.thread_enter(); }, [&]() { adapter.thread_exit(); });
+          [&](unsigned thread_id) { adapter.thread_enter(thread_id); },
+          [&](unsigned thread_id) { adapter.thread_exit(thread_id); });
         #endif
         insert_timer.stop();
         #if !defined(NOGPU)
@@ -267,9 +272,11 @@ void run_bench(adapter_type& adapter,
         #else
         helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
             adapter.erase(&h_keys[task_idx * args.keylen_max],
-                          h_key_lengths[task_idx]);
+                          h_key_lengths[task_idx],
+                          thread_id);
           }, args.num_insdel,
-          [&]() { adapter.thread_enter(); }, [&]() { adapter.thread_exit(); });
+          [&](unsigned thread_id) { adapter.thread_enter(thread_id); },
+          [&](unsigned thread_id) { adapter.thread_exit(thread_id); });
         #endif
         delete_timer.stop();
         #if !defined(NOGPU)
@@ -310,16 +317,17 @@ void run_bench(adapter_type& adapter,
         #else
         helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
             if (h_mix_types[task_idx] == kernels::request_type_find) {
-              h_mix_values[task_idx] = adapter.find(&h_mix_keys[task_idx * args.keylen_max], h_mix_key_lengths[task_idx]);
+              h_mix_values[task_idx] = adapter.find(&h_mix_keys[task_idx * args.keylen_max], h_mix_key_lengths[task_idx], thread_id);
             }
             else if (h_mix_types[task_idx] == kernels::request_type_insert) {
-              adapter.insert(&h_mix_keys[task_idx * args.keylen_max], h_mix_key_lengths[task_idx], h_mix_values[task_idx], h_mix_key_tuple_ids[task_idx]);
+              adapter.insert(&h_mix_keys[task_idx * args.keylen_max], h_mix_key_lengths[task_idx], h_mix_values[task_idx], h_mix_key_tuple_ids[task_idx], thread_id);
             }
             else {
-              adapter.erase(&h_mix_keys[task_idx * args.keylen_max], h_mix_key_lengths[task_idx]);
+              adapter.erase(&h_mix_keys[task_idx * args.keylen_max], h_mix_key_lengths[task_idx], thread_id);
             }
           }, args.num_mixed,
-          [&]() { adapter.thread_enter(); }, [&]() { adapter.thread_exit(); });
+          [&](unsigned thread_id) { adapter.thread_enter(thread_id); },
+          [&](unsigned thread_id) { adapter.thread_exit(thread_id); });
         #endif
         mix_timer.stop();
         #if !defined(NOGPU)

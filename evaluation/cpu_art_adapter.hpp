@@ -51,28 +51,29 @@ struct cpu_art_adapter {
   void destroy() {
     tree_.reset();
   }
-  void thread_enter() {
+  void thread_enter([[maybe_unused]] unsigned thread_idx) {
     (void)current_threadinfo();
   }
-  void thread_exit() {
+  void thread_exit([[maybe_unused]] unsigned thread_idx) {
     auto& state = current_thread_state();
     state.threadinfo.reset();
     state.tree = nullptr;
   }
-  void insert(const key_slice_type* key, size_type key_length, value_type value, std::size_t tuple_id) {
+  void insert(const key_slice_type* key, size_type key_length, value_type value, std::size_t tuple_id, unsigned thread_idx) {
     (void)value;
+    (void)thread_idx;
     auto tid = static_cast<TID>(tuple_id) + 1;
     Key art_key = make_key(key, key_length);
     tree_->insert(art_key, tid, current_threadinfo());
   }
-  void erase(const key_slice_type* key, size_type key_length) {
+  void erase(const key_slice_type* key, size_type key_length, [[maybe_unused]] unsigned thread_idx) {
     Key art_key = make_key(key, key_length);
     TID tid = tree_->lookup(art_key, current_threadinfo());
     if (tid != 0) {
       tree_->remove(art_key, tid, current_threadinfo());
     }
   }
-  value_type find(const key_slice_type* key, size_type key_length) {
+  value_type find(const key_slice_type* key, size_type key_length, [[maybe_unused]] unsigned thread_idx) {
     Key art_key = make_key(key, key_length);
     TID tid = tree_->lookup(art_key, current_threadinfo());
     if (tid == 0) {
@@ -80,7 +81,7 @@ struct cpu_art_adapter {
     }
     return values_[tid - 1];
   }
-  void scan(const key_slice_type* key, size_type key_length, uint32_t count, value_type* results) {
+  void scan(const key_slice_type* key, size_type key_length, uint32_t count, value_type* results, [[maybe_unused]] unsigned thread_idx) {
     Key start_key = make_key(key, key_length);
     Key end_key = make_upper_bound_key();
     Key continue_key;

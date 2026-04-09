@@ -39,11 +39,11 @@ void helper_multithread(F&& f, std::size_t num_tasks, ThreadEnter&& thread_enter
   std::vector<std::thread> workers;
   for (unsigned tid = 0; tid < num_workers; tid++) {
     workers.emplace_back([&](unsigned thread_id) {
-      thread_enter();
+      std::forward<ThreadEnter>(thread_enter)(thread_id);
       for (std::size_t task_idx = thread_id; task_idx < num_tasks; task_idx += num_workers) {
         std::forward<F>(f)(task_idx, thread_id);
       }
-      thread_exit();
+      std::forward<ThreadExit>(thread_exit)(thread_id);
     }, tid);
   }
   for (auto& w: workers) { w.join(); }
@@ -195,7 +195,7 @@ void generate_key_values(std::vector<key_slice_type>& keys,
       }
       // compute value
       values[key_idx] = key_hasher(key, length);
-    }, num_keys, [](){}, [](){});
+  }, num_keys, [](unsigned){}, [](unsigned){});
 }
 
 void generate_lookup_keys(std::vector<key_slice_type>& lookup_keys,
@@ -223,7 +223,7 @@ void generate_lookup_keys(std::vector<key_slice_type>& lookup_keys,
     uint32_t length = key_lengths[key_idx];
     lookup_key_lengths[lookup_idx] = length;
     memcpy(lookup_key, &keys[key_idx * keylen_max], sizeof(key_slice_type) * length);
-  }, num_queries, [](){}, [](){});
+  }, num_queries, [](unsigned){}, [](unsigned){});
 }
 
 std::size_t mix_get_num_insdel(std::size_t num_mixed, double mix_read_ratio) {
@@ -293,7 +293,7 @@ void generate_mixed_keys(std::vector<kernels::request_type>& mix_types,
       mix_key_lengths[dst_idx] = key_lengths[delete_idx];
       memcpy(&mix_keys[dst_idx * keylen_max], &keys[delete_idx * keylen_max], sizeof(key_slice_type) * keylen_max);
     }
-  }, num_mixed, [](){}, [](){});
+  }, num_mixed, [](unsigned){}, [](unsigned){});
 }
 
 #define FORALL_ARGUMENTS(x) \

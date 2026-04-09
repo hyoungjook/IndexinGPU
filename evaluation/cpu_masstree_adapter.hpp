@@ -21,6 +21,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 #include <cmd.hpp>
 
@@ -60,8 +61,13 @@ struct cpu_masstree_adapter {
   }
   void register_dataset(const key_slice_type* key, const size_type* key_lengths, const value_type* values) {}
   void initialize() {
-    if (!main_threadinfo_) {
-      main_threadinfo_ = threadinfo::make(threadinfo::TI_MAIN, -1);
+    check_argument(main_threadinfo_ == nullptr);
+    main_threadinfo_ = threadinfo::make(threadinfo::TI_MAIN, -1);
+    main_threadinfo_->pthread() = pthread_self();
+    auto num_worker_threadinfos = std::max(1u, std::thread::hardware_concurrency());
+    worker_threadinfos_.reserve(num_worker_threadinfos);
+    for (unsigned thread_idx = 0; thread_idx < num_worker_threadinfos; thread_idx++) {
+      worker_threadinfos_.push_back(threadinfo::make(threadinfo::TI_PROCESS, thread_idx));
     }
     table_ = std::make_unique<table_type>();
     table_->initialize(*main_threadinfo_);
@@ -71,39 +77,45 @@ struct cpu_masstree_adapter {
       table_->destroy(*main_threadinfo_);
       table_.reset();
     }
+    if (main_threadinfo_) {
+      drain_retired_nodes();
+      release_threadinfos();
+    }
   }
 
-  void thread_enter() {
-    threadinfo& ti = current_threadinfo();
+  void thread_enter(unsigned thread_idx) {
+    threadinfo& ti = get_threadinfo(thread_idx);
+    ti.pthread() = pthread_self();
     ti.rcu_start();
   }
-  void thread_exit() {
-    threadinfo& ti = current_threadinfo();
+  void thread_exit(unsigned thread_idx) {
+    threadinfo& ti = get_threadinfo(thread_idx);
     ti.rcu_stop();
   }
 
-  void insert(const key_slice_type* key, size_type key_length, value_type value, std::size_t tuple_id) {
-    threadinfo& ti = current_threadinfo();
+  void insert(const key_slice_type* key, size_type key_length, value_type value, std::size_t tuple_id, unsigned thread_idx) {
+    (void)tuple_id;
+    threadinfo& ti = get_threadinfo(thread_idx);
     cursor_type cursor(*table_, make_key(key, key_length));
     cursor.find_insert(ti);
     cursor.value() = value;
     fence();
     cursor.finish(1, ti);
   }
-  void erase(const key_slice_type* key, size_type key_length) {
-    threadinfo& ti = current_threadinfo();
+  void erase(const key_slice_type* key, size_type key_length, unsigned thread_idx) {
+    threadinfo& ti = get_threadinfo(thread_idx);
     cursor_type cursor(*table_, make_key(key, key_length));
     bool found = cursor.find_locked(ti);
     cursor.finish(found ? -1 : 0, ti);
   }
-  value_type find(const key_slice_type* key, size_type key_length) {
-    threadinfo& ti = current_threadinfo();
+  value_type find(const key_slice_type* key, size_type key_length, unsigned thread_idx) {
+    threadinfo& ti = get_threadinfo(thread_idx);
     value_type value = invalid_value;
     table_->get(make_key(key, key_length), value, ti);
     return value;
   }
-  void scan(const key_slice_type* key, size_type key_length, uint32_t count, value_type* results) {
-    threadinfo& ti = current_threadinfo();
+  void scan(const key_slice_type* key, size_type key_length, uint32_t count, value_type* results, unsigned thread_idx) {
+    threadinfo& ti = get_threadinfo(thread_idx);
     scan_visitor visitor(count, results);
     table_->scan(make_key(key, key_length), true, visitor, ti);
     std::fill(results + visitor.num_results, results + count, invalid_value);
@@ -143,17 +155,48 @@ struct cpu_masstree_adapter {
                          static_cast<int>(key_length * sizeof(key_slice_type)));
   }
 
-  static threadinfo& current_threadinfo() {
-    thread_local threadinfo* threadinfo_ptr = nullptr;
-    if (!threadinfo_ptr) {
-      threadinfo_ptr = threadinfo::make(threadinfo::TI_PROCESS, next_thread_id_.fetch_add(1));
+  threadinfo& get_threadinfo(unsigned thread_idx) {
+    check_argument(thread_idx < worker_threadinfos_.size());
+    return *worker_threadinfos_[thread_idx];
+  }
+
+  static void advance_global_epoch() {
+    globalepoch.store(globalepoch.load() + 2);
+    active_epoch.store(threadinfo::min_active_epoch());
+  }
+
+  static void drain_threadinfo(threadinfo& ti) {
+    while (ti.has_pending_rcu()) {
+      advance_global_epoch();
+      ti.rcu_quiesce();
     }
-    return *threadinfo_ptr;
+  }
+
+  void drain_retired_nodes() {
+    if (main_threadinfo_) {
+      drain_threadinfo(*main_threadinfo_);
+    }
+    for (auto* ti: worker_threadinfos_) {
+      if (ti) {
+        drain_threadinfo(*ti);
+      }
+    }
+  }
+
+  void release_threadinfos() {
+    for (auto*& ti: worker_threadinfos_) {
+      if (ti) {
+        threadinfo::destroy(ti);
+        ti = nullptr;
+      }
+    }
+    worker_threadinfos_.clear();
+    threadinfo::destroy(main_threadinfo_);
+    main_threadinfo_ = nullptr;
   }
 
   configs configs_;
   std::unique_ptr<table_type> table_;
   threadinfo* main_threadinfo_ = nullptr;
-
-  inline static std::atomic<int> next_thread_id_{0};
+  std::vector<threadinfo*> worker_threadinfos_;
 };
