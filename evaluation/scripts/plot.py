@@ -37,7 +37,36 @@ HATCH_STYLES = {
 }
 
 def _convert_mops_to_bops(values):
-        return [v / 1000 for v in values]
+    return [None if v is None else v / 1000 for v in values]
+
+def _add_throughput_error_bars(ax, xdata, avg_values, min_values, max_values, *, color, for_barplot=False):
+    # Some throughput plots include placeholders (for example OOM entries), so skip
+    # error bars when parsed min/max values are unavailable for those points.
+    if min_values is None or max_values is None:
+        return
+    error_xdata = []
+    error_ydata = []
+    lower_errors = []
+    upper_errors = []
+    for xvalue, avg_value, min_value, max_value in zip(xdata, avg_values, min_values, max_values):
+        if avg_value is None or min_value is None or max_value is None:
+            continue
+        error_xdata.append(xvalue)
+        error_ydata.append(avg_value)
+        lower_errors.append(max(avg_value - min_value, 0))
+        upper_errors.append(max(max_value - avg_value, 0))
+    if not error_xdata:
+        return
+    ax.errorbar(
+        error_xdata, error_ydata,
+        yerr=[lower_errors, upper_errors],
+        fmt='none',
+        ecolor=color,
+        elinewidth=1,
+        capsize=8 if for_barplot else 3,
+        capthick=1,
+        zorder=4,
+    )
 
 def _make_fixed_plot_area_figure(plot_width, plot_height, *, include_xlabel=False, include_ylabel=False):
     # Keep the drawable axes area fixed and grow the outer figure only when labels are present.
@@ -124,7 +153,10 @@ def key_length_plots(configs_and_results, plot_file_prefix):
         for index_type in index_types:
             if result_type not in tputs[index_type]:
                 continue
-            ydata = _convert_mops_to_bops(tputs[index_type][result_type]['avg'])
+            avg_values = _convert_mops_to_bops(tputs[index_type][result_type]['avg'])
+            min_values = _convert_mops_to_bops(tputs[index_type][result_type]['min'])
+            max_values = _convert_mops_to_bops(tputs[index_type][result_type]['max'])
+            ydata = avg_values.copy()
             markevery = range(len(ydata))
             if len(markevery) == 1:
                 ydata.append(ydata[0] * 0.7)
@@ -136,6 +168,14 @@ def key_length_plots(configs_and_results, plot_file_prefix):
                 markevery=markevery,
                 linewidth=2, markersize=6,
                 **INDEX_STYLES[index_type]
+            )
+            _add_throughput_error_bars(
+                ax,
+                xdata[0:len(avg_values)],
+                avg_values,
+                min_values,
+                max_values,
+                color=INDEX_STYLES[index_type]['color']
             )
             if len(markevery) == 1:
                 ax.text(xdata[1], ydata[1], "X", fontsize=10, color='red', fontweight='bold', ha='center', va='center')
@@ -193,8 +233,9 @@ def suffix_plots(configs_and_results, plot_file_prefix):
             desired_config[ConfigType.num_insdel] = DEFAULT_BATCH_SIZE
         for opt_config in opt_configs:
             if opt_config is None:
-                for metric_type in ['avg', 'min', 'max']:
-                    tputs[idx][metric_type].append(0)
+                tputs[idx]['avg'].append(0)
+                tputs[idx]['min'].append(None)
+                tputs[idx]['max'].append(None)
             else:
                 result = filter(configs_and_results, {**desired_config, **opt_config}, result_type)
                 for metric_type in ['avg', 'min', 'max']:
@@ -205,7 +246,10 @@ def suffix_plots(configs_and_results, plot_file_prefix):
     for idx, index_type, result_type, opt_configs in plot_specs:
         fig, ax = _make_fixed_plot_area_figure(1.3, 1.1,
             include_xlabel=False, include_ylabel=(idx == 0))
-        ydata = _convert_mops_to_bops(tputs[idx]['avg'])
+        avg_values = _convert_mops_to_bops(tputs[idx]['avg'])
+        min_values = _convert_mops_to_bops(tputs[idx]['min'])
+        max_values = _convert_mops_to_bops(tputs[idx]['max'])
+        ydata = avg_values
         xlabel = mt_xticklabels if index_type == IndexType.gpu_masstree else et_xticklabels
         xdata = range(len(xlabel))
         ax.bar(xdata, ydata,
@@ -213,6 +257,15 @@ def suffix_plots(configs_and_results, plot_file_prefix):
             edgecolor=INDEX_STYLES[index_type]['color'],
             hatch=HATCH_STYLES[index_type],
             linewidth=2
+        )
+        _add_throughput_error_bars(
+            ax,
+            xdata,
+            avg_values,
+            min_values,
+            max_values,
+            color=INDEX_STYLES[index_type]['color'],
+            for_barplot=True
         )
         if idx == 0:
             ax.text(xdata[1], 0, "OOM", fontsize=10, color='red', fontweight='bold', ha='center', va='bottom')
@@ -263,13 +316,24 @@ def tile_plots(configs_and_results, plot_file_prefix):
             include_ylabel=(idx == 0)
         )
         for opt_idx in range(len(EXP_MIX_OPTS)):
-            ydata = _convert_mops_to_bops(tputs[(index_type, opt_idx)]['avg'])
+            avg_values = _convert_mops_to_bops(tputs[(index_type, opt_idx)]['avg'])
+            min_values = _convert_mops_to_bops(tputs[(index_type, opt_idx)]['min'])
+            max_values = _convert_mops_to_bops(tputs[(index_type, opt_idx)]['max'])
+            ydata = avg_values
             xdata = EXP_MIX_READ_RATIOS
             line, = ax.plot(
                 xdata, ydata,
                 label=labels[opt_idx],
                 linewidth=2, markersize=6,
                 **styles[opt_idx]
+            )
+            _add_throughput_error_bars(
+                ax,
+                xdata,
+                avg_values,
+                min_values,
+                max_values,
+                color=styles[opt_idx]['color'],
             )
             if labels[opt_idx] not in legend_labels:
                 legend_handles.append(line)
@@ -367,12 +431,23 @@ def merge_plots(configs_and_results, plot_file_prefix):
             include_ylabel=(idx == 0))
         for key_idx, key_length in enumerate(EXP_MERGE_KEY_LENGTHS):
             for merge_idx, merge_level in enumerate(EXP_MERGE_LEVELS[index_type]):
-                tput_ydata = _convert_mops_to_bops(tputs[((index_type, key_length, merge_level))]['avg'])
+                avg_values = _convert_mops_to_bops(tputs[((index_type, key_length, merge_level))]['avg'])
+                min_values = _convert_mops_to_bops(tputs[((index_type, key_length, merge_level))]['min'])
+                max_values = _convert_mops_to_bops(tputs[((index_type, key_length, merge_level))]['max'])
+                tput_ydata = avg_values
                 line, = ax.plot(
                     EXP_MERGE_ERASE_RATIOS, tput_ydata,
                     label=labels[(key_idx, merge_idx)],
                     linewidth=2, markersize=6,
                     **styles[(key_idx, merge_idx)]
+                )
+                _add_throughput_error_bars(
+                    ax,
+                    EXP_MERGE_ERASE_RATIOS,
+                    avg_values,
+                    min_values,
+                    max_values,
+                    color=styles[(key_idx, merge_idx)]['color'],
                 )
                 if labels[(key_idx, merge_idx)] not in legend_labels:
                     legend_handles.append(line)
@@ -450,12 +525,17 @@ def intro_plots(configs_and_results, plot_file_prefix):
     for idx, index_types, result_type in plot_spec:
         fig, ax = _make_fixed_plot_area_figure(1.7, 1.5,
             include_xlabel=False, include_ylabel=(idx == 0))
+        plot_top = 0
         for index_idx, index_type in enumerate(index_types):
-            ydata = _convert_mops_to_bops(tputs[(index_type, result_type)]['avg'])
+            avg_values = _convert_mops_to_bops(tputs[(index_type, result_type)]['avg'])
+            min_values = _convert_mops_to_bops(tputs[(index_type, result_type)]['min'])
+            max_values = _convert_mops_to_bops(tputs[(index_type, result_type)]['max'])
+            ydata = avg_values
             if index_type in INDEX_TYPES_ROBUST:
-                our_ymax = ydata[0]
+                our_yavg = ydata[0]
             else:
-                baseline_ymax = ydata[0]
+                baseline_yavg = ydata[0]
+            plot_top = max(plot_top, max_values[0] if max_values[0] is not None else ydata[0])
             xdata = [index_idx]
             ax.bar(xdata, ydata,
                 fill=False,
@@ -463,9 +543,18 @@ def intro_plots(configs_and_results, plot_file_prefix):
                 hatch=HATCH_STYLES[index_type],
                 linewidth=(2 if index_type in INDEX_TYPES_ROBUST else 1)
             )
-        speedup = our_ymax / baseline_ymax
-        ax.text(1, our_ymax * 1.1, f"{speedup:.1f}x", fontsize=12, ha='center', va='center')
-        ax.set_ylim(bottom=0, top=our_ymax * 1.2)
+            _add_throughput_error_bars(
+                ax,
+                xdata,
+                avg_values,
+                min_values,
+                max_values,
+                color=INDEX_STYLES[index_type]['color'],
+                for_barplot=True
+            )
+        speedup = our_yavg / baseline_yavg
+        ax.text(1, plot_top * 1.1, f"{speedup:.1f}x", fontsize=12, ha='center', va='center')
+        ax.set_ylim(bottom=0, top=plot_top * 1.25)
         ax.set_xticks(range(len(index_types)))
         ax.set_xticklabels([INDEX_LABELS[i] for i in index_types])
         ax.grid(True, axis='y', which='major', linestyle='--', linewidth=0.6, alpha=0.5)
