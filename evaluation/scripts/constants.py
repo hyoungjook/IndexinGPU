@@ -67,8 +67,6 @@ EXP_GPU_MASSTREE_OPTS = [
         OptionalConfigType.reuse_root: 0
     },
 ]
-EXP_GPU_MASSTREE_OPTS_CUMNUM = len(EXP_GPU_MASSTREE_OPTS)
-EXP_GPU_MASSTREE_OPTS_LABELS = [chr(i) for i in range(ord('A'), ord('A') + EXP_GPU_MASSTREE_OPTS_CUMNUM)]
 EXP_GPU_EXTENDHT_OPTS = [
     {
         ConfigType.keylen_prefix: 0,
@@ -95,8 +93,6 @@ EXP_GPU_EXTENDHT_OPTS = [
         OptionalConfigType.reuse_dirsize: 0
     },
 ]
-EXP_GPU_EXTENDHT_OPTS_CUMNUM = EXP_GPU_MASSTREE_OPTS_CUMNUM + len(EXP_GPU_EXTENDHT_OPTS)
-EXP_GPU_EXTENDHT_OPTS_LABELS = [chr(i) for i in range(ord('A') + EXP_GPU_MASSTREE_OPTS_CUMNUM, ord('A') + EXP_GPU_EXTENDHT_OPTS_CUMNUM)]
 
 EXP_MIX_READ_RATIOS = [
     0, 0.25, 0.5, 0.75, 1

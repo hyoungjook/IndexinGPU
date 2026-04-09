@@ -28,6 +28,13 @@ INDEX_STYLES = {
     IndexType.cpu_masstree: {"color": "#6C9A8B", "marker": "X", "linestyle": "--"},
     IndexType.cpu_libcuckoo: {"color": "#9C6644", "marker": "v", "linestyle": "--"},
 }
+HATCH_STYLES = {
+    IndexType.gpu_masstree: 'o',
+    IndexType.gpu_extendhashtable: 'x',
+    IndexType.cpu_art: '',
+    IndexType.cpu_masstree: '',
+    IndexType.cpu_libcuckoo: '',
+}
 
 def _convert_mops_to_bops(values):
         return [v / 1000 for v in values]
@@ -110,7 +117,7 @@ def key_length_plots(configs_and_results, plot_file_prefix):
         'ht-lookup', 'ht-insert', 'ht-delete', 'ht-mixed'
     ]
     for idx, index_types, result_type, set_xlabel, set_ylabel in plot_spec:
-        fig, ax = _make_fixed_plot_area_figure(1.7, 1.3,
+        fig, ax = _make_fixed_plot_area_figure(2, 1.3,
             include_xlabel=set_xlabel,
             include_ylabel=set_ylabel,
         )
@@ -193,16 +200,29 @@ def suffix_plots(configs_and_results, plot_file_prefix):
                 for metric_type in ['avg', 'min', 'max']:
                     tputs[idx][metric_type].append(float(result[result_type.name][metric_type]))
     # plot
+    mt_xticklabels = ['C', 'R', 'RS']
+    et_xticklabels = ['R', 'C', 'CT', 'Ct']
     for idx, index_type, result_type, opt_configs in plot_specs:
-        fig, ax = plt.subplots(1, 1, figsize=(1.5, 1.2), constrained_layout=True)
+        fig, ax = _make_fixed_plot_area_figure(1.3, 1.1,
+            include_xlabel=False, include_ylabel=(idx == 0))
         ydata = _convert_mops_to_bops(tputs[idx]['avg'])
-        xlabel = EXP_GPU_MASSTREE_OPTS_LABELS if index_type == IndexType.gpu_masstree else EXP_GPU_EXTENDHT_OPTS_LABELS
+        xlabel = mt_xticklabels if index_type == IndexType.gpu_masstree else et_xticklabels
         xdata = range(len(xlabel))
-        ax.bar(xdata, ydata)
+        ax.bar(xdata, ydata,
+            fill=False,
+            edgecolor=INDEX_STYLES[index_type]['color'],
+            hatch=HATCH_STYLES[index_type],
+            linewidth=2
+        )
+        if idx == 0:
+            ax.text(xdata[1], 0, "OOM", fontsize=10, color='red', fontweight='bold', ha='center', va='bottom')
         ax.set_ylim(bottom=0)
         ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
         ax.set_xticks(xdata)
         ax.set_xticklabels(xlabel)
+        ax.grid(True, axis='y', which='major', linestyle='--', linewidth=0.6, alpha=0.5)
+        if idx == 0:
+            ax.set_ylabel(r'Throughput ($10^9$/s)')
         plt.savefig(f'{plot_file_prefix}-{plot_names[idx]}.pdf', bbox_inches='tight')
         plt.close(fig)
 
@@ -231,14 +251,14 @@ def tile_plots(configs_and_results, plot_file_prefix):
     # plot
     labels = ['FullWarp', 'HalfWarp', 'HalfWarp+PreSort']
     styles = [
-        {"color": "#549A84", "marker": "*", "linestyle": "-"},
+        {"color": "#549A84", "marker": "v", "linestyle": "-"},
         {"color": "#CE973E", "marker": "d", "linestyle": "-"},
         {"color": "#7993EF", "marker": "H", "linestyle": "-"},
     ]
     legend_handles = []
     legend_labels = []
     for idx, index_type in enumerate(index_types):
-        fig, ax = _make_fixed_plot_area_figure(1.7, 1.3,
+        fig, ax = _make_fixed_plot_area_figure(2, 1.3,
             include_xlabel=True,
             include_ylabel=(idx == 0)
         )
@@ -333,8 +353,8 @@ def merge_plots(configs_and_results, plot_file_prefix):
         (1, 1): 'Merge(k=8)',
     }
     styles = {
-        (0, 0): {"color": "#549A84", "marker": "*", "linestyle": ":"},
-        (0, 1): {"color": "#549A84", "marker": "*", "linestyle": "-"},
+        (0, 0): {"color": "#549A84", "marker": "v", "linestyle": ":"},
+        (0, 1): {"color": "#549A84", "marker": "v", "linestyle": "-"},
         (1, 0): {"color": "#CE973E", "marker": "d", "linestyle": ":"},
         (1, 1): {"color": "#CE973E", "marker": "d", "linestyle": "-"},
     }
@@ -342,7 +362,7 @@ def merge_plots(configs_and_results, plot_file_prefix):
     legend_labels = []
     for idx, index_type in enumerate(index_types):
         # tput plot
-        fig, ax = _make_fixed_plot_area_figure(1.7, 1.3,
+        fig, ax = _make_fixed_plot_area_figure(2, 1.3,
             include_xlabel=False,
             include_ylabel=(idx == 0))
         for key_idx, key_length in enumerate(EXP_MERGE_KEY_LENGTHS):
@@ -365,7 +385,7 @@ def merge_plots(configs_and_results, plot_file_prefix):
         plt.savefig(f'{plot_file_prefix}-{plot_names[idx]}-tput.pdf', bbox_inches='tight')
         plt.close(fig)
         # space plot
-        fig, ax = _make_fixed_plot_area_figure(1.7, 1.3,
+        fig, ax = _make_fixed_plot_area_figure(2, 1.3,
             include_xlabel=True,
             include_ylabel=(idx == 0))
         for key_idx, key_length in enumerate(EXP_MERGE_KEY_LENGTHS):
@@ -396,11 +416,70 @@ def merge_plots(configs_and_results, plot_file_prefix):
     plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
     plt.close(fig)
 
+def intro_plots(configs_and_results, plot_file_prefix):
+    tputs = {}
+    tree_indexes = [IndexType.cpu_art, IndexType.gpu_masstree,]
+    hashtable_indexes = [IndexType.cpu_libcuckoo, IndexType.gpu_extendhashtable,]
+    plot_spec = [
+        (0, tree_indexes, ResultType.lookup),
+        (1, tree_indexes, ResultType.mixed),
+        (2, hashtable_indexes, ResultType.mixed),
+    ]
+    plot_names = ['tree-lookup', 'tree-mixed', 'ht-mixed']
+    for idx, index_types, result_type in plot_spec:
+        for index_type in index_types:
+            desired_config = {
+                ConfigType.index_type: index_type,
+                ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+                ConfigType.keylen_prefix: 0,
+                ConfigType.keylen_min: DEFAULT_KEY_LENGTH,
+                ConfigType.keylen_max: DEFAULT_KEY_LENGTH,
+            }
+            if result_type == ResultType.lookup:
+                desired_config[ConfigType.num_lookups] = DEFAULT_BATCH_SIZE
+            else:
+                desired_config[ConfigType.num_mixed] = DEFAULT_BATCH_SIZE
+                desired_config[ConfigType.mix_read_ratio] = DEFAULT_MIX_READ_RATIO
+            result = filter(configs_and_results, desired_config, result_type)
+            tputs[(index_type, result_type)] = {
+                'avg': [float(result[result_type.name]['avg'])],
+                'min': [float(result[result_type.name]['min'])],
+                'max': [float(result[result_type.name]['max'])],
+            }
+    # plot
+    for idx, index_types, result_type in plot_spec:
+        fig, ax = _make_fixed_plot_area_figure(1.7, 1.5,
+            include_xlabel=False, include_ylabel=(idx == 0))
+        for index_idx, index_type in enumerate(index_types):
+            ydata = _convert_mops_to_bops(tputs[(index_type, result_type)]['avg'])
+            if index_type in INDEX_TYPES_ROBUST:
+                our_ymax = ydata[0]
+            else:
+                baseline_ymax = ydata[0]
+            xdata = [index_idx]
+            ax.bar(xdata, ydata,
+                fill=False,
+                edgecolor=INDEX_STYLES[index_type]['color'],
+                hatch=HATCH_STYLES[index_type],
+                linewidth=(2 if index_type in INDEX_TYPES_ROBUST else 1)
+            )
+        speedup = our_ymax / baseline_ymax
+        ax.text(1, our_ymax * 1.1, f"{speedup:.1f}x", fontsize=12, ha='center', va='center')
+        ax.set_ylim(bottom=0, top=our_ymax * 1.2)
+        ax.set_xticks(range(len(index_types)))
+        ax.set_xticklabels([INDEX_LABELS[i] for i in index_types])
+        ax.grid(True, axis='y', which='major', linestyle='--', linewidth=0.6, alpha=0.5)
+        if idx == 0:
+            ax.set_ylabel(r'Throughput ($10^9$/s)')
+        plt.savefig(f'{plot_file_prefix}-{plot_names[idx]}.pdf', bbox_inches='tight')
+        plt.close(fig)
+
 def generate_plots(args, configs_and_results):
     key_length_plots(configs_and_results, Path(args.result_dir) / 'plot_keylength')
     suffix_plots(configs_and_results, Path(args.result_dir) / 'plot_suffix')
     tile_plots(configs_and_results, Path(args.result_dir) / 'plot_tile')
     merge_plots(configs_and_results, Path(args.result_dir) / 'plot_merge')
+    intro_plots(configs_and_results, Path(args.result_dir) / 'plot_intro')
 
 if __name__ == "__main__":
     args = parse_args_for_plot()
