@@ -10,9 +10,9 @@ INDEX_LABELS = {
     IndexType.gpu_extendhashtable: "GPUExtendHT",
     IndexType.gpu_blink_tree: "GPUBtree",
     IndexType.gpu_dycuckoo: "DyCuckoo",
-    IndexType.cpu_art: "(CPU)ART",
-    IndexType.cpu_masstree: "(CPU)Masstree",
-    IndexType.cpu_libcuckoo: "(CPU)Libcuckoo",
+    IndexType.cpu_art: "ART",
+    IndexType.cpu_masstree: "Masstree",
+    IndexType.cpu_libcuckoo: "Libcuckoo",
 }
 INDEX_STYLES = {
     IndexType.gpu_masstree: {"color": "#0B6E4F", "marker": "o", "linestyle": "-"},
@@ -21,12 +21,9 @@ INDEX_STYLES = {
     IndexType.gpu_extendhashtable: {"color": "#EDAE49", "marker": "D", "linestyle": "-"},
     IndexType.gpu_blink_tree: {"color": "#8F2D56", "marker": "<", "linestyle": ":"},
     IndexType.gpu_dycuckoo: {"color": "#3B60E4", "marker": "h", "linestyle": ":"},
-    IndexType.cpu_art: {"color": "#5C4D7D", "marker": "P", "linestyle": ":"},
-    IndexType.cpu_masstree: {"color": "#6C9A8B", "marker": "X", "linestyle": ":"},
-    IndexType.cpu_libcuckoo: {"color": "#9C6644", "marker": "v", "linestyle": ":"},
-    #IndexType_gpu_masstree_no_suffix: {"color": "#549A84", "marker": "*", "linestyle": "-"},
-    #IndexType_gpu_extendht_no_hashtag: {"color": "#CE973E", "marker": "d", "linestyle": "-"},
-    #IndexType_gpu_dycuckoo_with_lock: {"color": "#7993EF", "marker": "H", "linestyle": ":"},
+    IndexType.cpu_art: {"color": "#5C4D7D", "marker": "P", "linestyle": "--"},
+    IndexType.cpu_masstree: {"color": "#6C9A8B", "marker": "X", "linestyle": "--"},
+    IndexType.cpu_libcuckoo: {"color": "#9C6644", "marker": "v", "linestyle": "--"},
 }
 
 def _convert_mops_to_bops(values):
@@ -34,7 +31,8 @@ def _convert_mops_to_bops(values):
 
 def key_length_plots(configs_and_results, plot_file_prefix):
     tputs = {}
-    for index_type in INDEX_TYPES_ROBUST + INDEX_TYPES_GPU_BASELINE:
+    all_index_types = INDEX_TYPES_ROBUST + INDEX_TYPES_GPU_BASELINE + INDEX_TYPES_CPU_BASELINE
+    for index_type in all_index_types:
         tputs[index_type] = {}
         result_types = [ResultType.lookup, ResultType.insert, ResultType.delete]
         if index_type in IS_INDEX_TYPE_SUPPORT_MIX:
@@ -74,8 +72,8 @@ def key_length_plots(configs_and_results, plot_file_prefix):
     key_lengths_bytes = [4 * l for l in EXP_KEY_LENGTHS]
     legend_handles = []
     legend_labels = []
-    tree_indexes = [i for i in INDEX_TYPES_ROBUST + INDEX_TYPES_GPU_BASELINE if i in IS_INDEX_TYPE_ORDERED]
-    hashtable_indexes = [i for i in INDEX_TYPES_ROBUST + INDEX_TYPES_GPU_BASELINE if i not in IS_INDEX_TYPE_ORDERED]
+    tree_indexes = [i for i in all_index_types if i in IS_INDEX_TYPE_ORDERED]
+    hashtable_indexes = [i for i in all_index_types if i not in IS_INDEX_TYPE_ORDERED]
     plot_spec = [
         (0, tree_indexes, ResultType.lookup),
         (1, tree_indexes, ResultType.insert),
@@ -121,8 +119,8 @@ def key_length_plots(configs_and_results, plot_file_prefix):
         ax.grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
         plt.savefig(f'{plot_file_prefix}{idx}.pdf', bbox_inches='tight')
         plt.close(fig)
-    fig, ax = plt.subplots(1, 1, figsize=(2, 1.5), constrained_layout=True)
-    ax.legend(legend_handles, legend_labels, loc='center', ncol = 1)
+    fig, ax = plt.subplots(1, 1, figsize=(10, 0.3), constrained_layout=True)
+    ax.legend(legend_handles, legend_labels, loc='center', ncol=len(legend_labels))
     ax.axis('off')
     plt.savefig(f'{plot_file_prefix}{len(plot_spec)}.pdf', bbox_inches='tight')
     plt.close(fig)
