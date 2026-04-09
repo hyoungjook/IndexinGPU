@@ -44,6 +44,7 @@ class ConfigType(Enum):
     rep_mixed = auto()
     index_type = auto()
     check_space_after_del = auto()
+    only_check_space = auto()
 
 class OptionalConfigType(Enum):
     allocator_pool_ratio = auto()
@@ -226,7 +227,6 @@ def run_one(args, config):
                                    'min': min_value,
                                    'max': max_value}
         elif 'simple_slab' in result_line:
-            assert ConfigType.check_space_after_del in config
             result_tokens = result_line.split(' ')
             for token in result_tokens:
                 if '%' in token:

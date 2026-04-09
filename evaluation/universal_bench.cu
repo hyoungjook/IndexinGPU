@@ -375,6 +375,7 @@ int main(int argc, char** argv) {
 
   // print arguments
   args.print();
+  std::cout << "  only_check_space=" << only_check_space << std::endl;
   #define ADAPTER_PRINT_ARGS(index) \
   if (args.index_type == #index) { index##_adapter_.print_args(); }
   FORALL_INDEXES(ADAPTER_PRINT_ARGS)

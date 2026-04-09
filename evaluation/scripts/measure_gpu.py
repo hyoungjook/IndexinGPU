@@ -79,20 +79,32 @@ def generate_configs():
                 configs.append({**common_config, **opt_config})
     # Delete merge
     for index_type in [IndexType.gpu_masstree, IndexType.gpu_extendhashtable]:
-        for erase_num in EXP_MERGE_ERASE_NUMS:
+        for key_length in EXP_MERGE_KEY_LENGTHS:
             common_config = {
                 ConfigType.index_type: index_type,
                 ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
                 ConfigType.keylen_prefix: 0,
-                ConfigType.keylen_min: 1,
-                ConfigType.keylen_max: 1,
-                ConfigType.num_insdel: erase_num,
-                ConfigType.rep_insdel: NUM_REPEATS,
-                ConfigType.check_space_after_del: 1,
+                ConfigType.keylen_min: key_length,
+                ConfigType.keylen_max: key_length,
+                ConfigType.only_check_space: 1,
+                OptionalConfigType.allocator_pool_ratio: 0.8,
             }
-            merge_levels = EXP_MERGE_LEVELS[index_type]
-            for merge_level in merge_levels:
-                configs.append({**common_config, OptionalConfigType.merge_level: merge_level})
+            configs.append(common_config)
+            for erase_num in EXP_MERGE_ERASE_NUMS:
+                common_config = {
+                    ConfigType.index_type: index_type,
+                    ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+                    ConfigType.keylen_prefix: 0,
+                    ConfigType.keylen_min: key_length,
+                    ConfigType.keylen_max: key_length,
+                    ConfigType.num_insdel: erase_num,
+                    ConfigType.rep_insdel: NUM_REPEATS,
+                    ConfigType.check_space_after_del: 1,
+                    OptionalConfigType.allocator_pool_ratio: 0.8,
+                }
+                merge_levels = EXP_MERGE_LEVELS[index_type]
+                for merge_level in merge_levels:
+                    configs.append({**common_config, OptionalConfigType.merge_level: merge_level})
     return configs
 
 if __name__ == "__main__":

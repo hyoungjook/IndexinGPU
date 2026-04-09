@@ -120,8 +120,10 @@ EXP_MERGE_LEVELS = {
     IndexType.gpu_masstree: [0, 3],
     IndexType.gpu_extendhashtable: [0, 2],
 }
+EXP_MERGE_KEY_LENGTHS = [
+    1, DEFAULT_KEY_LENGTH
+]
 EXP_MERGE_ERASE_RATIOS = [
     0.25, 0.5, 0.75, 1
 ]
 EXP_MERGE_ERASE_NUMS = [int(er * DEFAULT_MAXKEY_LONG) for er in EXP_MERGE_ERASE_RATIOS]
-
