@@ -322,7 +322,9 @@ void generate_mixed_keys(std::vector<kernels::request_type>& mix_types,
   x(rep_insdel, uint32_t, 0) \
   x(rep_mixed, uint32_t, 0) \
   /* index config */ \
-  x(index_type, std::string, "gpu_masstree")
+  x(index_type, std::string, "gpu_masstree") \
+  /* etc */ \
+  x(only_check_space, bool, false)
 
 struct args_type {
   #define DECLARE_ARGUMENT(arg, type, default_value) \

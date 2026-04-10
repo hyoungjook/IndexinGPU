@@ -348,7 +348,6 @@ int main(int argc, char** argv) {
   auto arg_strings = std::vector<std::string>(argv, argv + argc);
   universal::args_type args(arg_strings);
   bool verbose = get_arg_value<bool>(arg_strings, "verbose").value_or(false);
-  bool only_check_space = get_arg_value<bool>(arg_strings, "only_check_space").value_or(false);
 
   #if defined(UNIVERSAL_BENCH_WITH_CPU_BASELINE)
   #define FORALL_INDEXES(x) \
@@ -375,14 +374,13 @@ int main(int argc, char** argv) {
 
   // print arguments
   args.print();
-  std::cout << "  only_check_space=" << only_check_space << std::endl;
   #define ADAPTER_PRINT_ARGS(index) \
   if (args.index_type == #index) { index##_adapter_.print_args(); }
   FORALL_INDEXES(ADAPTER_PRINT_ARGS)
   #undef ADAPTER_PRINT_ARGS
   check_argument(args.num_insdel <= args.max_keys &&
                  args.num_mixed <= args.max_keys);
-  if (!only_check_space) {
+  if (!args.only_check_space) {
     check_argument(args.rep_lookup > 0 || args.rep_scan > 0 ||
                    args.rep_insdel > 0 || args.rep_mixed > 0);
   }
@@ -435,7 +433,7 @@ int main(int argc, char** argv) {
   }
 
   // only check space?
-  if (only_check_space) {
+  if (args.only_check_space) {
     if (verbose) { std::cout << "Checking space consumption..." << std::endl; }
     #define ADAPTER_CHECK_SPACE(index) \
     if (args.index_type == #index) { \
