@@ -55,7 +55,7 @@ __global__ void batch_kernel(index_type index,
     bool task_exists = (thread_id < num_requests);
     typename device_func::dev_regs regs;
     if constexpr (do_reclaim) { reclaimer.begin_critical_section(block_wide_tile, allocator); }
-    func.load_root(regs, index, tile, allocator);
+    func.load_root(regs, index, warp_wide_tile, tile, allocator);
     auto work_queue = tile.ballot(task_exists);
     if (work_queue) {
       func.load(regs, index, tile, allocator, thread_id, task_exists);
@@ -123,10 +123,10 @@ struct insert_device_func {
     elem_type root_lane_elem;
   };
   // device-side functions
-  template <typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void load_root(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator) const {
+  template <typename warp_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void load_root(dev_regs& regs, masstree& tree, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
     if constexpr (reuse_root) {
-      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(tile, allocator);
+      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(warp_tile, tile, allocator);
     }
   }
   template <typename tile_type, typename allocator_type>
@@ -172,10 +172,10 @@ struct find_device_func {
     elem_type root_lane_elem;
   };
   // device-side functions
-  template <typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void load_root(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator) const {
+  template <typename warp_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void load_root(dev_regs& regs, masstree& tree, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
     if constexpr (reuse_root) {
-      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(tile, allocator);
+      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(warp_tile, tile, allocator);
     }
   }
   template <typename tile_type, typename allocator_type>
@@ -219,10 +219,10 @@ struct erase_device_func {
     elem_type root_lane_elem;
   };
   // device-side functions
-  template <typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void load_root(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator) const {
+  template <typename warp_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void load_root(dev_regs& regs, masstree& tree, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
     if constexpr (reuse_root) {
-      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(tile, allocator);
+      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(warp_tile, tile, allocator);
     }
   }
   template <typename tile_type, typename allocator_type>
@@ -277,10 +277,10 @@ struct scan_device_func {
     elem_type root_lane_elem;
   };
   // device-side functions
-  template <typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void load_root(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator) const {
+  template <typename warp_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void load_root(dev_regs& regs, masstree& tree, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
     if constexpr (reuse_root) {
-      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(tile, allocator);
+      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(warp_tile, tile, allocator);
     }
   }
   template <typename tile_type, typename allocator_type>
@@ -350,10 +350,10 @@ struct mixed_device_func {
     elem_type root_lane_elem;
   };
   // device-side functions
-  template <typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void load_root(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator) const {
+  template <typename warp_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void load_root(dev_regs& regs, masstree& tree, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
     if constexpr (reuse_root) {
-      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(tile, allocator);
+      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(warp_tile, tile, allocator);
     }
   }
   template <typename tile_type, typename allocator_type>
@@ -649,10 +649,10 @@ struct insert_device_func {
     size_type directory_size;
   };
   // device-side functions
-  template <typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator) const {
+  template <typename warp_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
     if constexpr (reuse_dirsize) {
-      regs.directory_size = table.template cooperative_fetch_dirsize<true>(tile);
+      regs.directory_size = table.template cooperative_fetch_dirsize<true>(warp_tile);
     }
   }
   template <typename tile_type, typename allocator_type>
@@ -697,10 +697,10 @@ struct find_device_func {
     size_type directory_size;
   };
   // device-side functions
-  template <typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator) const {
+  template <typename warp_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
     if constexpr (reuse_dirsize) {
-      regs.directory_size = table.template cooperative_fetch_dirsize<true>(tile);
+      regs.directory_size = table.template cooperative_fetch_dirsize<true>(warp_tile);
     }
   }
   template <typename tile_type, typename allocator_type>
@@ -743,10 +743,10 @@ struct erase_device_func {
     size_type directory_size;
   };
   // device-side functions
-  template <typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator) const {
+  template <typename warp_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
     if constexpr (reuse_dirsize) {
-      regs.directory_size = table.template cooperative_fetch_dirsize<true>(tile);
+      regs.directory_size = table.template cooperative_fetch_dirsize<true>(warp_tile);
     }
   }
   template <typename tile_type, typename allocator_type>
@@ -799,10 +799,10 @@ struct mixed_device_func {
     size_type directory_size;
   };
   // device-side functions
-  template <typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator) const {
+  template <typename warp_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
     if constexpr (reuse_dirsize) {
-      regs.directory_size = table.template cooperative_fetch_dirsize<true>(tile);
+      regs.directory_size = table.template cooperative_fetch_dirsize<true>(warp_tile);
     }
   }
   template <typename tile_type, typename allocator_type>

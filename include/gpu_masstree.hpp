@@ -175,6 +175,16 @@ struct gpu_masstree {
     return root_node.get_lane_elem();
   }
 
+  template <bool concurrent, typename warp_type, typename tile_type>
+  DEVICE_QUALIFIER elem_type cooperative_fetch_root(const warp_type& warp_wide_tile,
+                                                    const tile_type& tile,
+                                                    device_allocator_context_type& allocator) {
+    using node_type = masstree_node<tile_type, device_allocator_context_type>;
+    auto root_node = node_type(root_index_, tile, allocator);
+    root_node.template load_warpwidesync<concurrent>(warp_wide_tile);
+    return root_node.get_lane_elem();
+  }
+
   template <bool concurrent, typename tile_type>
   DEVICE_QUALIFIER value_type cooperative_find_from_root(elem_type root_lane_elem,
                                                          const key_slice_type* key,

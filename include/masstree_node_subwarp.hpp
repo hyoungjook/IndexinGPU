@@ -68,8 +68,8 @@ struct masstree_node_subwarp {
     auto node_ptr = reinterpret_cast<elem_unsigned_type*>(allocator_.address(node_index_));
     if constexpr (atomic) { tile_.sync(); }
     auto elem = utils::memory::load<elem_unsigned_type, atomic, acquire>(node_ptr + tile_.thread_rank());
-    lane_elem_ = *reinterpret_cast<elem_type*>(&elem);
     if constexpr (atomic) { tile_.sync(); }
+    lane_elem_ = *reinterpret_cast<elem_type*>(&elem);
     read_metadata_from_registers();
   }
   template <bool atomic, bool acquire = true>
@@ -77,8 +77,16 @@ struct masstree_node_subwarp {
     auto node_ptr = reinterpret_cast<elem_unsigned_type*>(allocator_.address(node_index_));
     if constexpr (atomic) { tile_.sync(); }
     auto elem = utils::memory::load<elem_unsigned_type, atomic, acquire>(node_ptr + tile_.thread_rank());
-    lane_elem_ = *reinterpret_cast<elem_type*>(&elem);
     if constexpr (atomic) { tile_.sync(); }
+    lane_elem_ = *reinterpret_cast<elem_type*>(&elem);
+  }
+  template <bool atomic, bool acquire = true, typename warp_type>
+  DEVICE_QUALIFIER void load_warpwidesync(const warp_type& warp) {
+    auto node_ptr = reinterpret_cast<elem_unsigned_type*>(allocator_.address(node_index_));
+    if constexpr (atomic) { warp.sync(); }
+    auto elem = utils::memory::load<elem_unsigned_type, atomic, acquire>(node_ptr + tile_.thread_rank());
+    if constexpr (atomic) { warp.sync(); }
+    lane_elem_ = *reinterpret_cast<elem_type*>(&elem);
   }
   template <bool atomic, bool release = true>
   DEVICE_QUALIFIER void store() {

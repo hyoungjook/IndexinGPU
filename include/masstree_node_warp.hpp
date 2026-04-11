@@ -74,6 +74,14 @@ struct masstree_node_warp {
     lane_elem_ = utils::memory::load<elem_type, atomic, acquire>(node_ptr + tile_.thread_rank());
     if constexpr (atomic) { tile_.sync(); }
   }
+  template <bool atomic, bool acquire = true, typename warp_type>
+  DEVICE_QUALIFIER void load_warpwidesync(const warp_type& warp) {
+    static_assert(warp_type::size() == tile_type::size());
+    auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
+    if constexpr (atomic) { warp.sync(); }
+    lane_elem_ = utils::memory::load<elem_type, atomic, acquire>(node_ptr + tile_.thread_rank());
+    if constexpr (atomic) { warp.sync(); }
+  }
   template <bool atomic, bool release = true>
   DEVICE_QUALIFIER void store() {
     auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
