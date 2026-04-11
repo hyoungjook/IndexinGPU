@@ -178,8 +178,7 @@ struct masstree_node_warp {
     return static_cast<bool>(metadata_ & garbage_bit_mask_);
   }
   DEVICE_QUALIFIER key_type get_high_key() const {
-    assert(is_border() || num_keys() > 0); // never called
-    return tile_.shfl(lane_elem_, is_border() ? (border_high_key_lane_) : (num_keys() - 1));
+    return tile_.shfl(lane_elem_, high_key_lane_);
   }
   DEVICE_QUALIFIER value_type get_sibling_index() const {
     return tile_.shfl(lane_elem_, sibling_ptr_lane_);
@@ -425,6 +424,15 @@ struct masstree_node_warp {
     return count;
   }
 
+  DEVICE_QUALIFIER void update_interior_high_key() {
+    assert(!is_border() && num_keys() > 0);
+    // if interior node, key14 aliases key[num_keys-1]
+    auto high_key = tile_.shfl(lane_elem_, get_key_lane_from_location(num_keys() - 1));
+    if (tile_.thread_rank() == high_key_lane_) {
+      lane_elem_ = high_key;
+    }
+  }
+
   DEVICE_QUALIFIER int get_split_left_width() const {
     // normally, location is left_half_width_
     // but a value entry and a link entry with the same key should be in the same node
@@ -459,14 +467,12 @@ struct masstree_node_warp {
       lane_elem_ = right_sibling_node.get_node_index();
     }
     // reassign high keys
-    if (is_border()) {
-      auto pivot_key = get_key_from_location(left_width - 1);
-      if (tile_.thread_rank() == border_high_key_lane_) {
-        // right's high key = this node's previous high key
-        right_sibling_node.lane_elem_ = lane_elem_;
-        // left's high key = pivot key
-        lane_elem_ = pivot_key;
-      }
+    auto pivot_key = get_key_from_location(left_width - 1);
+    if (tile_.thread_rank() == high_key_lane_) {
+      // right's high key = this node's previous high key
+      right_sibling_node.lane_elem_ = lane_elem_;
+      // left's high key = pivot key
+      lane_elem_ = pivot_key;
     }
     // update metadata
     right_sibling_node.metadata_ = (metadata_ & ~(num_keys_mask_ | sibling_bit_mask_));
@@ -512,7 +518,8 @@ struct masstree_node_warp {
     else if (tile_.thread_rank() == get_value_lane_from_location(0)) {
       lane_elem_ = left_child_node.node_index_;
     }
-    else if (tile_.thread_rank() == get_key_lane_from_location(1)) {
+    else if (tile_.thread_rank() == get_key_lane_from_location(1) ||
+             tile_.thread_rank() == high_key_lane_) {
       lane_elem_ = max_key;
     }
     else if (tile_.thread_rank() == get_value_lane_from_location(1)) {
@@ -556,6 +563,9 @@ struct masstree_node_warp {
                      ((lane_elem_ & ~key_lane_x2_mask) << 2);
         lane_elem_ |= ((keystate & keystate_mask_) << key_lane_x2);
       }
+    }
+    else {
+      update_interior_high_key();
     }
     write_metadata_to_registers();
   }
@@ -650,7 +660,7 @@ struct masstree_node_warp {
     // copy right child's sibling info and high key
     metadata_ = (metadata_ & ~sibling_bit_mask_) ^ (right_sibling_node.metadata_ & sibling_bit_mask_);  // has_sibling = right.has_sibling;
     if ((tile_.thread_rank() == sibling_ptr_lane_) ||
-        (is_border() && tile_.thread_rank() == border_high_key_lane_)) {
+        (tile_.thread_rank() == high_key_lane_)) {
       lane_elem_ = right_sibling_node.lane_elem_;
     }
     write_metadata_to_registers();
@@ -686,7 +696,7 @@ struct masstree_node_warp {
     // copy right child's sibling info and high key
     metadata_ = (metadata_ & ~sibling_bit_mask_) ^ (right_child_node.metadata_ & sibling_bit_mask_);  // has_sibling = right.has_sibling;
     if ((tile_.thread_rank() == sibling_ptr_lane_) ||
-        (is_border() && tile_.thread_rank() == border_high_key_lane_)) {
+        (tile_.thread_rank() == high_key_lane_)) {
       lane_elem_ = right_child_node.lane_elem_;
     }
     write_metadata_to_registers();
@@ -725,10 +735,8 @@ struct masstree_node_warp {
     write_metadata_to_registers();
     // remove last num_shift entries from the sibling
     key_type pivot_key = sibling_node.get_key_from_location(sibling_node.num_keys() - 1);
-    if (is_border()) {
-      if (tile_.thread_rank() == border_high_key_lane_) {
-        sibling_node.lane_elem_ = pivot_key;
-      }
+    if (tile_.thread_rank() == high_key_lane_) {
+      sibling_node.lane_elem_ = pivot_key;
     }
     sibling_node.write_metadata_to_registers();
     // update parent
@@ -767,10 +775,8 @@ struct masstree_node_warp {
     }
     metadata_ += num_shift; // equiv. to num_keys += num_shift;
     key_type pivot_key = get_key_from_location(num_keys() - 1);
-    if (is_border()) {
-      if (tile_.thread_rank() == border_high_key_lane_) {
-        lane_elem_ = pivot_key;
-      }
+    if (tile_.thread_rank() == high_key_lane_) {
+      lane_elem_ = pivot_key;
     }
     write_metadata_to_registers();
     // current points to the new sibling
@@ -830,6 +836,9 @@ struct masstree_node_warp {
         lane_elem_ = (lane_elem_ & key_lane_x2_mask) |
                      ((lane_elem_ >> 2) & ~key_lane_x2_mask);
       }
+    }
+    else {
+      update_interior_high_key();
     }
     write_metadata_to_registers();
   }
@@ -911,6 +920,7 @@ struct masstree_node_warp {
   // for interior nodes,
   //    ptr_i contains subtree with keys: key_(i-1) < key <= key_i.
   //    key[num_keys-1] is high key (upper bound of the subtree), used for B-link traversal.
+  //    key[num_keys-1] is aliased to key14.
 
   // for border nodes,
   //    key14 is high key, used for B-link traversal
@@ -933,7 +943,7 @@ struct masstree_node_warp {
   static_assert(sizeof(elem_type) == sizeof(uint32_t));
   static constexpr uint32_t metadata_lane_ = node_width - 1;
   static constexpr uint32_t sibling_ptr_lane_ = node_width * 2 - 1;
-  static constexpr uint32_t border_high_key_lane_ = node_width - 2;
+  static constexpr uint32_t high_key_lane_ = node_width - 2;
   static constexpr uint32_t keystate_bits_lane_ = node_width * 2 - 2;
   
   static constexpr uint32_t num_keys_offset_ = 0;
