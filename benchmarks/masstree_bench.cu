@@ -324,8 +324,20 @@ int main(int argc, char** argv) {
     num_keys, max_key_length, max_counts_per_query, num_experiments, erase_ratio,
     allocator_pool_ratio, validate_result, validate_index, verbose
   );
+  std::cout << "Benchmarking masstree_tile32_type no-reuse-root" << std::endl;
+  bench_masstree<masstree_tile32_type, true, true, true, true, false>(
+    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
+    num_keys, max_key_length, max_counts_per_query, num_experiments, erase_ratio,
+    allocator_pool_ratio, validate_result, validate_index, verbose
+  );
   std::cout << "Benchmarking masstree_tile16_type" << std::endl;
   bench_masstree<masstree_tile16_type>(
+    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
+    num_keys, max_key_length, max_counts_per_query, num_experiments, erase_ratio,
+    allocator_pool_ratio, validate_result, validate_index, verbose
+  );
+  std::cout << "Benchmarking masstree_tile16_type no-reuse-root" << std::endl;
+  bench_masstree<masstree_tile16_type, true, true, true, true, false>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
     num_keys, max_key_length, max_counts_per_query, num_experiments, erase_ratio,
     allocator_pool_ratio, validate_result, validate_index, verbose
