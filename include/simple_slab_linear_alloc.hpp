@@ -191,7 +191,14 @@ struct device_allocator_context<simple_slab_linear_allocator<slab_size>> {
   }
   template <typename tile_type>
   DEVICE_QUALIFIER void deallocate_perlane_finish(uint32_t sum, const tile_type& tile) {
-    sum = cooperative_groups::reduce(tile, sum, cooperative_groups::plus<uint32_t>());
+    if constexpr (tile_type::size() <= 32) {
+      for (int offset = tile_type::size() / 2; offset >= 1; offset >>= 1) {
+        sum += tile.shfl_down(sum, offset);
+      }
+    }
+    else {
+      sum = cooperative_groups::reduce(tile, sum, cooperative_groups::plus<uint32_t>());
+    }
     if (tile.thread_rank() == 0) {
       cuda::atomic_ref<size_type, cuda::thread_scope_device> num_slabs_ref(alloc_.counts_->num_slabs_);
       num_slabs_ref.fetch_sub(sum, cuda::memory_order_relaxed);

@@ -100,4 +100,100 @@ DEVICE_QUALIFIER void store(T* ptr, T value) {
 
 }; // namespace memory
 
+namespace tile {
+
+// Lightweight tile that replaces cooperative_groups::tiled_partition
+struct full_warp_tile {
+  static constexpr uint32_t size() { return size_; }
+  DEVICE_QUALIFIER full_warp_tile() {}
+  DEVICE_QUALIFIER uint32_t thread_rank() const {
+    return static_cast<uint32_t>(threadIdx.x) & 31u;
+  }
+  DEVICE_QUALIFIER void sync() const {
+    __syncwarp();
+  }
+  DEVICE_QUALIFIER uint32_t ballot(int predicate) const {
+    return __ballot_sync(mask_, predicate);
+  }
+  DEVICE_QUALIFIER int all(int predicate) const {
+    return __ballot_sync(mask_, predicate) == mask_;
+  }
+  template <typename T, typename Tret = std::remove_const_t<T>>
+  DEVICE_QUALIFIER Tret shfl(T elem, int srcRank) const {
+    if constexpr (std::is_pointer_v<T>) {
+      return reinterpret_cast<Tret>(__shfl_sync(mask_, reinterpret_cast<uintptr_t>(elem), srcRank, size_));
+    }
+    else {
+      return static_cast<Tret>(__shfl_sync(mask_, elem, srcRank, size_));
+    }
+  }
+  template <typename T, typename Tret = std::remove_const_t<T>>
+  DEVICE_QUALIFIER Tret shfl_down(T elem, unsigned int delta) const {
+    return __shfl_down_sync(mask_, elem, delta, size_);
+  }
+  template <typename T, typename Tret = std::remove_const_t<T>>
+  DEVICE_QUALIFIER Tret shfl_up(T elem, unsigned int delta) const {
+    return __shfl_up_sync(mask_, elem, delta, size_);
+  }
+private:
+  static constexpr int size_ = 32;
+  static constexpr uint32_t mask_ = 0xffffffffu;
+};
+
+struct half_warp_tile {
+  static constexpr uint32_t size() { return size_; }
+  DEVICE_QUALIFIER half_warp_tile() {
+    bool is_second_half = (static_cast<uint32_t>(threadIdx.x) & 16u);
+    mask_ = is_second_half ? second_half_mask_ : first_half_mask_;
+  }
+  DEVICE_QUALIFIER uint32_t thread_rank() const {
+    return static_cast<uint32_t>(threadIdx.x) & 15u;
+  }
+  DEVICE_QUALIFIER void sync() const {
+    __syncwarp(mask_);
+  }
+  DEVICE_QUALIFIER uint32_t ballot(int predicate) const {
+    // ballot then shift by (mask_ == first_half_mask_ ? 0 : 16)
+    return __ballot_sync(mask_, predicate) >> ((~mask_) & 16u);
+  }
+  DEVICE_QUALIFIER int all(int predicate) const {
+    return __ballot_sync(mask_, predicate) == mask_;
+  }
+  template <typename T, typename Tret = std::remove_const_t<T>>
+  DEVICE_QUALIFIER Tret shfl(T elem, int srcRank) const {
+    if constexpr (std::is_pointer_v<T>) {
+      return reinterpret_cast<Tret>(__shfl_sync(mask_, reinterpret_cast<uintptr_t>(elem), srcRank, size_));
+    }
+    else {
+      return static_cast<Tret>(__shfl_sync(mask_, elem, srcRank, size_));
+    }
+  }
+  template <typename T, typename Tret = std::remove_const_t<T>>
+  DEVICE_QUALIFIER Tret shfl_down(T elem, unsigned int delta) const {
+    return __shfl_down_sync(mask_, elem, delta, size_);
+  }
+  template <typename T, typename Tret = std::remove_const_t<T>>
+  DEVICE_QUALIFIER Tret shfl_up(T elem, unsigned int delta) const {
+    return __shfl_up_sync(mask_, elem, delta, size_);
+  }
+private:
+  uint32_t mask_;
+  static constexpr int size_ = 16;
+  static constexpr uint32_t first_half_mask_ = 0x0000ffffu;
+  static constexpr uint32_t second_half_mask_ = 0xffff0000u;
+};
+
+template <uint32_t tile_size>
+struct lightweight_tiled_partition_s {
+  static_assert(tile_size == 32 || tile_size == 16);
+  using type = std::conditional_t<tile_size == 32,
+                                  full_warp_tile,
+                                  half_warp_tile>;
+};
+
+template <uint32_t tile_size>
+using lightweight_tiled_partition = typename lightweight_tiled_partition_s<tile_size>::type;
+
+}; // namespace tile
+
 };  // namespace utils

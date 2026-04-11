@@ -257,7 +257,7 @@ struct gpu_cuckoohashtable {
               node.template store_to_array<false>(d_table_); \
             } \
           } \
-          node_type::unlock<false>(d_table_, node0.get_node_index(), tile); \
+          node_type::unlock(d_table_, node0.get_node_index(), tile); \
           node_type::unlock(d_table_, node1.get_node_index(), tile); \
           return update_if_exists; \
         }
@@ -277,7 +277,7 @@ struct gpu_cuckoohashtable {
           } \
           node.insert(first_slice, to_insert, more_key); \
           node.template store_to_array<false>(d_table_); \
-          node_type::unlock<false>(d_table_, node0.get_node_index(), tile); \
+          node_type::unlock(d_table_, node0.get_node_index(), tile); \
           node_type::unlock(d_table_, node1.get_node_index(), tile); \
           return true; \
         }
@@ -285,7 +285,7 @@ struct gpu_cuckoohashtable {
         TRY_INSERT_TO_NODE_IF_NOT_FULL(node1)
         #undef TRY_INSERT_TO_NODE_IF_NOT_FULL
         // All nodes are full.
-        node_type::unlock<false>(d_table_, node0.get_node_index(), tile);
+        node_type::unlock(d_table_, node0.get_node_index(), tile);
         node_type::unlock(d_table_, node1.get_node_index(), tile);
       }
       // === Phase 3. Try make space with cuckoo, BFS depth=1 ===
@@ -324,7 +324,7 @@ struct gpu_cuckoohashtable {
               cuckoo_succeed = true; \
             } \
           } \
-          node_type::unlock<false>(d_table_, node.get_node_index(), tile); \
+          node_type::unlock(d_table_, node.get_node_index(), tile); \
           node_type::unlock(d_table_, other_node.get_node_index(), tile); \
           if (cuckoo_succeed) { break; } \
         } \
@@ -368,7 +368,7 @@ struct gpu_cuckoohashtable {
       if (more_key) { \
         suffix_if_found.retire(reclaimer); \
       } \
-      node_type::unlock<false>(d_table_, node0.get_node_index(), tile); \
+      node_type::unlock(d_table_, node0.get_node_index(), tile); \
       node_type::unlock(d_table_, node1.get_node_index(), tile); \
       return true; \
     }
@@ -376,7 +376,7 @@ struct gpu_cuckoohashtable {
     TRY_ERASE_KEY_IN_NODE(node1)
     #undef TRY_ERASE_KEY_IN_NODE
     // not found
-    node_type::unlock<false>(d_table_, node0.get_node_index(), tile);
+    node_type::unlock(d_table_, node0.get_node_index(), tile);
     node_type::unlock(d_table_, node1.get_node_index(), tile);
     return false;
   }

@@ -456,7 +456,8 @@ struct masstree_node_subwarp {
     //));
     assert(is_full());
     // prepare the upper half in right sibling
-    right_sibling_node.lane_elem_ = tile_.shfl_down(lane_elem_, left_width);
+    right_sibling_node.lane_elem_.key = tile_.shfl_down(lane_elem_.key, left_width);
+    right_sibling_node.lane_elem_.value = tile_.shfl_down(lane_elem_.value, left_width);
     // keystate
     if (is_border()) {
       if (tile_.thread_rank() == keystate_bits_lane_) {
@@ -535,7 +536,9 @@ struct masstree_node_subwarp {
     // shuffle the keys and do the insertion
     assert(!is_full());
     metadata_++;  // equiv. to num_keys++;
-    auto up_elem = tile_.shfl_up(lane_elem_, 1);
+    elem_type up_elem;
+    up_elem.key = tile_.shfl_up(lane_elem_.key, 1);
+    up_elem.value = tile_.shfl_up(lane_elem_.value, 1);
     const int value_location = key_location + (is_border() ? 0 : 1);
     if (is_valid_lane()) {
       if (tile_.thread_rank() == key_location) {
@@ -639,14 +642,17 @@ struct masstree_node_subwarp {
                               masstree_node_subwarp& parent_node) {
     // this node is the left sibling
     // copy elements from right sibling node
-    elem_type shifted_elem = tile_.shfl_up(right_sibling_node.lane_elem_, num_keys());
-    auto new_num_keys = num_keys() + right_sibling_node.num_keys();
-    if ((num_keys() <= tile_.thread_rank() && tile_.thread_rank() < new_num_keys)) {
+    elem_type shifted_elem;
+    auto this_num_keys = num_keys();
+    shifted_elem.key = tile_.shfl_up(right_sibling_node.lane_elem_.key, this_num_keys);
+    shifted_elem.value = tile_.shfl_up(right_sibling_node.lane_elem_.value, this_num_keys);
+    auto new_num_keys = this_num_keys + right_sibling_node.num_keys();
+    if ((this_num_keys <= tile_.thread_rank() && tile_.thread_rank() < new_num_keys)) {
       lane_elem_ = shifted_elem;
     }
     if (is_border()) {
       if (tile_.thread_rank() == keystate_bits_lane_) {
-        const int num_keys_x2 = 2 * num_keys();
+        const int num_keys_x2 = 2 * this_num_keys;
         lane_elem_.value &= ((1u << num_keys_x2) - 1);
         lane_elem_.value |= (right_sibling_node.lane_elem_.value << num_keys_x2);
       }
@@ -676,15 +682,18 @@ struct masstree_node_subwarp {
     assert(is_root() && num_keys() == 2);
     // copy the children into current node
     lane_elem_ = left_child_node.lane_elem_;
-    set_num_keys(left_child_node.num_keys() + right_child_node.num_keys());
+    auto left_child_node_num_keys = left_child_node.num_keys();
+    set_num_keys(left_child_node_num_keys + right_child_node.num_keys());
     metadata_ = (metadata_ & ~border_bit_mask_) ^ (left_child_node.metadata_ & border_bit_mask_); // is_border = left.is_border;
-    auto right_elem = tile_.shfl_up(right_child_node.lane_elem_, left_child_node.num_keys());
-    if (left_child_node.num_keys() <= tile_.thread_rank() && tile_.thread_rank() < num_keys()) {
+    elem_type right_elem;
+    right_elem.key = tile_.shfl_up(right_child_node.lane_elem_.key, left_child_node_num_keys);
+    right_elem.value = tile_.shfl_up(right_child_node.lane_elem_.value, left_child_node_num_keys);
+    if (left_child_node_num_keys <= tile_.thread_rank() && tile_.thread_rank() < num_keys()) {
       lane_elem_ = right_elem;
     }
     if (is_border()) {
       if (tile_.thread_rank() == keystate_bits_lane_) {
-        const int num_keys_x2 = 2 * left_child_node.num_keys();
+        const int num_keys_x2 = 2 * left_child_node_num_keys;
         lane_elem_.value &= ((1u << num_keys_x2) - 1);
         lane_elem_.value |= (right_child_node.lane_elem_.value << num_keys_x2);
       }
@@ -711,13 +720,17 @@ struct masstree_node_subwarp {
       num_shift++;
     }
     // copy last num_shift entries of the sibling into current
-    elem_type shifted_elem = tile_.shfl_up(lane_elem_, num_shift);
+    elem_type shifted_elem;
+    shifted_elem.key = tile_.shfl_up(lane_elem_.key, num_shift);
+    shifted_elem.value = tile_.shfl_up(lane_elem_.value, num_shift);
     metadata_ += num_shift; // equiv. to num_keys += num_shift;
     if (tile_.thread_rank() < num_keys()) {
       lane_elem_ = shifted_elem;
     }
     sibling_node.metadata_ -= num_shift;  // equiv. to num_keys -= num_shift;
-    shifted_elem = tile_.shfl_down(sibling_node.lane_elem_, sibling_node.num_keys());
+    auto sibling_node_num_keys = sibling_node.num_keys();
+    shifted_elem.key = tile_.shfl_down(sibling_node.lane_elem_.key, sibling_node_num_keys);
+    shifted_elem.value = tile_.shfl_down(sibling_node.lane_elem_.value, sibling_node_num_keys);
     if (tile_.thread_rank() < num_shift) {
       lane_elem_ = shifted_elem;
     }
@@ -725,12 +738,12 @@ struct masstree_node_subwarp {
       if (tile_.thread_rank() == keystate_bits_lane_) {
         const auto num_shift_x2 = 2 * num_shift;
         lane_elem_.value <<= num_shift_x2;
-        lane_elem_.value |= ((sibling_node.lane_elem_.value >> (2 * sibling_node.num_keys())) & ((1u << num_shift_x2) - 1));
+        lane_elem_.value |= ((sibling_node.lane_elem_.value >> (2 * sibling_node_num_keys)) & ((1u << num_shift_x2) - 1));
       }
     }
     write_metadata_to_registers();
     // remove last num_shift entries from the sibling
-    key_type pivot_key = sibling_node.get_key_from_location(sibling_node.num_keys() - 1);
+    key_type pivot_key = sibling_node.get_key_from_location(sibling_node_num_keys - 1);
     if (tile_.thread_rank() == high_key_lane_) {
       sibling_node.lane_elem_.key = pivot_key;
     }
@@ -752,18 +765,21 @@ struct masstree_node_subwarp {
                                      masstree_node_subwarp& new_sibling_node) {
     // new_sibling_node: only its node_index_ is valid. this fills its lane_elem_.
     // compute num shift; adjust similar to get_split_left_width()
-    uint32_t num_shift = (sibling_node.num_keys() - num_keys()) / 2;
+    auto this_num_keys = num_keys();
+    uint32_t num_shift = (sibling_node.num_keys() - this_num_keys) / 2;
     if (is_border() && (sibling_node.get_keystate_from_location(num_shift - 1) == KEYSTATE_VALUE)) {
       num_shift--;
     }
     // copy first num_shift entries of the sibling into current
-    elem_type shifted_elem = tile_.shfl_up(sibling_node.lane_elem_, num_keys());
-    if (num_keys() <= tile_.thread_rank() && tile_.thread_rank() < num_keys() + num_shift) {
+    elem_type shifted_elem;
+    shifted_elem.key = tile_.shfl_up(sibling_node.lane_elem_.key, this_num_keys);
+    shifted_elem.value = tile_.shfl_up(sibling_node.lane_elem_.value, this_num_keys);
+    if (this_num_keys <= tile_.thread_rank() && tile_.thread_rank() < this_num_keys + num_shift) {
       lane_elem_ = shifted_elem;
     }
     if (is_border()) {
       if (tile_.thread_rank() == keystate_bits_lane_) {
-        const int num_keys_x2 = 2 * num_keys();
+        const int num_keys_x2 = 2 * this_num_keys;
         lane_elem_.value &= ((1u << num_keys_x2) - 1);
         lane_elem_.value |= (sibling_node.lane_elem_.value << num_keys_x2);
       }
@@ -782,7 +798,8 @@ struct masstree_node_subwarp {
     new_sibling_node.lane_elem_ = sibling_node.lane_elem_;
     new_sibling_node.metadata_ = sibling_node.metadata_;
     // remove first num_shift entries from the new_sibling
-    shifted_elem = tile_.shfl_down(new_sibling_node.lane_elem_, num_shift);
+    shifted_elem.key = tile_.shfl_down(new_sibling_node.lane_elem_.key, num_shift);
+    shifted_elem.value = tile_.shfl_down(new_sibling_node.lane_elem_.value, num_shift);
     new_sibling_node.metadata_ -= num_shift;  // equiv. to new_sibling_node.num_keys -= num_shift;
     if (tile_.thread_rank() < new_sibling_node.num_keys()) {
       new_sibling_node.lane_elem_ = shifted_elem;
@@ -813,7 +830,9 @@ struct masstree_node_subwarp {
   DEVICE_QUALIFIER void do_erase(int key_location, int value_location) {
     assert(num_keys() > 0);
     metadata_--;  // equiv. to num_keys--;
-    auto down_elem = tile_.shfl_down(lane_elem_, 1);
+    elem_type down_elem;
+    down_elem.key = tile_.shfl_down(lane_elem_.key, 1);
+    down_elem.value = tile_.shfl_down(lane_elem_.value, 1);
     if (is_valid_lane()) {
       if (tile_.thread_rank() >= key_location) {
         lane_elem_.key = down_elem.key;

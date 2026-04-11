@@ -38,8 +38,8 @@ __global__ void batch_kernel(index_type index,
   __shared__ cg::block_tile_memory<reclaimer_type::block_size_> block_tile_shmem;
   auto block = cg::this_thread_block(block_tile_shmem);
   auto block_wide_tile = cg::tiled_partition<reclaimer_type::block_size_>(block);
-  auto warp_wide_tile = cg::tiled_partition<32>(block);
-  auto tile = cg::tiled_partition<tile_size>(block);
+  utils::tile::lightweight_tiled_partition<32> warp_wide_tile;
+  utils::tile::lightweight_tiled_partition<tile_size> tile;
   allocator_type allocator{index.allocator_, tile};
   extern __shared__ uint32_t reclaimer_shmem_buffer[];
   reclaimer_type reclaimer{index.reclaimer_,
@@ -448,6 +448,8 @@ struct insert_device_func {
     value_type value;
   };
   // device-side functions
+  template <typename warp_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const noexcept {}
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
@@ -484,6 +486,8 @@ struct find_device_func {
     value_type value;
   };
   // device-side functions
+  template <typename warp_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const noexcept {}
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
@@ -521,6 +525,8 @@ struct erase_device_func {
     size_type key_length;
   };
   // device-side functions
+  template <typename warp_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const noexcept {}
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
@@ -562,6 +568,8 @@ struct mixed_device_func {
     bool result;
   };
   // device-side functions
+  template <typename warp_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const noexcept {}
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
