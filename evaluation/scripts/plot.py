@@ -593,7 +593,7 @@ def intro_plots(configs_and_results, plot_file_prefix):
                         for_barplot=True
                     )
             ax.text(our_x, our_ymax, f'{our_ymax / baseline_ymax:.1f}x', fontsize=12, ha='center', va='bottom')
-        ax.set_ylim(bottom=0, top=plot_top * 1.25)
+        ax.set_ylim(bottom=0, top=plot_top * 1.15)
         xmargin = bar_spacing * len(index_types)
         ax.set_xlim(group_centers[0] - xmargin, group_centers[-1] + xmargin)
         ax.set_xticks(group_centers)
@@ -603,8 +603,9 @@ def intro_plots(configs_and_results, plot_file_prefix):
             ax.set_ylabel(r'Throughput ($10^9$/s)')
         plt.savefig(f'{plot_file_prefix}-{plot_names[idx]}.pdf', bbox_inches='tight')
         plt.close(fig)
-    fig, ax = plt.subplots(1, 1, figsize=(8, 0.3), constrained_layout=True)
-    ax.legend(legend_handles, legend_labels, loc='center', ncol=len(legend_labels))
+    fig, ax = plt.subplots(1, 1, figsize=(7, 0.3), constrained_layout=True)
+    ax.legend(legend_handles, legend_labels, loc='center', ncol=len(legend_labels),
+              handlelength=1, handletextpad=0.5)
     ax.axis('off')
     plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
     plt.close(fig)
