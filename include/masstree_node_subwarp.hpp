@@ -82,11 +82,19 @@ struct masstree_node_subwarp {
   }
   template <bool atomic, bool acquire = true, typename warp_type>
   DEVICE_QUALIFIER void load_warpwidesync(const warp_type& warp) {
-    auto node_ptr = reinterpret_cast<elem_unsigned_type*>(allocator_.address(node_index_));
+    auto node_ptr = reinterpret_cast<key_type*>(allocator_.address(node_index_));
+    // 1. fetch once: thread0-15 fetches tile.rank()*2, thread16-31 fetches tile.rank()*2+1
+    int fetch_idx = (tile_.thread_rank() * 2) + (warp.thread_rank() < 16 ? 0 : 1);
     if constexpr (atomic) { warp.sync(); }
-    auto elem = utils::memory::load<elem_unsigned_type, atomic, acquire>(node_ptr + tile_.thread_rank());
+    auto tmp_elem = utils::memory::load<key_type, atomic, acquire>(node_ptr + fetch_idx);
     if constexpr (atomic) { warp.sync(); }
-    lane_elem_ = *reinterpret_cast<elem_type*>(&elem);
+    // 2. re-distribute tmp_elem
+    lane_elem_.key = tmp_elem;
+    lane_elem_.value = tmp_elem;
+    auto up_elem = warp.shfl_up(tmp_elem, 16);
+    if (warp.thread_rank() >= 16) { lane_elem_.key = up_elem; }
+    auto down_elem = warp.shfl_down(tmp_elem, 16);
+    if (warp.thread_rank() < 16) { lane_elem_.value = down_elem; }
   }
   template <bool atomic, bool release = true>
   DEVICE_QUALIFIER void store() {
