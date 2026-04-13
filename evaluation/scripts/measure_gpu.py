@@ -29,6 +29,8 @@ def generate_configs():
                 common_config[ConfigType.rep_mixed] = NUM_REPEATS
             if index_type in INDEX_TYPES_ROBUST:
                 common_config[OptionalConfigType.allocator_pool_ratio] = ROBUST_INDEX_ALLOC_POOL_RATIO(index_type)
+            if index_type == IndexType.gpu_dycuckoo:
+                common_config[OptionalConfigType.initial_capacity] = DYCUCKOO_INITIAL_CAPACITY
             configs.append(common_config)
     # MT suffix / reuse_root
     for index_type in [IndexType.gpu_masstree]:

@@ -9,6 +9,9 @@ DEFAULT_SCAN_COUNT = 10
 DEFAULT_MIX_READ_RATIO = 0.5
 DEFAULT_SCAN_BATCH_SIZE = int(DEFAULT_BATCH_SIZE // DEFAULT_SCAN_COUNT)
 
+# capacity * 16 * 0.8 > 500M so that no resize occurs
+DYCUCKOO_INITIAL_CAPACITY = 40000000
+
 INDEX_TYPES_ROBUST = [
     IndexType.gpu_masstree,
     IndexType.gpu_chainhashtable,
@@ -35,9 +38,6 @@ IS_INDEX_TYPE_SUPPORT_MIX = INDEX_TYPES_ROBUST + INDEX_TYPES_CPU_BASELINE
 def DO_TEST_FOR_INDEX_TYPE(index_type, key_length):
     if index_type == IndexType.gpu_blink_tree and key_length > 1:
         # not support longkeys
-        return False
-    if index_type == IndexType.gpu_dycuckoo and key_length >= 16:
-        # OOM for 500M maxkey
         return False
     return True
 
