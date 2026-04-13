@@ -39,6 +39,7 @@ struct simple_slab_linear_allocator {
   static constexpr uint32_t blocks_delta_ = 8 * 1024;
   static constexpr float load_factor_threshold_ = 0.8f;
   static constexpr uint32_t check_load_factor_every_ = 128;
+  static constexpr float initial_slab_ratio = 0.9f;
   struct global_counters {
     size_type slab_block_count_;  // grows upward from the bottom
     size_type linear_count_;      // grows downward from the top
@@ -71,7 +72,7 @@ struct simple_slab_linear_allocator {
     cuda_try(cudaMemset(pool_, 0x00, total_bitmap_bytes));
     pool_ = reinterpret_cast<void*>(reinterpret_cast<uint8_t*>(pool_) + total_bitmap_bytes);
     cuda_try(cudaMalloc(&counts_, sizeof(global_counters)));
-    auto initial_blocks = (total_blocks_ / 4 * 3 + blocks_delta_ - 1) / blocks_delta_ * blocks_delta_;
+    auto initial_blocks = (static_cast<pointer_type>(initial_slab_ratio * total_blocks_) + blocks_delta_ - 1) / blocks_delta_ * blocks_delta_;
     global_counters h_counts(initial_blocks);
     cuda_try(cudaMemcpy(counts_, &h_counts, sizeof(global_counters), cudaMemcpyHostToDevice));
   }
