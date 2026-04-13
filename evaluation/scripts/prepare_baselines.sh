@@ -6,8 +6,8 @@ DYCUCKOO_DIR="${ROOT_DIR}/baselines/DyCuckoo"
 DYCUCKOO_PATCH="${ROOT_DIR}/baselines/DyCuckoo.patch"
 MASSTREE_DIR="${ROOT_DIR}/baselines/masstree-beta"
 MASSTREE_PATCH="${ROOT_DIR}/baselines/masstree-beta.patch"
-BTREE_DIR="${ROOT_DIR}/baselines/MVGpuBtree"
-BTREE_PATCH="${ROOT_DIR}/baselines/MVGpuBtree.patch"
+BTREE_DIR="${ROOT_DIR}/baselines/MVGpuBTree"
+BTREE_PATCH="${ROOT_DIR}/baselines/MVGpuBTree.patch"
 
 pushd $(pwd) > /dev/null
 cd ${ROOT_DIR} && git submodule update --init
