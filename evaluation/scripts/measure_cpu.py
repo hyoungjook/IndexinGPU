@@ -18,7 +18,7 @@ def generate_configs():
                 ConfigType.rep_insdel: NUM_REPEATS,
             }
             if index_type in IS_INDEX_TYPE_ORDERED:
-                common_config[ConfigType.num_scans] = DEFAULT_BATCH_SIZE
+                common_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
                 common_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
                 common_config[ConfigType.rep_scan] = NUM_REPEATS
             common_config[ConfigType.num_mixed] = DEFAULT_BATCH_SIZE

@@ -32,9 +32,14 @@ IS_INDEX_TYPE_ORDERED = [
     IndexType.cpu_masstree
 ]
 IS_INDEX_TYPE_SUPPORT_MIX = INDEX_TYPES_ROBUST + INDEX_TYPES_CPU_BASELINE
-IS_INDEX_TYPE_SUPPORT_LONGKEY = INDEX_TYPES_ROBUST + INDEX_TYPES_CPU_BASELINE + [
-    IndexType.gpu_dycuckoo
-]
+def DO_TEST_FOR_INDEX_TYPE(index_type, key_length):
+    if index_type == IndexType.gpu_blink_tree and key_length > 1:
+        # not support longkeys
+        return False
+    if index_type == IndexType.gpu_dycuckoo and key_length >= 16:
+        # OOM for 500M maxkey
+        return False
+    return True
 
 def ROBUST_INDEX_ALLOC_POOL_RATIO(index_type):
     if index_type in [IndexType.gpu_masstree, IndexType.gpu_extendhashtable]:

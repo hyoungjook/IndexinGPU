@@ -6,7 +6,7 @@ def generate_configs():
     # main
     for key_length in EXP_KEY_LENGTHS:
         for index_type in INDEX_TYPES_ROBUST + INDEX_TYPES_GPU_BASELINE:
-            if key_length > 1 and index_type not in IS_INDEX_TYPE_SUPPORT_LONGKEY:
+            if not DO_TEST_FOR_INDEX_TYPE(index_type, key_length):
                 continue
             common_config = {
                 ConfigType.index_type: index_type,
