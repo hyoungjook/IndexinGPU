@@ -36,7 +36,7 @@ struct node_type {
 
 struct gpu_blink_tree_adapter {
   static constexpr bool is_ordered = true;
-  static constexpr bool support_mixed = false;
+  static constexpr bool support_mixed = true;
   using key_slice_type = uint32_t;
   using value_type = uint32_t;
   using size_type = uint32_t;
@@ -101,6 +101,16 @@ struct gpu_blink_tree_adapter {
     index_->range_query(keys, upper_keys,
       reinterpret_cast<pair_type<key_slice_type, value_type>*>(results), nullptr,
       count, num_keys, 0, configs_.lookup_concurrent);
+  }
+  void mixed_batch(const kernels::request_type* types,
+                   const key_slice_type* keys,
+                   uint32_t keylen_max,
+                   const size_type* key_lengths,
+                   value_type* values,
+                   std::size_t num_keys) {
+    (void)keylen_max;
+    (void)key_lengths;
+    index_->mixed_batch(types, keys, values, num_keys);
   }
   void print_stats() {}
 
