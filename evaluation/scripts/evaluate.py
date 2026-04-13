@@ -208,7 +208,9 @@ def run_one(args, config):
     result_lines = result_str.split('\n')
     result = {}
     parsed_config = {}
-    space_results = []
+    space_results = {
+        'avg': [], 'min': [], 'max': [], 'space': []
+    }
     for result_line in result_lines:
         if 'CMD' in result_line:
             pass
@@ -226,17 +228,25 @@ def run_one(args, config):
             avg_value = float(result_tokens[1])
             min_value = float(re.sub(r'[(),]', '', result_tokens[3]))
             max_value = float(re.sub(r'[(),]', '', result_tokens[4]))
-            result[result_type] = {'avg': avg_value,
-                                   'min': min_value,
-                                   'max': max_value}
+            if result_type == ResultType.delete_space.name:
+                space_results['avg'].append(avg_value)
+                space_results['min'].append(min_value)
+                space_results['max'].append(max_value)
+            else:
+                result[result_type] = {'avg': avg_value,
+                                       'min': min_value,
+                                       'max': max_value}
         elif 'simple_slab' in result_line:
             result_tokens = result_line.split(' ')
             for token in result_tokens:
                 if '%' in token:
-                    space_results.append(float(re.sub(r'[()%]', '', token)))
+                    space_results['space'].append(float(re.sub(r'[()%]', '', token)))
                     break
-    if len(space_results) > 0:
-        result['space'] = space_results
+    if len(space_results['avg']) > 0:
+        result['delete_space'] = {'avg': space_results['avg'],
+                                  'min': space_results['min'],
+                                  'max': space_results['max']}
+        result['space'] = space_results['space']
     print(f'parsed_config: {parsed_config}, result: {result}')
     return parsed_config, result
 

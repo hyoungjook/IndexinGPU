@@ -365,51 +365,32 @@ def tile_plots(configs_and_results, plot_file_prefix):
 def merge_plots(configs_and_results, plot_file_prefix):
     tputs = {}
     spaces = {}
-    max_spaces = {}
     index_types = [IndexType.gpu_masstree, IndexType.gpu_extendhashtable]
     plot_names = ['mt', 'et']
     for index_type in index_types:
         for key_length in EXP_MERGE_KEY_LENGTHS:
-            desired_config = {
-                ConfigType.index_type: index_type,
-                ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
-                ConfigType.keylen_prefix: 0,
-                ConfigType.keylen_min: key_length,
-                ConfigType.keylen_max: key_length,
-                ConfigType.only_check_space: 1,
-            }
-            result = filter(configs_and_results, desired_config, ResultType.space)
-            max_spaces[(index_type, key_length)] = float(result['space'])
             for merge_level in EXP_MERGE_LEVELS[index_type]:
                 tputs[(index_type, key_length, merge_level)] = {
                     'avg': [], 'min': [], 'max': []
                 }
                 spaces[(index_type, key_length, merge_level)] = []
-                for erase_num in EXP_MERGE_ERASE_NUMS:
-                    desired_config = {
-                        ConfigType.index_type: index_type,
-                        ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
-                        ConfigType.keylen_prefix: 0,
-                        ConfigType.keylen_min: key_length,
-                        ConfigType.keylen_max: key_length,
-                        ConfigType.num_insdel: erase_num,
-                        OptionalConfigType.merge_level: merge_level,
-                    }
-                    result = filter(configs_and_results, desired_config, ResultType.delete)
-                    for metric_type in ['avg', 'min', 'max']:
-                        tputs[(index_type, key_length, merge_level)][metric_type].append(float(result['delete'][metric_type]))
-                    result = filter(configs_and_results, desired_config, ResultType.space)
-                    spaces[(index_type, key_length, merge_level)].append(float(result['space']))
-
-    def _set_yaxis_ticks(ax, ymax, ytick_candidates):
-        top = ymax
-        ax.set_ylim(bottom=0, top=top)
-        for ytick in ytick_candidates:
-            num_ticks = int(top // ytick)
-            if 2 <= num_ticks <= 4:
-                ax.set_yticks([ytick * x for x in range(num_ticks + 1)])
-                return
-
+                desired_config = {
+                    ConfigType.index_type: index_type,
+                    ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+                    ConfigType.keylen_prefix: 0,
+                    ConfigType.keylen_min: key_length,
+                    ConfigType.keylen_max: key_length,
+                    ConfigType.num_space: DEFAULT_BATCH_SIZE,
+                    OptionalConfigType.merge_level: merge_level,
+                }
+                result = filter(configs_and_results, desired_config, ResultType.delete_space)
+                tputs[(index_type, key_length, merge_level)] = {
+                    'avg': [float(v) for v in result['delete_space']['avg']],
+                    'min': [float(v) for v in result['delete_space']['min']],
+                    'max': [float(v) for v in result['delete_space']['max']]
+                }
+                result = filter(configs_and_results, desired_config, ResultType.space)
+                spaces[(index_type, key_length, merge_level)] = [float(v) for v in result['space']]
     # plot
     labels = {
         (0, 0): 'Naive(k=1)',
@@ -437,14 +418,14 @@ def merge_plots(configs_and_results, plot_file_prefix):
                 max_values = _convert_mops_to_bops(tputs[((index_type, key_length, merge_level))]['max'])
                 tput_ydata = avg_values
                 line, = ax.plot(
-                    EXP_MERGE_ERASE_RATIOS, tput_ydata,
+                    EXP_MERGE_ERASE_RATIOS[1:], tput_ydata,
                     label=labels[(key_idx, merge_idx)],
                     linewidth=2, markersize=6,
                     **styles[(key_idx, merge_idx)]
                 )
                 _add_throughput_error_bars(
                     ax,
-                    EXP_MERGE_ERASE_RATIOS,
+                    EXP_MERGE_ERASE_RATIOS[1:],
                     avg_values,
                     min_values,
                     max_values,
@@ -466,11 +447,10 @@ def merge_plots(configs_and_results, plot_file_prefix):
             include_ylabel=(idx == 0))
         for key_idx, key_length in enumerate(EXP_MERGE_KEY_LENGTHS):
             for merge_idx, merge_level in enumerate(EXP_MERGE_LEVELS[index_type]):
-                space_ydata = [max_spaces[(index_type, key_length)]] + \
-                    spaces[(index_type, key_length, merge_level)]
+                space_ydata = spaces[(index_type, key_length, merge_level)]
                 space_ydata = [s / space_ydata[0] for s in space_ydata]
                 line, = ax.plot(
-                    [0] + EXP_MERGE_ERASE_RATIOS, space_ydata,
+                    EXP_MERGE_ERASE_RATIOS, space_ydata,
                     label=labels[(key_idx, merge_idx)],
                     linewidth=2, markersize=6,
                     **styles[(key_idx, merge_idx)]

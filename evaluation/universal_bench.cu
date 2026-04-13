@@ -83,8 +83,12 @@ struct gpu_lap_timer: public lap_timer {
 };
 
 struct gpu_multiround_timer: public lap_timer {
+  gpu_multiround_timer(uint32_t num_rounds)
+    : num_rounds_(num_rounds)
+    , laps_(num_rounds) {}
   void start_round() {
     accum_time_ = 0;
+    lapcnt_ = 0;
   }
   void start_lap() {
     timer_.start_timer();
@@ -94,12 +98,20 @@ struct gpu_multiround_timer: public lap_timer {
   }
   void record_lap() {
     accum_time_ += timer_.get_elapsed_s();
+    laps_[lapcnt_].times_.push_back(accum_time_);
+    lapcnt_++;
   }
-  void record_round() {
-    times_.push_back(accum_time_);
+  void record_round() {}
+  void print_rate_Mops(std::string name, std::size_t size_per_lap) {
+    for (uint32_t r = 0; r < num_rounds_; r++) {
+      laps_[r].print_rate_Mops(name, size_per_lap * (r + 1));
+    }
   }
   float accum_time_;
+  uint32_t num_rounds_;
+  int lapcnt_;
   gpu_timer timer_;
+  std::vector<lap_timer> laps_;
 };
 #endif
 
@@ -314,8 +326,8 @@ void run_bench(adapter_type& adapter,
   // space test
   #if !defined(NOGPU)
   if (args.rep_space > 0) {
-    gpu_multiround_timer delete_space_timer;
     uint32_t rep_del = args.max_keys / args.num_space;
+    gpu_multiround_timer delete_space_timer(rep_del);
     for (uint32_t r = 0; r < args.rep_space; r++) {
       prefill(adapter, h_keys, h_key_lengths, h_values, args.keylen_max, args.max_keys);
       if (r == 0) { adapter.print_stats(); }
@@ -338,7 +350,7 @@ void run_bench(adapter_type& adapter,
       adapter.destroy();
       if (verbose) { std::cout << "space tested " << r + 1 << "/" << args.rep_space << std::endl; }
     }
-    delete_space_timer.print_rate_Mops("delete_space", static_cast<std::size_t>(args.num_space) * rep_del);
+    delete_space_timer.print_rate_Mops("delete_space", args.num_space);
   }
   #endif
 
