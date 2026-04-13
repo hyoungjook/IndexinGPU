@@ -120,7 +120,7 @@ def key_length_plots(configs_and_results, plot_file_prefix):
                     desired_config[ConfigType.num_mixed] = DEFAULT_BATCH_SIZE
                     desired_config[ConfigType.mix_read_ratio] = DEFAULT_MIX_READ_RATIO
                 elif result_type == ResultType.scan:
-                    desired_config[ConfigType.num_scans] = DEFAULT_BATCH_SIZE
+                    desired_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
                     desired_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
                 result = filter(configs_and_results, desired_config, result_type)
                 for metric_type in ['avg', 'min', 'max']:
@@ -211,20 +211,20 @@ def key_length_plots(configs_and_results, plot_file_prefix):
 def suffix_plots(configs_and_results, plot_file_prefix):
     tputs = {}
     plot_specs = [
-        (0, IndexType.gpu_masstree, ResultType.lookup, EXP_GPU_MASSTREE_OPTS),
-        (1, IndexType.gpu_extendhashtable, ResultType.lookup, EXP_GPU_EXTENDHT_OPTS),
-        (2, IndexType.gpu_extendhashtable, ResultType.insert, EXP_GPU_EXTENDHT_OPTS),
+        (0, IndexType.gpu_masstree, ResultType.lookup, EXP_GPU_MASSTREE_OPTS, DEFAULT_MAXKEY_LONG),
+        (1, IndexType.gpu_extendhashtable, ResultType.lookup, EXP_GPU_EXTENDHT_OPTS, 2 * DEFAULT_BATCH_SIZE),
+        (2, IndexType.gpu_extendhashtable, ResultType.insert, EXP_GPU_EXTENDHT_OPTS, 2 * DEFAULT_BATCH_SIZE),
     ]
     plot_names = [
         'mt-lookup', 'et-lookup', 'et-insert'
     ]
-    for idx, index_type, result_type, opt_configs in plot_specs:
+    for idx, index_type, result_type, opt_configs, max_key in plot_specs:
         tputs[idx] = {
             'avg': [], 'min': [], 'max': []
         }
         desired_config = {
             ConfigType.index_type: index_type,
-            ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+            ConfigType.max_keys: max_key,
             ConfigType.keylen_min: DEFAULT_KEY_LENGTH,
             ConfigType.keylen_max: DEFAULT_KEY_LENGTH,
         }
@@ -244,7 +244,7 @@ def suffix_plots(configs_and_results, plot_file_prefix):
     # plot
     mt_xticklabels = ['C', 'R', 'RS']
     et_xticklabels = ['R', 'C', 'CT', 'Ct']
-    for idx, index_type, result_type, opt_configs in plot_specs:
+    for idx, index_type, result_type, opt_configs, _ in plot_specs:
         fig, ax = _make_fixed_plot_area_figure(1.3, 1.1,
             include_xlabel=False, include_ylabel=(idx == 0))
         avg_values = _convert_mops_to_bops(tputs[idx]['avg'])
@@ -514,7 +514,7 @@ def intro_plots(configs_and_results, plot_file_prefix):
                     if result_type == ResultType.lookup:
                         desired_config[ConfigType.num_lookups] = DEFAULT_BATCH_SIZE
                     elif result_type == ResultType.scan:
-                        desired_config[ConfigType.num_scans] = DEFAULT_BATCH_SIZE
+                        desired_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
                         desired_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
                     else:
                         desired_config[ConfigType.num_mixed] = DEFAULT_BATCH_SIZE

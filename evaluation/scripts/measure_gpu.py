@@ -51,7 +51,7 @@ def generate_configs():
     for index_type in [IndexType.gpu_extendhashtable]:
         common_config = {
             ConfigType.index_type: index_type,
-            ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+            ConfigType.max_keys: 2 * DEFAULT_BATCH_SIZE, # use smaller max_key to see split impact
             ConfigType.keylen_min: DEFAULT_KEY_LENGTH,
             ConfigType.keylen_max: DEFAULT_KEY_LENGTH,
             ConfigType.num_lookups: DEFAULT_BATCH_SIZE,

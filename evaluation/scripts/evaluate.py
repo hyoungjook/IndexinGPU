@@ -311,4 +311,5 @@ def filter(configs_and_results: list[dict], desired_config: dict, result_type: R
         if result_type.name not in result:
             continue
         return result
+    print(f'filter fail: {desired_config} {result_type}')
     assert False

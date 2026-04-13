@@ -37,7 +37,7 @@ struct simple_slab_linear_allocator {
   static_assert(num_slabs_in_block_ == 16 * sizeof(uint64_t) * 8);
   static constexpr uint32_t block_size_ = slab_size_ * num_slabs_in_block_;
   static constexpr uint32_t blocks_delta_ = 8 * 1024;
-  static constexpr float load_factor_threshold_ = 0.8f;
+  static constexpr float load_factor_threshold_ = 0.95f;
   static constexpr uint32_t check_load_factor_every_ = 128;
   static constexpr float initial_slab_ratio = 0.9f;
   struct global_counters {

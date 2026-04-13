@@ -35,6 +35,7 @@ IS_INDEX_TYPE_ORDERED = [
     IndexType.cpu_masstree
 ]
 IS_INDEX_TYPE_SUPPORT_MIX = INDEX_TYPES_ROBUST + INDEX_TYPES_CPU_BASELINE
+IS_INDEX_TYPE_SUPPORT_LONGKEY = INDEX_TYPES_ROBUST + INDEX_TYPES_CPU_BASELINE + [IndexType.gpu_dycuckoo]
 def DO_TEST_FOR_INDEX_TYPE(index_type, key_length):
     if index_type == IndexType.gpu_blink_tree and key_length > 1:
         # not support longkeys
@@ -58,47 +59,33 @@ EXP_GPU_MASSTREE_OPTS = [
     {
         ConfigType.keylen_prefix: DEFAULT_KEY_LENGTH - 1,
         OptionalConfigType.enable_suffix: 0,
-        OptionalConfigType.lookup_concurrent: 0,
-        OptionalConfigType.reuse_root: 0
     },
     #{  ##### This config gives OOM, so instead None #####
     #    ConfigType.keylen_prefix: 0,
     #    OptionalConfigType.enable_suffix: 0,
-    #    OptionalConfigType.lookup_concurrent: 0,
-    #    OptionalConfigType.reuse_root: 0
     #},
     None,
     {
         ConfigType.keylen_prefix: 0,
         OptionalConfigType.enable_suffix: 1,
-        OptionalConfigType.lookup_concurrent: 0,
-        OptionalConfigType.reuse_root: 0
     },
 ]
 EXP_GPU_EXTENDHT_OPTS = [
     {
         ConfigType.keylen_prefix: 0,
         OptionalConfigType.hash_tag_level: 0,
-        OptionalConfigType.lookup_concurrent: 0,
-        OptionalConfigType.reuse_dirsize: 0
     },
     {
         ConfigType.keylen_prefix: DEFAULT_KEY_LENGTH - 1,
         OptionalConfigType.hash_tag_level: 0,
-        OptionalConfigType.lookup_concurrent: 0,
-        OptionalConfigType.reuse_dirsize: 0
     },
     {
         ConfigType.keylen_prefix: DEFAULT_KEY_LENGTH - 1,
         OptionalConfigType.hash_tag_level: 1,
-        OptionalConfigType.lookup_concurrent: 0,
-        OptionalConfigType.reuse_dirsize: 0
     },
     {
         ConfigType.keylen_prefix: DEFAULT_KEY_LENGTH - 1,
         OptionalConfigType.hash_tag_level: 2,
-        OptionalConfigType.lookup_concurrent: 0,
-        OptionalConfigType.reuse_dirsize: 0
     },
 ]
 
