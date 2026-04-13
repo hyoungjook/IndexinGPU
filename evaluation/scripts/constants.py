@@ -2,12 +2,12 @@ from evaluate import *
 
 NUM_REPEATS = 10
 MILLION = 1000000
-DEFAULT_MAXKEY_4B = int(4000 * MILLION)
-DEFAULT_MAXKEY_LONG = int(400 * MILLION)
+DEFAULT_MAXKEY_LONG = int(500 * MILLION)
 DEFAULT_BATCH_SIZE = int(100 * MILLION)
 DEFAULT_KEY_LENGTH = 8
 DEFAULT_SCAN_COUNT = 10
 DEFAULT_MIX_READ_RATIO = 0.5
+DEFAULT_SCAN_BATCH_SIZE = int(DEFAULT_BATCH_SIZE // DEFAULT_SCAN_COUNT)
 
 INDEX_TYPES_ROBUST = [
     IndexType.gpu_masstree,
@@ -36,11 +36,14 @@ IS_INDEX_TYPE_SUPPORT_LONGKEY = INDEX_TYPES_ROBUST + INDEX_TYPES_CPU_BASELINE + 
     IndexType.gpu_dycuckoo
 ]
 
-GPU_MASSTREE_LONGKEYx400M_ALLOC_POOL_RATIO = 0.8
-GPU_CHAINHT_4BKEYx4B_ALLOC_POOL_RATIO = 0.5
-GPU_CHAINHT_LONGKEYx400M_ALLOC_POOL_RATIO = 0.8
-GPU_CUCKOOHT_4BKEYx4B_ALLOC_POOL_RATIO = 0.1
-GPU_CUCKOOHT_LONGKEYx400M_ALLOC_POOL_RATIO = 0.8
+def ROBUST_INDEX_ALLOC_POOL_RATIO(index_type):
+    if index_type in [IndexType.gpu_masstree, IndexType.gpu_extendhashtable]:
+        return 0.9
+    elif index_type in [IndexType.gpu_chainhashtable]:
+        return 0.85
+    elif index_type in [IndexType.gpu_cuckoohashtable]:
+        return 0.8
+    assert False
 
 EXP_KEY_LENGTHS = [
     1, 2, 4, 8, 16

@@ -36,14 +36,15 @@ class ConfigType(Enum):
     scan_count = auto()
     num_insdel = auto()
     num_mixed = auto()
+    num_space = auto()
     mix_read_ratio = auto()
     mix_presort = auto()
     rep_lookup = auto()
     rep_scan = auto()
     rep_insdel = auto()
     rep_mixed = auto()
+    rep_space = auto()
     index_type = auto()
-    check_space_after_del = auto()
     only_check_space = auto()
 
 class OptionalConfigType(Enum):
@@ -72,6 +73,7 @@ class ResultType(Enum):
     scan = auto()
     mixed = auto()
     space = auto()
+    delete_space = auto()
 
 EXECUTABLE_INFO = {
     BenchExecutable.robust: {
@@ -206,6 +208,7 @@ def run_one(args, config):
     result_lines = result_str.split('\n')
     result = {}
     parsed_config = {}
+    space_results = []
     for result_line in result_lines:
         if 'CMD' in result_line:
             pass
@@ -230,9 +233,10 @@ def run_one(args, config):
             result_tokens = result_line.split(' ')
             for token in result_tokens:
                 if '%' in token:
-                    result['space'] = float(re.sub(r'[()%]', '', token))
+                    space_results.append(float(re.sub(r'[()%]', '', token)))
                     break
-            assert 'space' in result
+    if len(space_results) > 0:
+        result['space'] = space_results
     print(f'parsed_config: {parsed_config}, result: {result}')
     return parsed_config, result
 

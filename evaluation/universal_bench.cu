@@ -81,6 +81,26 @@ struct gpu_lap_timer: public lap_timer {
   }
   gpu_timer timer_;
 };
+
+struct gpu_multiround_timer: public lap_timer {
+  void start_round() {
+    accum_time_ = 0;
+  }
+  void start_lap() {
+    timer_.start_timer();
+  }
+  void stop_lap() {
+    timer_.stop_timer();
+  }
+  void record_lap() {
+    accum_time_ += timer_.get_elapsed_s();
+  }
+  void record_round() {
+    times_.push_back(accum_time_);
+  }
+  float accum_time_;
+  gpu_timer timer_;
+};
 #endif
 
 struct cpu_lap_timer: public lap_timer {
@@ -157,7 +177,7 @@ void run_bench(adapter_type& adapter,
                std::vector<key_slice_type> h_mix_keys,
                std::vector<size_type> h_mix_key_lengths,
                std::vector<value_type> h_mix_values,
-               std::vector<std::size_t> h_mix_key_tuple_ids,
+               [[maybe_unused]] std::vector<std::size_t> h_mix_key_tuple_ids,
                args_type& args,
                std::size_t result_buffer_size,
                bool verbose) {
@@ -229,8 +249,8 @@ void run_bench(adapter_type& adapter,
       {
         #if !defined(NOGPU)
         auto d_insert_keys = thrust::device_vector<key_slice_type>(
-          h_keys.begin() + (args.keylen_max * num_prefill),
-          h_keys.begin() + (args.keylen_max * args.max_keys));
+          h_keys.begin() + (num_prefill * args.keylen_max),
+          h_keys.begin() + (args.max_keys * args.keylen_max));
         auto d_insert_key_lengths = thrust::device_vector<size_type>(
           h_key_lengths.begin() + num_prefill,
           h_key_lengths.begin() + args.max_keys);
@@ -262,7 +282,7 @@ void run_bench(adapter_type& adapter,
       {
         #if !defined(NOGPU)
         auto d_delete_keys = thrust::device_vector<key_slice_type>(
-          h_keys.begin(), h_keys.begin() + (args.keylen_max * args.num_insdel));
+          h_keys.begin(), h_keys.begin() + (static_cast<std::size_t>(args.num_insdel) * args.keylen_max));
         auto d_delete_key_lengths = thrust::device_vector<size_type>(
           h_key_lengths.begin(), h_key_lengths.begin() + args.num_insdel);
         #endif
@@ -284,15 +304,43 @@ void run_bench(adapter_type& adapter,
         #endif
         delete_timer.record();
       }
-      if (r == 0 && args.check_space_after_del) {
-        adapter.print_stats();
-      }
       adapter.destroy();
       if (verbose) { std::cout << "insert/delete tested " << r + 1 << "/" << args.rep_insdel << std::endl; }
     }
     insert_timer.print_rate_Mops("insert", args.num_insdel);
     delete_timer.print_rate_Mops("delete", args.num_insdel);
   }
+
+  // space test
+  #if !defined(NOGPU)
+  if (args.rep_space > 0) {
+    gpu_multiround_timer delete_space_timer;
+    uint32_t rep_del = args.max_keys / args.num_space;
+    for (uint32_t r = 0; r < args.rep_space; r++) {
+      prefill(adapter, h_keys, h_key_lengths, h_values, args.keylen_max, args.max_keys);
+      if (r == 0) { adapter.print_stats(); }
+      delete_space_timer.start_round();
+      for (uint32_t d = 0; d < rep_del; d++) {
+        auto d_delete_keys = thrust::device_vector<key_slice_type>(
+          h_keys.begin() + (static_cast<std::size_t>(args.num_space) * d * args.keylen_max),
+          h_keys.begin() + (static_cast<std::size_t>(args.num_space) * (d + 1) * args.keylen_max));
+        auto d_delete_key_lengths = thrust::device_vector<size_type>(
+          h_key_lengths.begin() + (static_cast<std::size_t>(args.num_space) * d),
+          h_key_lengths.begin() + (static_cast<std::size_t>(args.num_space) * (d + 1)));
+        delete_space_timer.start_lap();
+        adapter.erase(d_delete_keys.data().get(), args.keylen_max, d_delete_key_lengths.data().get(), args.num_space);
+        delete_space_timer.stop_lap();
+        cuda_try(cudaDeviceSynchronize());
+        delete_space_timer.record_lap();
+        if (r == 0) { adapter.print_stats(); }
+      }
+      delete_space_timer.record_round();
+      adapter.destroy();
+      if (verbose) { std::cout << "space tested " << r + 1 << "/" << args.rep_space << std::endl; }
+    }
+    delete_space_timer.print_rate_Mops("delete_space", static_cast<std::size_t>(args.num_space) * rep_del);
+  }
+  #endif
 
   // measure mixed
   if constexpr (adapter_type::support_mixed) {
@@ -379,10 +427,15 @@ int main(int argc, char** argv) {
   FORALL_INDEXES(ADAPTER_PRINT_ARGS)
   #undef ADAPTER_PRINT_ARGS
   check_argument(args.num_insdel <= args.max_keys &&
-                 args.num_mixed <= args.max_keys);
+                 args.num_mixed <= args.max_keys &&
+                 args.num_space <= args.max_keys);
   if (!args.only_check_space) {
     check_argument(args.rep_lookup > 0 || args.rep_scan > 0 ||
-                   args.rep_insdel > 0 || args.rep_mixed > 0);
+                   args.rep_insdel > 0 || args.rep_mixed > 0 ||
+                   args.rep_space > 0);
+    if (args.rep_space > 0) {
+      check_argument(args.max_keys % args.num_space == 0);
+    }
   }
 
   // generate keys and queries

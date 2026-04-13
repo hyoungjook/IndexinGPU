@@ -20,19 +20,15 @@ def generate_configs():
                 ConfigType.rep_insdel: NUM_REPEATS,
             }
             if index_type in IS_INDEX_TYPE_ORDERED:
-                common_config[ConfigType.num_scans] = DEFAULT_BATCH_SIZE
+                common_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
                 common_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
                 common_config[ConfigType.rep_scan] = NUM_REPEATS
             if index_type in IS_INDEX_TYPE_SUPPORT_MIX:
                 common_config[ConfigType.num_mixed] = DEFAULT_BATCH_SIZE
                 common_config[ConfigType.mix_read_ratio] = DEFAULT_MIX_READ_RATIO
                 common_config[ConfigType.rep_mixed] = NUM_REPEATS
-            if index_type == IndexType.gpu_masstree:
-                common_config[OptionalConfigType.allocator_pool_ratio] = GPU_MASSTREE_LONGKEYx400M_ALLOC_POOL_RATIO
-            if index_type == IndexType.gpu_chainhashtable:
-                common_config[OptionalConfigType.allocator_pool_ratio] = GPU_CHAINHT_LONGKEYx400M_ALLOC_POOL_RATIO
-            if index_type == IndexType.gpu_cuckoohashtable:
-                common_config[OptionalConfigType.allocator_pool_ratio] = GPU_CUCKOOHT_LONGKEYx400M_ALLOC_POOL_RATIO
+            if index_type in INDEX_TYPES_ROBUST:
+                common_config[OptionalConfigType.allocator_pool_ratio] = ROBUST_INDEX_ALLOC_POOL_RATIO(index_type)
             configs.append(common_config)
     # MT suffix / reuse_root
     for index_type in [IndexType.gpu_masstree]:
@@ -43,6 +39,7 @@ def generate_configs():
             ConfigType.keylen_max: DEFAULT_KEY_LENGTH,
             ConfigType.num_lookups: DEFAULT_BATCH_SIZE,
             ConfigType.rep_lookup: NUM_REPEATS,
+            OptionalConfigType.allocator_pool_ratio: ROBUST_INDEX_ALLOC_POOL_RATIO(index_type)
         }
         for opt_config in EXP_GPU_MASSTREE_OPTS:
             if opt_config is None:
@@ -59,6 +56,7 @@ def generate_configs():
             ConfigType.rep_lookup: NUM_REPEATS,
             ConfigType.num_insdel: DEFAULT_BATCH_SIZE,
             ConfigType.rep_insdel: NUM_REPEATS,
+            OptionalConfigType.allocator_pool_ratio: ROBUST_INDEX_ALLOC_POOL_RATIO(index_type)
         }
         for opt_config in EXP_GPU_EXTENDHT_OPTS:
             configs.append({**common_config, **opt_config})
@@ -73,7 +71,8 @@ def generate_configs():
                 ConfigType.keylen_max: DEFAULT_KEY_LENGTH,
                 ConfigType.num_mixed: DEFAULT_BATCH_SIZE,
                 ConfigType.mix_read_ratio: mix_read_ratio,
-                ConfigType.rep_mixed: NUM_REPEATS
+                ConfigType.rep_mixed: NUM_REPEATS,
+                OptionalConfigType.allocator_pool_ratio: ROBUST_INDEX_ALLOC_POOL_RATIO(index_type)
             }
             for opt_config in EXP_MIX_OPTS:
                 configs.append({**common_config, **opt_config})
@@ -86,25 +85,12 @@ def generate_configs():
                 ConfigType.keylen_prefix: 0,
                 ConfigType.keylen_min: key_length,
                 ConfigType.keylen_max: key_length,
-                ConfigType.only_check_space: 1,
-                OptionalConfigType.allocator_pool_ratio: 0.8,
+                ConfigType.num_space: DEFAULT_BATCH_SIZE,
+                ConfigType.rep_space: NUM_REPEATS,
+                OptionalConfigType.allocator_pool_ratio: ROBUST_INDEX_ALLOC_POOL_RATIO(index_type)
             }
-            configs.append(common_config)
-            for erase_num in EXP_MERGE_ERASE_NUMS:
-                common_config = {
-                    ConfigType.index_type: index_type,
-                    ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
-                    ConfigType.keylen_prefix: 0,
-                    ConfigType.keylen_min: key_length,
-                    ConfigType.keylen_max: key_length,
-                    ConfigType.num_insdel: erase_num,
-                    ConfigType.rep_insdel: NUM_REPEATS,
-                    ConfigType.check_space_after_del: 1,
-                    OptionalConfigType.allocator_pool_ratio: 0.8,
-                }
-                merge_levels = EXP_MERGE_LEVELS[index_type]
-                for merge_level in merge_levels:
-                    configs.append({**common_config, OptionalConfigType.merge_level: merge_level})
+            for merge_level in EXP_MERGE_LEVELS[index_type]:
+                configs.append({**common_config, OptionalConfigType.merge_level: merge_level})
     return configs
 
 if __name__ == "__main__":
