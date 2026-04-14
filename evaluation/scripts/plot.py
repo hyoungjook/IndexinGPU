@@ -6,6 +6,10 @@ import matplotlib.patches as mpatch
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
+GPU_VM_HOURLY_PRICE = 3.673
+CPU_VM_HOURLY_PRICE = 3.648
+CPU_BASELINE_ADJUST = GPU_VM_HOURLY_PRICE / CPU_VM_HOURLY_PRICE
+
 INDEX_LABELS = {
     IndexType.gpu_masstree: "GPUMasstree",
     IndexType.gpu_chainhashtable: "GPUChainHT",
@@ -37,8 +41,11 @@ HATCH_STYLES = {
     IndexType.gpu_dycuckoo: '---',
 }
 
-def _convert_mops_to_bops(values):
-    return [None if v is None else v / 1000 for v in values]
+def _convert_mops_to_bops(values, index_type):
+    bops = [None if v is None else v / 1000 for v in values]
+    if index_type in INDEX_TYPES_CPU_BASELINE:
+        bops = [v * CPU_BASELINE_ADJUST for v in bops]
+    return bops
 
 def _add_throughput_error_bars(ax, xdata, avg_values, min_values, max_values, *, color, for_barplot=False):
     # Some throughput plots include placeholders (for example OOM entries), so skip
@@ -154,9 +161,9 @@ def key_length_plots(configs_and_results, plot_file_prefix):
         for index_type in index_types:
             if result_type not in tputs[index_type]:
                 continue
-            avg_values = _convert_mops_to_bops(tputs[index_type][result_type]['avg'])
-            min_values = _convert_mops_to_bops(tputs[index_type][result_type]['min'])
-            max_values = _convert_mops_to_bops(tputs[index_type][result_type]['max'])
+            avg_values = _convert_mops_to_bops(tputs[index_type][result_type]['avg'], index_type)
+            min_values = _convert_mops_to_bops(tputs[index_type][result_type]['min'], index_type)
+            max_values = _convert_mops_to_bops(tputs[index_type][result_type]['max'], index_type)
             ydata = avg_values.copy()
             markevery = range(len(ydata))
             if len(markevery) == 1:
@@ -203,7 +210,7 @@ def key_length_plots(configs_and_results, plot_file_prefix):
         fig.savefig(f'{plot_file_prefix}-{plot_names[idx]}.pdf', bbox_inches='tight')
         plt.close(fig)
     fig, ax = plt.subplots(1, 1, figsize=(2.3, 2), constrained_layout=True)
-    ax.legend(legend_handles, legend_labels, loc='center', ncol=1)
+    ax.legend(legend_handles, legend_labels, loc='center', ncol=1, handlelength=3)
     ax.axis('off')
     plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
     plt.close(fig)
@@ -247,9 +254,9 @@ def suffix_plots(configs_and_results, plot_file_prefix):
     for idx, index_type, result_type, opt_configs, _ in plot_specs:
         fig, ax = _make_fixed_plot_area_figure(1.3, 1.1,
             include_xlabel=False, include_ylabel=(idx == 0))
-        avg_values = _convert_mops_to_bops(tputs[idx]['avg'])
-        min_values = _convert_mops_to_bops(tputs[idx]['min'])
-        max_values = _convert_mops_to_bops(tputs[idx]['max'])
+        avg_values = _convert_mops_to_bops(tputs[idx]['avg'], index_type)
+        min_values = _convert_mops_to_bops(tputs[idx]['min'], index_type)
+        max_values = _convert_mops_to_bops(tputs[idx]['max'], index_type)
         ydata = avg_values
         xlabel = mt_xticklabels if index_type == IndexType.gpu_masstree else et_xticklabels
         xdata = range(len(xlabel))
@@ -317,9 +324,9 @@ def tile_plots(configs_and_results, plot_file_prefix):
             include_ylabel=(idx == 0)
         )
         for opt_idx in range(len(EXP_MIX_OPTS)):
-            avg_values = _convert_mops_to_bops(tputs[(index_type, opt_idx)]['avg'])
-            min_values = _convert_mops_to_bops(tputs[(index_type, opt_idx)]['min'])
-            max_values = _convert_mops_to_bops(tputs[(index_type, opt_idx)]['max'])
+            avg_values = _convert_mops_to_bops(tputs[(index_type, opt_idx)]['avg'], index_type)
+            min_values = _convert_mops_to_bops(tputs[(index_type, opt_idx)]['min'], index_type)
+            max_values = _convert_mops_to_bops(tputs[(index_type, opt_idx)]['max'], index_type)
             ydata = avg_values
             xdata = EXP_MIX_READ_RATIOS
             line, = ax.plot(
@@ -413,9 +420,9 @@ def merge_plots(configs_and_results, plot_file_prefix):
             include_ylabel=(idx == 0))
         for key_idx, key_length in enumerate(EXP_MERGE_KEY_LENGTHS):
             for merge_idx, merge_level in enumerate(EXP_MERGE_LEVELS[index_type]):
-                avg_values = _convert_mops_to_bops(tputs[((index_type, key_length, merge_level))]['avg'])
-                min_values = _convert_mops_to_bops(tputs[((index_type, key_length, merge_level))]['min'])
-                max_values = _convert_mops_to_bops(tputs[((index_type, key_length, merge_level))]['max'])
+                avg_values = _convert_mops_to_bops(tputs[((index_type, key_length, merge_level))]['avg'], index_type)
+                min_values = _convert_mops_to_bops(tputs[((index_type, key_length, merge_level))]['min'], index_type)
+                max_values = _convert_mops_to_bops(tputs[((index_type, key_length, merge_level))]['max'], index_type)
                 tput_ydata = avg_values
                 line, = ax.plot(
                     EXP_MERGE_ERASE_RATIOS[1:], tput_ydata,
@@ -542,9 +549,9 @@ def intro_plots(configs_and_results, plot_file_prefix):
             baseline_ymax = 0
             our_x = 0
             for bar_offset, index_type in zip(bar_offsets, index_types):
-                avg_values = _convert_mops_to_bops(tputs[(index_type, result_type)]['avg'])
-                min_values = _convert_mops_to_bops(tputs[(index_type, result_type)]['min'])
-                max_values = _convert_mops_to_bops(tputs[(index_type, result_type)]['max'])
+                avg_values = _convert_mops_to_bops(tputs[(index_type, result_type)]['avg'], index_type)
+                min_values = _convert_mops_to_bops(tputs[(index_type, result_type)]['min'], index_type)
+                max_values = _convert_mops_to_bops(tputs[(index_type, result_type)]['max'], index_type)
                 ydata = avg_values
                 plot_top = max(plot_top, max_values[0] if max_values[0] is not None else ydata[0])
                 xdata = [group_center + bar_offset]
