@@ -80,11 +80,11 @@ def generate_configs():
                 configs.append({**common_config, **opt_config})
     # Delete merge
     for index_type in [IndexType.gpu_masstree, IndexType.gpu_extendhashtable]:
-        for key_length in EXP_MERGE_KEY_LENGTHS:
+        for prefix_length, key_length in EXP_MERGE_KEY_LENGTHS:
             common_config = {
                 ConfigType.index_type: index_type,
                 ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
-                ConfigType.keylen_prefix: 0,
+                ConfigType.keylen_prefix: prefix_length,
                 ConfigType.keylen_min: key_length,
                 ConfigType.keylen_max: key_length,
                 ConfigType.num_space: DEFAULT_BATCH_SIZE,

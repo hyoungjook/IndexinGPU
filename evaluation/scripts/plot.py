@@ -40,6 +40,9 @@ HATCH_STYLES = {
     IndexType.cpu_libcuckoo: '|||',
     IndexType.gpu_dycuckoo: '---',
 }
+EXTRA_COLORS = [
+    "#D1495B", "#3B60E4", "#EDAE49", "#00798C",
+]
 
 def _convert_mops_to_bops(values, index_type):
     bops = [None if v is None else v / 1000 for v in values]
@@ -310,11 +313,11 @@ def tile_plots(configs_and_results, plot_file_prefix):
                 for metric_type in ['avg', 'min', 'max']:
                     tputs[(index_type, opt_idx)][metric_type].append(float(result['mixed'][metric_type]))
     # plot
-    labels = ['FullWarp', 'HalfWarp', 'HalfWarp+PreSort']
+    labels = ['FullWarp', 'HalfWarp', 'HalfWarp+SemiSort']
     styles = [
-        {"color": "#549A84", "marker": "v", "linestyle": "-"},
-        {"color": "#CE973E", "marker": "d", "linestyle": "-"},
-        {"color": "#7993EF", "marker": "H", "linestyle": "-"},
+        {"color": EXTRA_COLORS[0], "marker": "v", "linestyle": "-"},
+        {"color": EXTRA_COLORS[1], "marker": "d", "linestyle": "-"},
+        {"color": EXTRA_COLORS[2], "marker": "H", "linestyle": "-"},
     ]
     legend_handles = []
     legend_labels = []
@@ -375,41 +378,49 @@ def merge_plots(configs_and_results, plot_file_prefix):
     index_types = [IndexType.gpu_masstree, IndexType.gpu_extendhashtable]
     plot_names = ['mt', 'et']
     for index_type in index_types:
-        for key_length in EXP_MERGE_KEY_LENGTHS:
+        for prefix_length, key_length in EXP_MERGE_KEY_LENGTHS:
             for merge_level in EXP_MERGE_LEVELS[index_type]:
-                tputs[(index_type, key_length, merge_level)] = {
-                    'avg': [], 'min': [], 'max': []
-                }
-                spaces[(index_type, key_length, merge_level)] = []
                 desired_config = {
                     ConfigType.index_type: index_type,
                     ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
-                    ConfigType.keylen_prefix: 0,
+                    ConfigType.keylen_prefix: prefix_length,
                     ConfigType.keylen_min: key_length,
                     ConfigType.keylen_max: key_length,
                     ConfigType.num_space: DEFAULT_BATCH_SIZE,
                     OptionalConfigType.merge_level: merge_level,
                 }
                 result = filter(configs_and_results, desired_config, ResultType.delete_space)
-                tputs[(index_type, key_length, merge_level)] = {
+                tputs[(index_type, prefix_length, key_length, merge_level)] = {
                     'avg': [float(v) for v in result['delete_space']['avg']],
                     'min': [float(v) for v in result['delete_space']['min']],
                     'max': [float(v) for v in result['delete_space']['max']]
                 }
                 result = filter(configs_and_results, desired_config, ResultType.space)
-                spaces[(index_type, key_length, merge_level)] = [float(v) for v in result['space']]
+                spaces[(index_type, prefix_length, key_length, merge_level)] = [float(v) for v in result['space']]
     # plot
     labels = {
-        (0, 0): 'Naive(k=1)',
-        (0, 1): 'Merge(k=1)',
-        (1, 0): 'Naive(k=8)',
-        (1, 1): 'Merge(k=8)',
+        (0, 0): 'Naive(4B key)',
+        (0, 1): 'Merge(4B key)',
+        (1, 0): 'Naive(32B key, random prefix)',
+        (1, 1): 'Merge(32B key, random prefix)',
+        (2, 0): 'Naive(32B key, common prefix)',
+        (2, 1): 'Merge(32B key, common prefix)',
     }
     styles = {
-        (0, 0): {"color": "#549A84", "marker": "v", "linestyle": ":"},
-        (0, 1): {"color": "#549A84", "marker": "v", "linestyle": "-"},
-        (1, 0): {"color": "#CE973E", "marker": "d", "linestyle": ":"},
-        (1, 1): {"color": "#CE973E", "marker": "d", "linestyle": "-"},
+        (0, 0): {"color": EXTRA_COLORS[0], "marker": "v", "linestyle": ":"},
+        (0, 1): {"color": EXTRA_COLORS[0], "marker": "v", "linestyle": "-"},
+        (1, 0): {"color": EXTRA_COLORS[1], "marker": "d", "linestyle": ":"},
+        (1, 1): {"color": EXTRA_COLORS[1], "marker": "d", "linestyle": "-"},
+        (2, 0): {"color": EXTRA_COLORS[2], "marker": "H", "linestyle": ":"},
+        (2, 1): {"color": EXTRA_COLORS[2], "marker": "H", "linestyle": "-"},
+    }
+    bar_styles = {
+        (0, 0): {"edgecolor": EXTRA_COLORS[0], "facecolor": EXTRA_COLORS[0], "hatch": "", "linestyle": "-", "fill": True},
+        (0, 1): {"edgecolor": EXTRA_COLORS[0], "facecolor": "white", "hatch": "", "linestyle": "-", "fill": False},
+        (1, 0): {"edgecolor": EXTRA_COLORS[1], "facecolor": EXTRA_COLORS[1], "hatch": "", "linestyle": "-", "fill": True},
+        (1, 1): {"edgecolor": EXTRA_COLORS[1], "facecolor": "white", "hatch": "////", "linestyle": "-", "fill": False},
+        (2, 0): {"edgecolor": EXTRA_COLORS[2], "facecolor": EXTRA_COLORS[2], "hatch": "", "linestyle": "-", "fill": True},
+        (2, 1): {"edgecolor": EXTRA_COLORS[2], "facecolor": "white", "hatch": "\\\\\\\\", "linestyle": "-", "fill": False},
     }
     legend_handles = []
     legend_labels = []
@@ -418,11 +429,11 @@ def merge_plots(configs_and_results, plot_file_prefix):
         fig, ax = _make_fixed_plot_area_figure(2, 1.3,
             include_xlabel=False,
             include_ylabel=(idx == 0))
-        for key_idx, key_length in enumerate(EXP_MERGE_KEY_LENGTHS):
+        for key_idx, (prefix_length, key_length) in enumerate(EXP_MERGE_KEY_LENGTHS):
             for merge_idx, merge_level in enumerate(EXP_MERGE_LEVELS[index_type]):
-                avg_values = _convert_mops_to_bops(tputs[((index_type, key_length, merge_level))]['avg'], index_type)
-                min_values = _convert_mops_to_bops(tputs[((index_type, key_length, merge_level))]['min'], index_type)
-                max_values = _convert_mops_to_bops(tputs[((index_type, key_length, merge_level))]['max'], index_type)
+                avg_values = _convert_mops_to_bops(tputs[((index_type, prefix_length, key_length, merge_level))]['avg'], index_type)
+                min_values = _convert_mops_to_bops(tputs[((index_type, prefix_length, key_length, merge_level))]['min'], index_type)
+                max_values = _convert_mops_to_bops(tputs[((index_type, prefix_length, key_length, merge_level))]['max'], index_type)
                 tput_ydata = avg_values
                 line, = ax.plot(
                     EXP_MERGE_ERASE_RATIOS[1:], tput_ydata,
@@ -439,10 +450,22 @@ def merge_plots(configs_and_results, plot_file_prefix):
                     color=styles[(key_idx, merge_idx)]['color'],
                 )
                 if labels[(key_idx, merge_idx)] not in legend_labels:
-                    legend_handles.append(line)
                     legend_labels.append(labels[(key_idx, merge_idx)])
+                    legend_handles.append((
+                        mline.Line2D(
+                            [],
+                            [],
+                            linewidth=2,
+                            markersize=6,
+                            **styles[(key_idx, merge_idx)]
+                        ),
+                        mpatch.Patch(
+                            **bar_styles[(key_idx, merge_idx)],
+                            linewidth=1.8,
+                        )
+                    ))
         ax.set_ylim(bottom=0)
-        ax.set_xlim(left=0, right=1)
+        ax.set_xlim(left=EXP_MERGE_ERASE_RATIOS[1], right=1)
         if idx == 0:
             ax.set_ylabel(r'Throughput ($10^9$/s)')
         ax.grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
@@ -452,29 +475,46 @@ def merge_plots(configs_and_results, plot_file_prefix):
         fig, ax = _make_fixed_plot_area_figure(2, 1.3,
             include_xlabel=True,
             include_ylabel=(idx == 0))
-        for key_idx, key_length in enumerate(EXP_MERGE_KEY_LENGTHS):
+        xdata = list(range(len(EXP_MERGE_ERASE_RATIOS[1:])))
+        xticklabels = [f'{erase_ratio:g}' for erase_ratio in EXP_MERGE_ERASE_RATIOS[1:]]
+        num_series = len(EXP_MERGE_KEY_LENGTHS) * len(EXP_MERGE_LEVELS[index_type])
+        group_width = 0.84
+        bar_width = group_width / num_series
+        for key_idx, (prefix_length, key_length) in enumerate(EXP_MERGE_KEY_LENGTHS):
             for merge_idx, merge_level in enumerate(EXP_MERGE_LEVELS[index_type]):
-                space_ydata = spaces[(index_type, key_length, merge_level)]
-                space_ydata = [s / space_ydata[0] for s in space_ydata]
-                line, = ax.plot(
-                    EXP_MERGE_ERASE_RATIOS, space_ydata,
+                space_ydata = spaces[(index_type, prefix_length, key_length, merge_level)]
+                space_ydata = [1 - s / space_ydata[0] for s in space_ydata[1:]]
+                series_idx = key_idx * len(EXP_MERGE_LEVELS[index_type]) + merge_idx
+                bar_offset = (series_idx - (num_series - 1) / 2) * bar_width
+                bar_xdata = [x + bar_offset for x in xdata]
+                ax.bar(
+                    bar_xdata, space_ydata,
+                    width=bar_width * 0.95,
                     label=labels[(key_idx, merge_idx)],
-                    linewidth=2, markersize=6,
-                    **styles[(key_idx, merge_idx)]
+                    **bar_styles[(key_idx, merge_idx)],
+                    linewidth=1,
+                    zorder=3,
                 )
-                if labels[(key_idx, merge_idx)] not in legend_labels:
-                    legend_handles.append(line)
-                    legend_labels.append(labels[(key_idx, merge_idx)])
         ax.set_ylim(bottom=0)
-        ax.set_xlim(left=0, right=1)
+        ax.set_xlim(left=-0.5, right=len(xdata) - 0.5)
+        ax.set_xticks(xdata)
+        ax.set_xticklabels(xticklabels)
         ax.set_xlabel('Delete Ratio')
         if idx == 0:
-            ax.set_ylabel(r'Relative Space')
-        ax.grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
+            ax.set_ylabel(r'Memory Reduction')
+        ax.set_axisbelow(True)
+        ax.grid(True, which='major', axis='y', linestyle='--', linewidth=0.6, alpha=0.5)
         plt.savefig(f'{plot_file_prefix}-{plot_names[idx]}-space.pdf', bbox_inches='tight')
         plt.close(fig)
-    fig, ax = plt.subplots(1, 1, figsize=(6, 0.3), constrained_layout=True)
-    ax.legend(legend_handles, legend_labels, loc='center', ncol=len(legend_labels))
+    fig, ax = plt.subplots(1, 1, figsize=(6, 0.5), constrained_layout=True)
+    ax.legend(
+        legend_handles,
+        legend_labels,
+        loc='center',
+        ncol=3,
+        handlelength=3.5,
+        handler_map={tuple: mlegh.HandlerTuple(ndivide=None, pad=0.8)},
+    )
     ax.axis('off')
     plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
     plt.close(fig)
