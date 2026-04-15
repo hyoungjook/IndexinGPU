@@ -78,7 +78,7 @@ def generate_configs():
             }
             for opt_config in EXP_MIX_OPTS:
                 configs.append({**common_config, **opt_config})
-    # Delete merge
+    # Delete merge space
     for index_type in [IndexType.gpu_masstree, IndexType.gpu_extendhashtable]:
         for prefix_length, key_length in EXP_MERGE_KEY_LENGTHS:
             common_config = {
@@ -88,11 +88,28 @@ def generate_configs():
                 ConfigType.keylen_min: key_length,
                 ConfigType.keylen_max: key_length,
                 ConfigType.num_space: DEFAULT_BATCH_SIZE,
-                ConfigType.rep_space: NUM_REPEATS,
+                ConfigType.rep_space: 1,
                 OptionalConfigType.allocator_pool_ratio: ROBUST_INDEX_ALLOC_POOL_RATIO(index_type)
             }
-            for merge_level in EXP_MERGE_LEVELS[index_type]:
+            for merge_level in [0, EXP_MAX_MERGE_LEVEL[index_type]]:
                 configs.append({**common_config, OptionalConfigType.merge_level: merge_level})
+    # Delete merge tput
+    for index_type in [IndexType.gpu_masstree, IndexType.gpu_extendhashtable]:
+        for merge_level in range(0, EXP_MAX_MERGE_LEVEL[index_type] + 1):
+            if index_type == IndexType.gpu_masstree and merge_level in EXP_GPU_MASSTREE_MERGE_SKIP_LEVEL:
+                continue # takes tooooooo long
+            common_config = {
+                ConfigType.index_type: index_type,
+                ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+                ConfigType.keylen_prefix: DEFAULT_KEY_LENGTH - 1,
+                ConfigType.keylen_min: DEFAULT_KEY_LENGTH,
+                ConfigType.keylen_max: DEFAULT_KEY_LENGTH,
+                ConfigType.num_insdel: DEFAULT_BATCH_SIZE,
+                ConfigType.rep_insdel: NUM_REPEATS,
+                OptionalConfigType.allocator_pool_ratio: ROBUST_INDEX_ALLOC_POOL_RATIO(index_type),
+                OptionalConfigType.merge_level: merge_level
+            }
+            configs.append(common_config)
     return configs
 
 if __name__ == "__main__":

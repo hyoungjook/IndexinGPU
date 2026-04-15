@@ -158,6 +158,7 @@ struct gpu_extendhashtable_adapter {
       check_argument(tile_size == 32 || tile_size == 16);
       check_argument(0 < load_factor_threshold);
       check_argument(hash_tag_level <= 2);
+      check_argument(merge_level <= 2);
     }
     void print() const {
       #define PRINT_ARGUMENTS(arg, type, default_value) \

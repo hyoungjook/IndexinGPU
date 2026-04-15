@@ -373,13 +373,13 @@ def tile_plots(configs_and_results, plot_file_prefix):
     plt.close(fig)
 
 def merge_plots(configs_and_results, plot_file_prefix):
-    tputs = {}
     spaces = {}
+    tputs = {}
     index_types = [IndexType.gpu_masstree, IndexType.gpu_extendhashtable]
     plot_names = ['mt', 'et']
     for index_type in index_types:
         for prefix_length, key_length in EXP_MERGE_KEY_LENGTHS:
-            for merge_level in EXP_MERGE_LEVELS[index_type]:
+            for merge_level in [0, EXP_MAX_MERGE_LEVEL[index_type]]:
                 desired_config = {
                     ConfigType.index_type: index_type,
                     ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
@@ -389,15 +389,35 @@ def merge_plots(configs_and_results, plot_file_prefix):
                     ConfigType.num_space: DEFAULT_BATCH_SIZE,
                     OptionalConfigType.merge_level: merge_level,
                 }
-                result = filter(configs_and_results, desired_config, ResultType.delete_space)
-                tputs[(index_type, prefix_length, key_length, merge_level)] = {
-                    'avg': [float(v) for v in result['delete_space']['avg']],
-                    'min': [float(v) for v in result['delete_space']['min']],
-                    'max': [float(v) for v in result['delete_space']['max']]
-                }
                 result = filter(configs_and_results, desired_config, ResultType.space)
                 spaces[(index_type, prefix_length, key_length, merge_level)] = [float(v) for v in result['space']]
-    # plot
+    for index_type in index_types:
+        tputs[index_type] = {
+            'avg': [], 'min': [], 'max': []
+        }
+        for merge_level in range(0, EXP_MAX_MERGE_LEVEL[index_type] + 1):
+            if index_type == IndexType.gpu_masstree:
+                if merge_level == 0:
+                    continue # skip non-concurrent case
+                if merge_level in EXP_GPU_MASSTREE_MERGE_SKIP_LEVEL:
+                    tputs[index_type]['avg'].append(0) # takes too long
+                    tputs[index_type]['min'].append(0)
+                    tputs[index_type]['max'].append(0)
+                    continue
+            desired_config = {
+                ConfigType.index_type: index_type,
+                ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+                ConfigType.keylen_prefix: DEFAULT_KEY_LENGTH - 1,
+                ConfigType.keylen_min: DEFAULT_KEY_LENGTH,
+                ConfigType.keylen_max: DEFAULT_KEY_LENGTH,
+                ConfigType.num_insdel: DEFAULT_BATCH_SIZE,
+                OptionalConfigType.merge_level: merge_level,
+            }
+            result = filter(configs_and_results, desired_config, ResultType.delete)
+            tputs[index_type]['avg'].append(float(result['delete']['avg']))
+            tputs[index_type]['min'].append(float(result['delete']['min']))
+            tputs[index_type]['max'].append(float(result['delete']['max']))
+    # space plot
     labels = {
         (0, 0): '4B Key (Naive)',
         (0, 1): '4B Key (Merge)',
@@ -421,7 +441,7 @@ def merge_plots(configs_and_results, plot_file_prefix):
         fig_width = 3 if idx == 0 else 2.6
         fig, axes = plt.subplots(1, 3, figsize=(fig_width, 1.7), constrained_layout=True)
         for key_idx, (prefix_length, key_length) in enumerate(EXP_MERGE_KEY_LENGTHS):
-            for merge_idx, merge_level in enumerate(EXP_MERGE_LEVELS[index_type]):
+            for merge_idx, merge_level in enumerate([0, EXP_MAX_MERGE_LEVEL[index_type]]):
                 ydata = spaces[(index_type, prefix_length, key_length, merge_level)]
                 ydata = [1 - s / ydata[0] for s in ydata]
                 line, = axes[key_idx].plot(
@@ -456,6 +476,42 @@ def merge_plots(configs_and_results, plot_file_prefix):
     ax.axis('off')
     plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
     plt.close(fig)
+    #tput plot
+    mt_xticklabels = ['N', 'M', 'MP', 'MPR']
+    et_xticklabels = ['N', 'MC', 'MCB']
+    for idx, index_type in enumerate(index_types):
+        fig, ax = _make_fixed_plot_area_figure(0.5 * len(tputs[index_type]['avg']), 1.2,
+            include_xlabel=False, include_ylabel=(idx == 0))
+        avg_values = _convert_mops_to_bops(tputs[index_type]['avg'], index_type)
+        min_values = _convert_mops_to_bops(tputs[index_type]['min'], index_type)
+        max_values = _convert_mops_to_bops(tputs[index_type]['max'], index_type)
+        ydata = avg_values
+        xlabel = mt_xticklabels if index_type == IndexType.gpu_masstree else et_xticklabels
+        xdata = range(len(xlabel))
+        ax.bar(xdata, ydata,
+            fill=False,
+            edgecolor=INDEX_STYLES[index_type]['color'],
+            hatch=HATCH_STYLES[index_type],
+            linewidth=2
+        )
+        _add_throughput_error_bars(
+            ax,
+            xdata,
+            avg_values,
+            min_values,
+            max_values,
+            color=INDEX_STYLES[index_type]['color'],
+            for_barplot=True
+        )
+        ax.set_ylim(bottom=0)
+        ax.set_xticks(xdata)
+        ax.set_xticklabels(xlabel)
+        ax.grid(True, axis='y', which='major', linestyle='--', linewidth=0.6, alpha=0.5)
+        if idx == 0:
+            ax.set_ylabel(r'Throughput ($10^9$/s)')
+        plt.savefig(f'{plot_file_prefix}-{plot_names[idx]}-tput.pdf', bbox_inches='tight')
+        plt.close(fig)
+
 
 def intro_plots(configs_and_results, plot_file_prefix):
     tputs = {}

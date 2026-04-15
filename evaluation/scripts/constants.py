@@ -107,9 +107,9 @@ EXP_MIX_OPTS = [
     },
 ]
 
-EXP_MERGE_LEVELS = {
-    IndexType.gpu_masstree: [0, 4],
-    IndexType.gpu_extendhashtable: [0, 2],
+EXP_MAX_MERGE_LEVEL = {
+    IndexType.gpu_masstree: 4,
+    IndexType.gpu_extendhashtable: 2,
 }
 EXP_MERGE_KEY_LENGTHS = [
     (0, 1),
@@ -119,3 +119,4 @@ EXP_MERGE_KEY_LENGTHS = [
 EXP_MERGE_ERASE_RATIOS = [
     float(x / DEFAULT_MAXKEY_LONG) for x in range(0, DEFAULT_MAXKEY_LONG + 1, DEFAULT_BATCH_SIZE)
 ]
+EXP_GPU_MASSTREE_MERGE_SKIP_LEVEL = [2]
