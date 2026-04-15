@@ -201,7 +201,7 @@ struct find_device_func {
   }
 };
 
-template <typename masstree, bool concurrent, bool do_merge, bool do_remove_empty_root, bool reuse_root>
+template <typename masstree, bool concurrent, bool do_merge, bool pessimistic_merge, bool do_remove_empty_root, bool reuse_root>
 struct erase_device_func {
   using key_slice_type = typename masstree::key_slice_type;
   using size_type = typename masstree::size_type;
@@ -237,10 +237,10 @@ struct erase_device_func {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     if constexpr (reuse_root) {
-      tree.template cooperative_erase_from_root<concurrent, do_merge, do_remove_empty_root>(regs.root_lane_elem, cur_key, cur_key_length, tile, allocator, reclaimer);
+      tree.template cooperative_erase_from_root<concurrent, do_merge, pessimistic_merge, do_remove_empty_root>(regs.root_lane_elem, cur_key, cur_key_length, tile, allocator, reclaimer);
     }
     else {
-      tree.template cooperative_erase<concurrent, do_merge, do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, reclaimer);
+      tree.template cooperative_erase<concurrent, do_merge, pessimistic_merge, do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, reclaimer);
     }
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
@@ -324,6 +324,7 @@ struct scan_device_func {
 template <typename masstree,
           bool enable_suffix,
           bool erase_do_merge,
+          bool erase_pessimistic_merge,
           bool erase_do_remove_empty_root,
           bool reuse_root>
 struct mixed_device_func {
@@ -385,8 +386,8 @@ struct mixed_device_func {
     }
     else if (cur_type == request_type_erase) {
       auto cur_result = reuse_root ?
-        tree.template cooperative_erase_from_root<true, erase_do_merge, erase_do_remove_empty_root>(regs.root_lane_elem, cur_key, cur_key_length, tile, allocator, reclaimer) :
-        tree.template cooperative_erase<true, erase_do_merge, erase_do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, reclaimer);
+        tree.template cooperative_erase_from_root<true, erase_do_merge, erase_pessimistic_merge, erase_do_remove_empty_root>(regs.root_lane_elem, cur_key, cur_key_length, tile, allocator, reclaimer) :
+        tree.template cooperative_erase<true, erase_do_merge, erase_pessimistic_merge, erase_do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, reclaimer);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else {  // request_type_successor

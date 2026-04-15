@@ -108,7 +108,7 @@ EXP_MIX_OPTS = [
 ]
 
 EXP_MERGE_LEVELS = {
-    IndexType.gpu_masstree: [0, 3],
+    IndexType.gpu_masstree: [0, 4],
     IndexType.gpu_extendhashtable: [0, 2],
 }
 EXP_MERGE_KEY_LENGTHS = [

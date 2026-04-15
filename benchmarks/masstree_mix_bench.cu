@@ -39,6 +39,7 @@ using size_type = uint32_t;
 template <typename masstree_type,
           bool enable_suffix = true,
           bool erase_remove_empty_root = true,
+          bool erase_pessimistic_merge = true,
           bool erase_merge = true,
           bool reuse_root = true>
 void mix_bench_masstree(thrust::device_vector<key_slice_type>& d_insert_keys,
@@ -79,7 +80,8 @@ void mix_bench_masstree(thrust::device_vector<key_slice_type>& d_insert_keys,
     mix_timer.start_timer();
     tree.template mixed_batch<enable_suffix,
                               erase_remove_empty_root,
-                              erase_merge || erase_remove_empty_root,
+                              erase_pessimistic_merge || erase_remove_empty_root,
+                              erase_merge || erase_pessimistic_merge || erase_remove_empty_root,
                               reuse_root>(
       d_mix_types.data().get(), d_mix_keys.data().get(), max_key_length, d_mix_lengths.data().get(), d_mix_values.data().get(), nullptr, mix_num_requests);
     mix_timer.stop_timer();

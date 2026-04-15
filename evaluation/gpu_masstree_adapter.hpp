@@ -78,7 +78,7 @@ struct gpu_masstree_adapter {
              const size_type* key_lengths,
              std::size_t num_keys) {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
-      adapter_util::dispatch_uint32<0, 1, 2, 3>(configs_.merge_level, [&](auto t2, auto m2) {
+      adapter_util::dispatch_uint32<0, 1, 2, 3, 4>(configs_.merge_level, [&](auto t2, auto m2) {
         adapter_util::dispatch_bool(configs_.reuse_root, [&](auto t3, auto m3, auto r3) {
           do_erase<t3.value, m3.value, r3.value>(keys, keylen_max, key_lengths, num_keys);
         }, t2, m2);
@@ -123,7 +123,7 @@ struct gpu_masstree_adapter {
                    std::size_t num_keys) {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_bool(configs_.enable_suffix, [&](auto t2, auto s2) {
-        adapter_util::dispatch_uint32<0, 1, 2, 3>(configs_.merge_level, [&](auto t3, auto s3, auto m3) {
+        adapter_util::dispatch_uint32<0, 1, 2, 3, 4>(configs_.merge_level, [&](auto t3, auto s3, auto m3) {
           adapter_util::dispatch_bool(configs_.reuse_root, [&](auto t4, auto s4, auto m4, auto r4) {
             do_mixed<t4.value, s4.value, m4.value, r4.value>(types, keys, keylen_max, key_lengths, values, nullptr, num_keys);
           }, t3, s3, m3);
@@ -147,8 +147,8 @@ struct gpu_masstree_adapter {
     x(tile_size, uint32_t, 16) \
     x(lookup_concurrent, bool, false) \
     x(enable_suffix, bool, true) \
-    /* merge_level: 0(naive) 1(concurrent) 2(merge) 3(remove_root) */ \
-    x(merge_level, uint32_t, 3) \
+    /* merge_level: 0(naive) 1(concurrent) 2(merge) 3(pessimistic_merge) 4(remove_root) */ \
+    x(merge_level, uint32_t, 4) \
     x(reuse_root, bool, true)
   struct configs {
     #define DECLARE_ARGUMENTS(arg, type, default_value) type arg;
@@ -161,7 +161,7 @@ struct gpu_masstree_adapter {
       FORALL_ARGUMENTS_GPU_MASSTREE(PARSE_ARGUMENTS)
       #undef PARSE_ARGUMENTS
       check_argument(tile_size == 32 || tile_size == 16);
-      check_argument(merge_level <= 3);
+      check_argument(merge_level <= 4);
     }
     void print() const {
       #define PRINT_ARGUMENTS(arg, type, default_value) \
@@ -181,7 +181,7 @@ struct gpu_masstree_adapter {
   template <uint32_t tile_size, uint32_t merge_level, bool reuse_root, typename... arg_types>
   void do_erase(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template erase<merge_level >= 3, merge_level >= 2, merge_level >= 1, reuse_root>(args...);
+      ->template erase<merge_level >= 4, merge_level >= 3, merge_level >= 2, merge_level >= 1, reuse_root>(args...);
   }
 
   template <uint32_t tile_size, bool lookup_concurrent, bool reuse_root, typename... arg_types>
@@ -199,7 +199,7 @@ struct gpu_masstree_adapter {
   template <uint32_t tile_size, bool enable_suffix, uint32_t merge_level, bool reuse_root, typename... arg_types>
   void do_mixed(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template mixed_batch<enable_suffix, merge_level >= 3, merge_level >= 2, reuse_root>(args...);
+      ->template mixed_batch<enable_suffix, merge_level >= 4, merge_level >= 3, merge_level >= 2, reuse_root>(args...);
   }
 
   configs configs_;

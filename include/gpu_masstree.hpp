@@ -111,6 +111,7 @@ struct gpu_masstree {
   }
 
   template <bool do_remove_empty_root = true,
+            bool pessimistic_merge = true,
             bool do_merge = true,
             bool concurrent = true,
             bool reuse_root = true>
@@ -119,7 +120,7 @@ struct gpu_masstree {
              const size_type* key_lengths,
              const size_type num_keys,
              cudaStream_t stream = 0) {
-    kernels::GpuMasstree::erase_device_func<gpu_masstree, concurrent, do_merge, do_remove_empty_root, reuse_root>
+    kernels::GpuMasstree::erase_device_func<gpu_masstree, concurrent, do_merge, pessimistic_merge, do_remove_empty_root, reuse_root>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths};
     kernels::launch_batch_kernel(*this, func, num_keys, stream);
   }
@@ -149,6 +150,7 @@ struct gpu_masstree {
 
   template <bool enable_suffix = true,
             bool erase_do_remove_empty_root = true,
+            bool erase_pessimistic_merge = true,
             bool erase_do_merge = true,
             bool reuse_root = true>
   void mixed_batch(const kernels::request_type* request_types,
@@ -160,7 +162,7 @@ struct gpu_masstree {
                    const size_type num_requests,
                    cudaStream_t stream = 0,
                    bool insert_update_if_exists = false) {
-    kernels::GpuMasstree::mixed_device_func<gpu_masstree, enable_suffix, erase_do_merge, erase_do_remove_empty_root, reuse_root>
+    kernels::GpuMasstree::mixed_device_func<gpu_masstree, enable_suffix, erase_do_merge, erase_pessimistic_merge, erase_do_remove_empty_root, reuse_root>
       func{.d_types = request_types, .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .d_results = results, .insert_update_if_exists = insert_update_if_exists};
     kernels::launch_batch_kernel(*this, func, num_requests, stream);
   }
@@ -602,15 +604,16 @@ struct gpu_masstree {
     return cooperative_insert_from_root<enable_suffix>(root_lane_elem, key, key_length, value, tile, allocator, reclaimer, update_if_exists);
   }
 
-  template <bool concurrent, bool do_merge, bool do_remove_empty_root, typename tile_type>
+  template <bool concurrent, bool do_merge, bool pessimistic_merge, bool do_remove_empty_root, typename tile_type>
   DEVICE_QUALIFIER bool cooperative_erase_from_root(elem_type root_lane_elem,
                                                     const key_slice_type* key,
                                                     const size_type key_length,
                                                     const tile_type& tile,
                                                     device_allocator_context_type& allocator,
                                                     device_reclaimer_context_type& reclaimer) {
-    static_assert(concurrent || (!do_merge && !do_remove_empty_root));
-    static_assert(do_merge || !do_remove_empty_root);
+    static_assert(concurrent || (!do_merge && !pessimistic_merge && !do_remove_empty_root));
+    static_assert(do_merge || (!pessimistic_merge && !do_remove_empty_root));
+    static_assert(pessimistic_merge || !do_remove_empty_root);
     using node_type = masstree_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     using dynamic_stack_type = utils::dynamic_stack_u32<2, tile_type, device_allocator_context_type>;
@@ -637,7 +640,7 @@ struct gpu_masstree {
       bool border_node_locked_by_me = true;
       {
         merge_early_exit_check early_exit{key_slice, more_key};
-        if (do_merge && (!more_key || retry_with_merge)) {
+        if (do_merge && (!pessimistic_merge || (!more_key || retry_with_merge))) {
           coop_traverse_until_border_merge(current_node, key_slice, tile, allocator, reclaimer, early_exit);
           retry_with_merge = false;
         }
@@ -817,14 +820,14 @@ struct gpu_masstree {
     return false;
   }
 
-  template <bool concurrent, bool do_merge, bool do_remove_empty_root, typename tile_type>
+  template <bool concurrent, bool do_merge, bool pessimistic_merge, bool do_remove_empty_root, typename tile_type>
   DEVICE_QUALIFIER bool cooperative_erase(const key_slice_type* key,
                                           const size_type key_length,
                                           const tile_type& tile,
                                           device_allocator_context_type& allocator,
                                           device_reclaimer_context_type& reclaimer) {
     auto root_lane_elem = cooperative_fetch_root<concurrent>(tile, allocator);
-    return cooperative_erase_from_root<concurrent, do_merge, do_remove_empty_root>(
+    return cooperative_erase_from_root<concurrent, do_merge, pessimistic_merge, do_remove_empty_root>(
       root_lane_elem, key, key_length, tile, allocator, reclaimer);
   }
 
