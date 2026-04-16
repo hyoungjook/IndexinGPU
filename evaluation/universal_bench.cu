@@ -79,38 +79,6 @@ struct gpu_lap_timer: public lap_timer {
   }
   gpu_timer timer_;
 };
-
-/*struct gpu_multiround_timer: public lap_timer {
-  gpu_multiround_timer(uint32_t num_rounds)
-    : num_rounds_(num_rounds)
-    , laps_(num_rounds) {}
-  void start_round() {
-    accum_time_ = 0;
-    lapcnt_ = 0;
-  }
-  void start_lap() {
-    timer_.start_timer();
-  }
-  void stop_lap() {
-    timer_.stop_timer();
-  }
-  void record_lap() {
-    accum_time_ += timer_.get_elapsed_s();
-    laps_[lapcnt_].times_.push_back(accum_time_);
-    lapcnt_++;
-  }
-  void record_round() {}
-  void print_rate_Mops(std::string name, std::size_t size_per_lap) {
-    for (uint32_t r = 0; r < num_rounds_; r++) {
-      laps_[r].print_rate_Mops(name, size_per_lap * (r + 1));
-    }
-  }
-  float accum_time_;
-  uint32_t num_rounds_;
-  int lapcnt_;
-  gpu_timer timer_;
-  std::vector<lap_timer> laps_;
-};*/
 #endif
 
 struct cpu_lap_timer: public lap_timer {
@@ -130,7 +98,8 @@ struct cpu_lap_timer: public lap_timer {
 using timer_type = cpu_lap_timer;
 static bool varlen_key_big_endian = true;
 #else
-using timer_type = gpu_lap_timer;
+//using timer_type = gpu_lap_timer;
+using timer_type = cpu_lap_timer;
 static bool varlen_key_big_endian = false;
 #endif
 
@@ -215,10 +184,10 @@ void run_bench(adapter_type& adapter,
         [&](unsigned thread_id) { adapter.thread_enter(thread_id); },
         [&](unsigned thread_id) { adapter.thread_exit(thread_id); });
       #endif
-      lookup_timer.stop();
       #if !defined(NOGPU)
       cuda_try(cudaDeviceSynchronize());
       #endif
+      lookup_timer.stop();
       lookup_timer.record();
       if (verbose) { std::cout << "lookup tested " << r + 1 << "/" << args.rep_lookup << std::endl; }
     }
@@ -234,10 +203,10 @@ void run_bench(adapter_type& adapter,
           [&](unsigned thread_id) { adapter.thread_enter(thread_id); },
           [&](unsigned thread_id) { adapter.thread_exit(thread_id); });
         #endif
-        scan_timer.stop();
         #if !defined(NOGPU)
         cuda_try(cudaDeviceSynchronize());
         #endif
+        scan_timer.stop();
         scan_timer.record();
         if (verbose) { std::cout << "scan tested " << r + 1 << "/" << args.rep_scan << std::endl; }
       }
@@ -284,10 +253,10 @@ void run_bench(adapter_type& adapter,
           [&](unsigned thread_id) { adapter.thread_enter(thread_id); },
           [&](unsigned thread_id) { adapter.thread_exit(thread_id); });
         #endif
-        insert_timer.stop();
         #if !defined(NOGPU)
         cuda_try(cudaDeviceSynchronize());
         #endif
+        insert_timer.stop();
         insert_timer.record();
       }
       {
@@ -309,10 +278,10 @@ void run_bench(adapter_type& adapter,
           [&](unsigned thread_id) { adapter.thread_enter(thread_id); },
           [&](unsigned thread_id) { adapter.thread_exit(thread_id); });
         #endif
-        delete_timer.stop();
         #if !defined(NOGPU)
         cuda_try(cudaDeviceSynchronize());
         #endif
+        delete_timer.stop();
         delete_timer.record();
       }
       adapter.destroy();
@@ -389,10 +358,10 @@ void run_bench(adapter_type& adapter,
           [&](unsigned thread_id) { adapter.thread_enter(thread_id); },
           [&](unsigned thread_id) { adapter.thread_exit(thread_id); });
         #endif
-        mix_timer.stop();
         #if !defined(NOGPU)
         cuda_try(cudaDeviceSynchronize());
         #endif
+        mix_timer.stop();
         mix_timer.record();
         adapter.destroy();
         if (verbose) { std::cout << "mix tested " << r + 1 << "/" << args.rep_mixed << std::endl; }
