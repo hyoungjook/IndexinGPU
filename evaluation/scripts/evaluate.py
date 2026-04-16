@@ -73,7 +73,6 @@ class ResultType(Enum):
     scan = auto()
     mixed = auto()
     space = auto()
-    delete_space = auto()
 
 EXECUTABLE_INFO = {
     BenchExecutable.robust: {
@@ -193,6 +192,7 @@ def run_one(args, config):
             config_cmd = optional_config_type.name
             config_value = config_value_to_str(config[optional_config_type])
             cmd.append(f'{config_cmd}={config_value}')
+    cmd.append('print_all_measurements=1')
     # execute subprocess
     print(' '.join(cmd))
     with tempfile.NamedTemporaryFile(mode='w', delete=False) as log:
@@ -208,9 +208,7 @@ def run_one(args, config):
     result_lines = result_str.split('\n')
     result = {}
     parsed_config = {}
-    space_results = {
-        'avg': [], 'min': [], 'max': [], 'space': []
-    }
+    space_results = []
     for result_line in result_lines:
         if 'CMD' in result_line:
             pass
@@ -222,31 +220,24 @@ def run_one(args, config):
             parsed_config[config_name] = config_value
         elif 'Mop/s' in result_line:
             result_tokens = result_line.split(' ')
-            assert len(result_tokens) == 5
+            assert len(result_tokens) >= 5
             result_type = result_tokens[0][:-1]
             assert result_type in [r.name for r in ResultType]
             avg_value = float(result_tokens[1])
-            min_value = float(re.sub(r'[(),]', '', result_tokens[3]))
-            max_value = float(re.sub(r'[(),]', '', result_tokens[4]))
-            if result_type == ResultType.delete_space.name:
-                space_results['avg'].append(avg_value)
-                space_results['min'].append(min_value)
-                space_results['max'].append(max_value)
-            else:
-                result[result_type] = {'avg': avg_value,
-                                       'min': min_value,
-                                       'max': max_value}
+            raw_values = []
+            num_values = int(re.sub(r'[();]', '', result_tokens[3]))
+            for i in range(num_values):
+                raw_values.append(float(result_tokens[4 + i]))
+            result[result_type] = {'avg': avg_value,
+                                   'raw': raw_values}
         elif 'simple_slab' in result_line:
             result_tokens = result_line.split(' ')
             for token in result_tokens:
                 if '%' in token:
-                    space_results['space'].append(float(re.sub(r'[()%]', '', token)))
+                    space_results.append(float(re.sub(r'[()%]', '', token)))
                     break
-    if len(space_results['avg']) > 0:
-        result['delete_space'] = {'avg': space_results['avg'],
-                                  'min': space_results['min'],
-                                  'max': space_results['max']}
-        result['space'] = space_results['space']
+    if len(space_results) > 0:
+        result['space'] = space_results
     print(f'parsed_config: {parsed_config}, result: {result}')
     return parsed_config, result
 

@@ -44,26 +44,24 @@
 namespace universal {
 
 struct lap_timer {
-  float get_avg() {
+  static float convert_s_to_Mops(float sec, std::size_t size) {
+    return static_cast<float>(size) / 1e6 / sec;
+  }
+  float get_avg_Mops(std::size_t size) {
     float sum = 0;
-    for (auto t: times_) sum += t;
+    for (auto t: times_) sum += convert_s_to_Mops(t, size);
     return sum / times_.size();
   }
-  float get_max() {
-    float mx = times_[0];
-    for (auto t: times_) mx = std::max(mx, t);
-    return mx;
-  }
-  float get_min() {
-    float mn = times_[0];
-    for (auto t: times_) mn = std::min(mn, t);
-    return mn;
-  }
-  void print_rate_Mops(std::string name, std::size_t size) {
-    auto min_rate = static_cast<float>(size) / 1e6 / get_max();
-    auto avg_rate = static_cast<float>(size) / 1e6 / get_avg();
-    auto max_rate = static_cast<float>(size) / 1e6 / get_min();
-    std::cout << name << ": " << avg_rate << " Mop/s (" << min_rate << ", " << max_rate << ")" << std::endl;
+  void print_rate_Mops(std::string name, std::size_t size, bool print_all) {
+    std::cout << name << ": " << get_avg_Mops(size) << " Mop/s";
+    if (print_all) {
+      std::cout << " (" << times_.size() << "; ";
+      for (float t: times_) {
+        std::cout << convert_s_to_Mops(t, size) << " ";
+      }
+      std::cout << ")";
+    }
+    std::cout << std::endl;
   }
   std::vector<float> times_;
 };
@@ -82,7 +80,7 @@ struct gpu_lap_timer: public lap_timer {
   gpu_timer timer_;
 };
 
-struct gpu_multiround_timer: public lap_timer {
+/*struct gpu_multiround_timer: public lap_timer {
   gpu_multiround_timer(uint32_t num_rounds)
     : num_rounds_(num_rounds)
     , laps_(num_rounds) {}
@@ -112,7 +110,7 @@ struct gpu_multiround_timer: public lap_timer {
   int lapcnt_;
   gpu_timer timer_;
   std::vector<lap_timer> laps_;
-};
+};*/
 #endif
 
 struct cpu_lap_timer: public lap_timer {
@@ -192,7 +190,8 @@ void run_bench(adapter_type& adapter,
                [[maybe_unused]] std::vector<std::size_t> h_mix_key_tuple_ids,
                args_type& args,
                std::size_t result_buffer_size,
-               bool verbose) {
+               bool verbose,
+               bool print_all_measurements) {
   // measure lookup & scan
   if (args.rep_lookup > 0 || args.rep_scan > 0) {
     timer_type lookup_timer, scan_timer;
@@ -245,10 +244,10 @@ void run_bench(adapter_type& adapter,
     }
     adapter.destroy();
     if (args.rep_lookup > 0) {
-      lookup_timer.print_rate_Mops("lookup", args.num_lookups);
+      lookup_timer.print_rate_Mops("lookup", args.num_lookups, print_all_measurements);
     }
     if (adapter_type::is_ordered && args.rep_scan > 0) {
-      scan_timer.print_rate_Mops("scan", args.num_scans);
+      scan_timer.print_rate_Mops("scan", args.num_scans, print_all_measurements);
     }
   }
 
@@ -319,19 +318,20 @@ void run_bench(adapter_type& adapter,
       adapter.destroy();
       if (verbose) { std::cout << "insert/delete tested " << r + 1 << "/" << args.rep_insdel << std::endl; }
     }
-    insert_timer.print_rate_Mops("insert", args.num_insdel);
-    delete_timer.print_rate_Mops("delete", args.num_insdel);
+    insert_timer.print_rate_Mops("insert", args.num_insdel, print_all_measurements);
+    delete_timer.print_rate_Mops("delete", args.num_insdel, print_all_measurements);
   }
 
   // space test
   #if !defined(NOGPU)
   if (args.rep_space > 0) {
     uint32_t rep_del = args.max_keys / args.num_space;
-    gpu_multiround_timer delete_space_timer(rep_del);
-    for (uint32_t r = 0; r < args.rep_space; r++) {
+    //gpu_multiround_timer delete_space_timer(rep_del);
+    // repeat just once, ignore rep_space, as we don't measure time here
+    for (uint32_t r = 0; r < 1; r++) {
       prefill(adapter, h_keys, h_key_lengths, h_values, args.keylen_max, args.max_keys);
       if (r == 0) { adapter.print_stats(); }
-      delete_space_timer.start_round();
+      //delete_space_timer.start_round();
       for (uint32_t d = 0; d < rep_del; d++) {
         auto d_delete_keys = thrust::device_vector<key_slice_type>(
           h_keys.begin() + (static_cast<std::size_t>(args.num_space) * d * args.keylen_max),
@@ -339,18 +339,18 @@ void run_bench(adapter_type& adapter,
         auto d_delete_key_lengths = thrust::device_vector<size_type>(
           h_key_lengths.begin() + (static_cast<std::size_t>(args.num_space) * d),
           h_key_lengths.begin() + (static_cast<std::size_t>(args.num_space) * (d + 1)));
-        delete_space_timer.start_lap();
+        //delete_space_timer.start_lap();
         adapter.erase(d_delete_keys.data().get(), args.keylen_max, d_delete_key_lengths.data().get(), args.num_space);
-        delete_space_timer.stop_lap();
+        //delete_space_timer.stop_lap();
         cuda_try(cudaDeviceSynchronize());
-        delete_space_timer.record_lap();
+        //delete_space_timer.record_lap();
         if (r == 0) { adapter.print_stats(); }
       }
-      delete_space_timer.record_round();
+      //delete_space_timer.record_round();
       adapter.destroy();
       if (verbose) { std::cout << "space tested " << r + 1 << "/" << args.rep_space << std::endl; }
     }
-    delete_space_timer.print_rate_Mops("delete_space", args.num_space);
+    //delete_space_timer.print_rate_Mops("delete_space", args.num_space);
   }
   #endif
 
@@ -397,7 +397,7 @@ void run_bench(adapter_type& adapter,
         adapter.destroy();
         if (verbose) { std::cout << "mix tested " << r + 1 << "/" << args.rep_mixed << std::endl; }
       }
-      mix_timer.print_rate_Mops("mixed", args.num_mixed);
+      mix_timer.print_rate_Mops("mixed", args.num_mixed, print_all_measurements);
     }
   }
 }
@@ -408,6 +408,7 @@ int main(int argc, char** argv) {
   auto arg_strings = std::vector<std::string>(argv, argv + argc);
   universal::args_type args(arg_strings);
   bool verbose = get_arg_value<bool>(arg_strings, "verbose").value_or(false);
+  bool print_all_measurements = get_arg_value<bool>(arg_strings, "print_all_measurements").value_or(false);
 
   #if defined(UNIVERSAL_BENCH_WITH_CPU_BASELINE)
   #define FORALL_INDEXES(x) \
@@ -523,7 +524,8 @@ int main(int argc, char** argv) {
   if (args.index_type == #index) { \
     universal::run_bench(index##_adapter_, \
       h_keys, h_key_lengths, h_values, h_lookup_keys, h_lookup_key_lengths, h_scan_upper_keys_if_btree, \
-      h_mix_types, h_mix_keys, h_mix_key_lengths, h_mix_values, h_mix_key_tuple_ids, args, result_buffer_size, verbose); \
+      h_mix_types, h_mix_keys, h_mix_key_lengths, h_mix_values, h_mix_key_tuple_ids, args, result_buffer_size, \
+      verbose, print_all_measurements); \
   }
   FORALL_INDEXES(ADAPTER_RUN_BENCH)
   #undef ADAPTER_RUN_BENCH
