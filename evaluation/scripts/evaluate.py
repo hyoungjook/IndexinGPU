@@ -66,6 +66,7 @@ class OptionalConfigType(Enum):
     erase_concurrent = auto()
     use_lock = auto()
     initial_capacity = auto()
+    use_shmem_key = auto()
 
 class ResultType(Enum):
     insert = auto()
@@ -109,7 +110,8 @@ INDEX_INFO = {
         OptionalConfigType.lookup_concurrent,
         OptionalConfigType.enable_suffix,
         OptionalConfigType.merge_level,
-        OptionalConfigType.reuse_root
+        OptionalConfigType.reuse_root,
+        OptionalConfigType.use_shmem_key,
     ],
     IndexType.gpu_chainhashtable: [
         OptionalConfigType.allocator_pool_ratio,
@@ -117,7 +119,8 @@ INDEX_INFO = {
         OptionalConfigType.lookup_concurrent,
         OptionalConfigType.initial_array_fill_factor,
         OptionalConfigType.use_hash_tag,
-        OptionalConfigType.merge_chains
+        OptionalConfigType.merge_chains,
+        OptionalConfigType.use_shmem_key,
     ],
     IndexType.gpu_cuckoohashtable: [
         OptionalConfigType.allocator_pool_ratio,
@@ -125,6 +128,7 @@ INDEX_INFO = {
         OptionalConfigType.lookup_concurrent,
         OptionalConfigType.initial_array_fill_factor,
         OptionalConfigType.use_hash_tag,
+        OptionalConfigType.use_shmem_key,
     ],
     IndexType.gpu_extendhashtable: [
         OptionalConfigType.allocator_pool_ratio,
@@ -135,7 +139,8 @@ INDEX_INFO = {
         OptionalConfigType.load_factor_threshold,
         OptionalConfigType.hash_tag_level,
         OptionalConfigType.merge_level,
-        OptionalConfigType.reuse_dirsize
+        OptionalConfigType.reuse_dirsize,
+        OptionalConfigType.use_shmem_key,
     ],
     IndexType.gpu_blink_tree: [
         OptionalConfigType.lookup_concurrent,
