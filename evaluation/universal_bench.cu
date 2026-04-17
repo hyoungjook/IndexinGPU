@@ -16,6 +16,7 @@
 
 #include <stdlib.h>
 #include <algorithm>
+#include <execution>
 #include <cstdint>
 #include <numeric>
 #include <vector>
@@ -94,8 +95,12 @@ struct device_vector {
   device_vector(const T* h_buffer, std::size_t size, bool use_pinned_host_memory = false)
       : device_vector(size, use_pinned_host_memory) {
     if (size > 0) {
-      cuda_try(cudaMemcpyAsync(d_buffer_, h_buffer, sizeof(T) * size,
-        use_pinned_host_memory ? cudaMemcpyHostToHost : cudaMemcpyHostToDevice ));
+      if (use_pinned_host_memory) {
+        std::copy(std::execution::par, h_buffer, h_buffer + size, d_buffer_);
+      }
+      else {
+        cuda_try(cudaMemcpyAsync(d_buffer_, h_buffer, sizeof(T) * size, cudaMemcpyHostToDevice));
+      }
     }
   }
   device_vector(std::vector<T>& h_vector, bool use_pinned_host_memory = false)

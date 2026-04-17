@@ -32,6 +32,8 @@ def generate_configs():
             if index_type == IndexType.gpu_dycuckoo:
                 common_config[OptionalConfigType.initial_capacity] = DYCUCKOO_INITIAL_CAPACITY
             configs.append(common_config)
+            if index_type in INDEX_TYPES_ROBUST:
+                configs.append({**common_config, ConfigType.use_pinned_host_memory: 1})
     # MT suffix / reuse_root
     for index_type in [IndexType.gpu_masstree]:
         common_config = {

@@ -46,6 +46,7 @@ class ConfigType(Enum):
     rep_space = auto()
     index_type = auto()
     only_check_space = auto()
+    use_pinned_host_memory = auto()
 
 class OptionalConfigType(Enum):
     allocator_pool_ratio = auto()

@@ -142,21 +142,21 @@ def key_length_plots(configs_and_results, plot_file_prefix):
     tree_indexes = [i for i in all_index_types if i in IS_INDEX_TYPE_ORDERED]
     hashtable_indexes = [i for i in all_index_types if i not in IS_INDEX_TYPE_ORDERED]
     plot_spec = [
-        (0, tree_indexes, ResultType.lookup, False, True),
-        (1, tree_indexes, ResultType.insert, False, False),
-        (2, tree_indexes, ResultType.delete, False, False),
-        (3, tree_indexes, ResultType.mixed, False, False),
-        (4, tree_indexes, ResultType.scan, False, False),
-        (5, hashtable_indexes, ResultType.lookup, True, True),
-        (6, hashtable_indexes, ResultType.insert, True, False),
-        (7, hashtable_indexes, ResultType.delete, True, False),
-        (8, hashtable_indexes, ResultType.mixed, True, False),
+        (tree_indexes, ResultType.lookup, False, True),
+        (tree_indexes, ResultType.insert, False, False),
+        (tree_indexes, ResultType.delete, False, False),
+        (tree_indexes, ResultType.mixed, False, False),
+        (tree_indexes, ResultType.scan, False, False),
+        (hashtable_indexes, ResultType.lookup, True, True),
+        (hashtable_indexes, ResultType.insert, True, False),
+        (hashtable_indexes, ResultType.delete, True, False),
+        (hashtable_indexes, ResultType.mixed, True, False),
     ]
     plot_names = [
         'tree-lookup', 'tree-insert', 'tree-delete', 'tree-mixed', 'tree-scan',
         'ht-lookup', 'ht-insert', 'ht-delete', 'ht-mixed'
     ]
-    for idx, index_types, result_type, set_xlabel, set_ylabel in plot_spec:
+    for idx, (index_types, result_type, set_xlabel, set_ylabel) in enumerate(plot_spec):
         fig, ax = _make_fixed_plot_area_figure(2, 1.3,
             include_xlabel=set_xlabel,
             include_ylabel=set_ylabel,
@@ -218,17 +218,111 @@ def key_length_plots(configs_and_results, plot_file_prefix):
     plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
     plt.close(fig)
 
+def key_length_cpu_plots(configs_and_results, plot_file_prefix):
+    tputs = {}
+    all_index_types = INDEX_TYPES_ROBUST + INDEX_TYPES_CPU_BASELINE
+    for index_type in all_index_types:
+        tputs[index_type] = {}
+        result_types = [ResultType.lookup, ResultType.insert, ResultType.delete, ResultType.mixed]
+        if index_type in IS_INDEX_TYPE_ORDERED:
+            result_types.append(ResultType.scan)
+        for result_type in result_types:
+            tputs[index_type][result_type] = {
+                'avg': [], 'min': [], 'max': []
+            }
+            for key_length in EXP_KEY_LENGTHS:
+                desired_config = {
+                    ConfigType.index_type: index_type,
+                    ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+                    ConfigType.keylen_prefix: 0,
+                    ConfigType.keylen_min: key_length,
+                    ConfigType.keylen_max: key_length,
+                }
+                if index_type in INDEX_TYPES_ROBUST:
+                    desired_config[ConfigType.use_pinned_host_memory] = 1
+                if result_type == ResultType.lookup:
+                    desired_config[ConfigType.num_lookups] = DEFAULT_BATCH_SIZE
+                elif result_type in [ResultType.insert, ResultType.delete]:
+                    desired_config[ConfigType.num_insdel] = DEFAULT_BATCH_SIZE
+                elif result_type == ResultType.mixed:
+                    desired_config[ConfigType.num_mixed] = DEFAULT_BATCH_SIZE
+                    desired_config[ConfigType.mix_read_ratio] = DEFAULT_MIX_READ_RATIO
+                elif result_type == ResultType.scan:
+                    desired_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
+                    desired_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
+                result = filter(configs_and_results, desired_config, result_type)
+                for metric_type in ['avg', 'min', 'max']:
+                    tputs[index_type][result_type][metric_type].append(float(result[result_type.name][metric_type]))
+    # plot trees
+    key_lengths_bytes = [4 * l for l in EXP_KEY_LENGTHS]
+    tree_indexes = [i for i in all_index_types if i in IS_INDEX_TYPE_ORDERED]
+    hashtable_indexes = [i for i in all_index_types if i not in IS_INDEX_TYPE_ORDERED]
+    plot_spec = [
+        [
+            (tree_indexes, ResultType.lookup, True, False, False),
+            (tree_indexes, ResultType.insert, False, False, True),
+            (tree_indexes, ResultType.delete, False, False, True),
+            (tree_indexes, ResultType.mixed, False, False, True),
+            (tree_indexes, ResultType.scan, False, False, True),
+        ],
+        [
+            (hashtable_indexes, ResultType.lookup, False, True, False),
+            (hashtable_indexes, ResultType.insert, False, False, False),
+            (hashtable_indexes, ResultType.delete, False, False, True),
+            (hashtable_indexes, ResultType.mixed, False, False, True),
+        ],
+    ]
+    plot_names = ['tree', 'ht']
+    for idx, plots in enumerate(plot_spec):
+        figwidth = 1.4 * len(plots)
+        fig, axes = plt.subplots(1, len(plots), figsize=(figwidth, 2), constrained_layout=True)
+        common_ylim = 0
+        for subplot_idx, (index_types, result_type, _, ylim_except, _) in enumerate(plots):
+            if ylim_except:
+                continue
+            for index_type in index_types:
+                max_values = _convert_mops_to_bops(tputs[index_type][result_type]['max'], index_type)
+                common_ylim = max(common_ylim, max(max_values))
+        for subplot_idx, (index_types, result_type, set_ylabel, ylim_except, disable_yticklabels) in enumerate(plots):
+            for index_type in index_types:
+                avg_values = _convert_mops_to_bops(tputs[index_type][result_type]['avg'], index_type)
+                min_values = _convert_mops_to_bops(tputs[index_type][result_type]['min'], index_type)
+                max_values = _convert_mops_to_bops(tputs[index_type][result_type]['max'], index_type)
+                axes[subplot_idx].plot(
+                    key_lengths_bytes, avg_values,
+                    label=INDEX_LABELS[index_type],
+                    linewidth=2, markersize=6,
+                    **INDEX_STYLES[index_type]
+                )
+                _add_throughput_error_bars(
+                    axes[subplot_idx], key_lengths_bytes, avg_values, min_values, max_values, color=INDEX_STYLES[index_type]['color']
+                )
+            axes[subplot_idx].set_ylim(bottom=0)
+            if not ylim_except:
+                axes[subplot_idx].set_ylim(top=common_ylim * 1.1)
+            axes[subplot_idx].set_xlim(left=0)
+            axes[subplot_idx].grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
+            axes[subplot_idx].set_title(result_type.name)
+            if set_ylabel:
+                axes[subplot_idx].set_ylabel(r'Throughput ($10^9$/s)')
+            if disable_yticklabels:
+                axes[subplot_idx].set_yticklabels([])
+        fig.supxlabel('Key Length (B)')
+        fig.savefig(f'{plot_file_prefix}-{plot_names[idx]}.pdf', bbox_inches='tight')
+        plt.close(fig)
+
+
 def suffix_plots(configs_and_results, plot_file_prefix):
     tputs = {}
     plot_specs = [
-        (0, IndexType.gpu_masstree, ResultType.lookup, EXP_GPU_MASSTREE_OPTS, DEFAULT_MAXKEY_LONG),
-        (1, IndexType.gpu_extendhashtable, ResultType.lookup, EXP_GPU_EXTENDHT_OPTS, 2 * DEFAULT_BATCH_SIZE),
-        (2, IndexType.gpu_extendhashtable, ResultType.insert, EXP_GPU_EXTENDHT_OPTS, 2 * DEFAULT_BATCH_SIZE),
+        (IndexType.gpu_masstree, ResultType.lookup, EXP_GPU_MASSTREE_OPTS, DEFAULT_MAXKEY_LONG),
+        (IndexType.gpu_extendhashtable, ResultType.lookup, EXP_GPU_EXTENDHT_OPTS, 2 * DEFAULT_BATCH_SIZE),
+        (IndexType.gpu_extendhashtable, ResultType.insert, EXP_GPU_EXTENDHT_OPTS, 2 * DEFAULT_BATCH_SIZE),
     ]
     plot_names = [
         'mt-lookup', 'et-lookup', 'et-insert'
     ]
-    for idx, index_type, result_type, opt_configs, max_key in plot_specs:
+    for idx, (index_type, result_type, opt_configs, max_key) in enumerate(plot_specs):
         tputs[idx] = {
             'avg': [], 'min': [], 'max': []
         }
@@ -254,7 +348,7 @@ def suffix_plots(configs_and_results, plot_file_prefix):
     # plot
     mt_xticklabels = ['C', 'R', 'RS']
     et_xticklabels = ['R', 'C', 'CT', 'Ct']
-    for idx, index_type, result_type, opt_configs, _ in plot_specs:
+    for idx, (index_type, result_type, opt_configs, _) in enumerate(plot_specs):
         fig, ax = _make_fixed_plot_area_figure(1.3, 1.1,
             include_xlabel=False, include_ylabel=(idx == 0))
         avg_values = _convert_mops_to_bops(tputs[idx]['avg'], index_type)
@@ -633,6 +727,7 @@ def intro_plots(configs_and_results, plot_file_prefix):
 
 def generate_plots(args, configs_and_results):
     key_length_plots(configs_and_results, Path(args.result_dir) / 'plot_keylength')
+    key_length_cpu_plots(configs_and_results, Path(args.result_dir) / 'plot_keylength_cpu')
     suffix_plots(configs_and_results, Path(args.result_dir) / 'plot_suffix')
     tile_plots(configs_and_results, Path(args.result_dir) / 'plot_tile')
     merge_plots(configs_and_results, Path(args.result_dir) / 'plot_merge')
