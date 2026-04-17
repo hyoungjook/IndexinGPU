@@ -33,6 +33,7 @@
 #include <type_traits>
 
 #include <dynamic_stack.hpp>
+#include <varlen_key_store.hpp>
 #include <simple_bump_alloc.hpp>
 #include <simple_slab_alloc.hpp>
 #include <simple_dummy_reclaim.hpp>
@@ -160,7 +161,7 @@ struct gpu_cuckoohashtable {
 
   // device-side APIs
   template <bool concurrent, bool use_hash_tag, typename tile_type>
-  DEVICE_QUALIFIER value_type cooperative_find(const key_slice_type* key,
+  DEVICE_QUALIFIER value_type cooperative_find(utils::varlen_key_store& key,
                                                size_type key_length,
                                                const tile_type& tile,
                                                device_allocator_context_type& allocator) {
@@ -204,7 +205,7 @@ struct gpu_cuckoohashtable {
   }
 
   template <bool use_hash_tag, typename tile_type>
-  DEVICE_QUALIFIER bool cooperative_insert(const key_slice_type* key,
+  DEVICE_QUALIFIER bool cooperative_insert(utils::varlen_key_store& key,
                                            const size_type key_length,
                                            const value_type& value,
                                            const tile_type& tile,
@@ -339,7 +340,7 @@ struct gpu_cuckoohashtable {
   }
 
   template <bool use_hash_tag, bool _, typename tile_type>
-  DEVICE_QUALIFIER bool cooperative_erase(const key_slice_type* key,
+  DEVICE_QUALIFIER bool cooperative_erase(utils::varlen_key_store& key,
                                           const size_type key_length,
                                           const tile_type& tile,
                                           device_allocator_context_type& allocator,
@@ -391,7 +392,7 @@ struct gpu_cuckoohashtable {
   DEVICE_QUALIFIER int coop_get_key_location_from_node(hashtable_node<tile_type, device_allocator_context_type>& node,
                                                        const key_slice_type& first_slice,
                                                        bool more_key,
-                                                       const key_slice_type* key,
+                                                       utils::varlen_key_store& key,
                                                        const size_type& key_length,
                                                        suffix_node<tile_type, device_allocator_context_type>& suffix_if_found,
                                                        const tile_type& tile,

@@ -20,6 +20,7 @@
 #include <macros.hpp>
 #include <utils.hpp>
 #include <suffix_node_warp.hpp>
+#include <varlen_key_store.hpp>
 
 template <typename tile_type, typename allocator_type>
 struct masstree_node_warp {
@@ -304,7 +305,7 @@ struct masstree_node_warp {
   template <bool use_upper_key>
   DEVICE_QUALIFIER uint32_t scan(const key_type& lower_key_slice,
                                  const bool lower_key_more,
-                                 const key_type* lower_key,         // original argument
+                                 utils::varlen_key_store& lower_key,// original argument
                                  const size_type lower_key_length,  // original argument
                                  bool& passed_lower_key,
                                  const key_type& upper_key_slice,
@@ -345,7 +346,7 @@ struct masstree_node_warp {
         auto suffix_index = get_value_from_location(first_location);
         auto suffix = suffix_type(suffix_index, tile_, allocator_);
         suffix.load_head();
-        if (suffix.strcmp(lower_key + layer + 1, lower_key_length - layer - 1) > 0) {
+        if (suffix.strcmp(lower_key + (layer + 1), lower_key_length - layer - 1) > 0) {
           if (tile_.thread_rank() == first_location) { in_range = false; }
           in_range_ballot = tile_.ballot(in_range);
           if (in_range_ballot == 0) {
@@ -370,7 +371,7 @@ struct masstree_node_warp {
         auto suffix_index = get_value_from_location(last_location - 1);
         auto suffix = suffix_type(suffix_index, tile_, allocator_);
         suffix.load_head();
-        if (suffix.strcmp(upper_key + layer + 1, upper_key_length - layer - 1) < 0) {
+        if (suffix.strcmp(upper_key + (layer + 1), upper_key_length - layer - 1) < 0) {
           last_location--;
         }
       }

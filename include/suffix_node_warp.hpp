@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <macros.hpp>
 #include <utils.hpp>
+#include <varlen_key_store.hpp>
 
 template <typename tile_type, typename allocator_type>
 struct suffix_node_warp {
@@ -73,7 +74,7 @@ struct suffix_node_warp {
     return ((length + 2) + node_max_len_ - 1) / node_max_len_;
   }
 
-  DEVICE_QUALIFIER bool streq(const elem_type* key, uint32_t key_length) const {
+  DEVICE_QUALIFIER bool streq(utils::varlen_key_store key, uint32_t key_length) const {
     if (get_key_length() != key_length) { return false; }
     // now key_length == this_key_length, compare head node
     // ignore first two elements in head
@@ -99,7 +100,8 @@ struct suffix_node_warp {
     assert(false);
   }
 
-  DEVICE_QUALIFIER int strcmp(const elem_type* key, uint32_t key_length, elem_type* mismatch_value = nullptr) const {
+  template <typename keyptr_or_keystore>
+  DEVICE_QUALIFIER int strcmp(keyptr_or_keystore key, uint32_t key_length, elem_type* mismatch_value = nullptr) const {
     // strcmp(this, key) -> 0 (match), +(this<key), -(this>key)
     // the absolute of return value: (1 + num_matches)
     // NOTE if one is prefix of the other, num_matches is (len(smaller) - 1)
@@ -257,7 +259,7 @@ struct suffix_node_warp {
     return make_uint2(tile_.shfl(hash, 0), tile_.shfl(hash1, 0));
   }
 
-  DEVICE_QUALIFIER void create_from(const elem_type* key, size_type key_length, elem_type value) {
+  DEVICE_QUALIFIER void create_from(utils::varlen_key_store key, size_type key_length, elem_type value) {
     // head node metadata
     elem_type elem;
     elem_type* curr_ptr = nullptr;  // NULL if head, else appendix
