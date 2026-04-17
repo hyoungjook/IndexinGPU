@@ -68,7 +68,9 @@ struct gpu_chainhashtable_adapter {
               std::size_t num_keys) {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_bool(configs_.use_hash_tag, [&](auto t2, auto h2) {
-        do_insert<t2.value, h2.value>(keys, keylen_max, key_lengths, values, num_keys);
+        adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t3, auto h3, auto k3) {
+          do_insert<t3.value, h3.value, k3.value>(keys, keylen_max, key_lengths, values, num_keys);
+        }, t2, h2);
       }, t1);
     });
   }
@@ -79,7 +81,9 @@ struct gpu_chainhashtable_adapter {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_bool(configs_.use_hash_tag, [&](auto t2, auto h2) {
         adapter_util::dispatch_bool(configs_.merge_chains, [&](auto t3, auto h3, auto m3) {
-          do_erase<t3.value, h3.value, m3.value>(keys, keylen_max, key_lengths, num_keys);
+          adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t4, auto h4, auto m4, auto k4) {
+            do_erase<t4.value, h4.value, m4.value, k4.value>(keys, keylen_max, key_lengths, num_keys);
+          }, t3, h3, m3);
         }, t2, h2);
       }, t1);
     });
@@ -92,7 +96,9 @@ struct gpu_chainhashtable_adapter {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_bool(configs_.lookup_concurrent, [&](auto t2, auto c2) {
         adapter_util::dispatch_bool(configs_.use_hash_tag, [&](auto t3, auto c3, auto h3) {
-          do_find<t3.value, c3.value, h3.value>(keys, keylen_max, key_lengths, results, num_keys);
+          adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t4, auto c4, auto h4, auto k4) {
+            do_find<t4.value, c4.value, h4.value, k4.value>(keys, keylen_max, key_lengths, results, num_keys);
+          }, t3, c3, h3);
         }, t2, c2);
       }, t1);
     });
@@ -106,7 +112,9 @@ struct gpu_chainhashtable_adapter {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_bool(configs_.use_hash_tag, [&](auto t2, auto h2) {
         adapter_util::dispatch_bool(configs_.merge_chains, [&](auto t3, auto h3, auto m3) {
-          do_mixed<t3.value, h3.value, m3.value>(types, keys, keylen_max, key_lengths, values, nullptr, num_keys);
+          adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t4, auto h4, auto m4, auto k4) {
+            do_mixed<t4.value, h4.value, m4.value, k4.value>(types, keys, keylen_max, key_lengths, values, nullptr, num_keys);
+          }, t3, h3, m3);
         }, t2, h2);
       }, t1);
     });
@@ -128,7 +136,8 @@ struct gpu_chainhashtable_adapter {
     x(lookup_concurrent, bool, false) \
     x(initial_array_fill_factor, float, 2.0f) \
     x(use_hash_tag, bool, true) \
-    x(merge_chains, bool, true)
+    x(merge_chains, bool, true) \
+    x(use_shmem_key, bool ,false)
   struct configs {
     #define DECLARE_ARGUMENTS(arg, type, default_value) type arg;
     FORALL_ARGUMENTS_GPU_CHAINHASHTABLE(DECLARE_ARGUMENTS)
@@ -157,28 +166,28 @@ struct gpu_chainhashtable_adapter {
   };
   #undef FORALL_ARGUMENTS_GPU_CHAINHASHTABLE
 
-  template <uint32_t tile_size, bool use_hash_tag, typename... arg_types>
+  template <uint32_t tile_size, bool use_hash_tag, bool use_shmem_key, typename... arg_types>
   void do_insert(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template insert<use_hash_tag>(args...);
+      ->template insert<use_hash_tag, use_shmem_key>(args...);
   }
 
-  template <uint32_t tile_size, bool use_hash_tag, bool merge_chains, typename... arg_types>
+  template <uint32_t tile_size, bool use_hash_tag, bool merge_chains, bool use_shmem_key, typename... arg_types>
   void do_erase(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template erase<use_hash_tag, merge_chains>(args...);
+      ->template erase<use_hash_tag, merge_chains, use_shmem_key>(args...);
   }
 
-  template <uint32_t tile_size, bool lookup_concurrent, bool use_hash_tag, typename... arg_types>
+  template <uint32_t tile_size, bool lookup_concurrent, bool use_hash_tag, bool use_shmem_key, typename... arg_types>
   void do_find(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template find<lookup_concurrent, use_hash_tag>(args...);
+      ->template find<lookup_concurrent, use_hash_tag, use_shmem_key>(args...);
   }
 
-  template <uint32_t tile_size, bool use_hash_tag, bool merge_chains, typename... arg_types>
+  template <uint32_t tile_size, bool use_hash_tag, bool merge_chains, bool use_shmem_key, typename... arg_types>
   void do_mixed(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template mixed_batch<use_hash_tag, merge_chains>(args...);
+      ->template mixed_batch<use_hash_tag, merge_chains, use_shmem_key>(args...);
   }
 
   configs configs_;
