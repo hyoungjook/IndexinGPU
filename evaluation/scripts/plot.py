@@ -8,7 +8,8 @@ import matplotlib.ticker as ticker
 
 GPU_VM_HOURLY_PRICE = 3.673
 CPU_VM_HOURLY_PRICE = 3.648
-CPU_BASELINE_ADJUST = GPU_VM_HOURLY_PRICE / CPU_VM_HOURLY_PRICE
+#CPU_BASELINE_ADJUST = GPU_VM_HOURLY_PRICE / CPU_VM_HOURLY_PRICE
+CPU_BASELINE_ADJUST = 1
 
 INDEX_LABELS = {
     IndexType.gpu_masstree: "GPUMasstree",
@@ -266,7 +267,7 @@ def key_length_cpu_plots(configs_and_results, plot_file_prefix):
             (tree_indexes, ResultType.scan, False, False, True),
         ],
         [
-            (hashtable_indexes, ResultType.lookup, False, True, False),
+            (hashtable_indexes, ResultType.lookup, True, True, False),
             (hashtable_indexes, ResultType.insert, False, False, False),
             (hashtable_indexes, ResultType.delete, False, False, True),
             (hashtable_indexes, ResultType.mixed, False, False, True),
@@ -274,8 +275,9 @@ def key_length_cpu_plots(configs_and_results, plot_file_prefix):
     ]
     plot_names = ['tree', 'ht']
     for idx, plots in enumerate(plot_spec):
-        figwidth = 1.4 * len(plots)
-        fig, axes = plt.subplots(1, len(plots), figsize=(figwidth, 2), constrained_layout=True)
+        figwidth = 6
+        figheight = 1.6 if idx == 0 else 1.8
+        fig, axes = plt.subplots(1, len(plots), figsize=(figwidth, figheight), constrained_layout=True)
         common_ylim = 0
         for subplot_idx, (index_types, result_type, _, ylim_except, _) in enumerate(plots):
             if ylim_except:
@@ -302,12 +304,13 @@ def key_length_cpu_plots(configs_and_results, plot_file_prefix):
                 axes[subplot_idx].set_ylim(top=common_ylim * 1.1)
             axes[subplot_idx].set_xlim(left=0)
             axes[subplot_idx].grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
-            axes[subplot_idx].set_title(result_type.name)
+            axes[subplot_idx].set_title(result_type.name, fontsize=10)
             if set_ylabel:
                 axes[subplot_idx].set_ylabel(r'Throughput ($10^9$/s)')
             if disable_yticklabels:
                 axes[subplot_idx].set_yticklabels([])
-        fig.supxlabel('Key Length (B)')
+        if idx == 1:
+            fig.supxlabel('Key Length (B)', fontsize=10)
         fig.savefig(f'{plot_file_prefix}-{plot_names[idx]}.pdf', bbox_inches='tight')
         plt.close(fig)
 
