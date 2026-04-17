@@ -24,8 +24,6 @@
 #include <generate_workload.hpp>
 #if !defined(NOGPU)
 #include <cuda_profiler_api.h>
-#include <thrust/sequence.h>
-#include <gpu_timer.hpp>
 #endif
 #if defined(UNIVERSAL_BENCH_WITH_CPU_BASELINE)
 #include <cpu_libcuckoo_adapter.hpp>
@@ -66,21 +64,6 @@ struct lap_timer {
   std::vector<float> times_;
 };
 
-#if !defined(NOGPU)
-struct gpu_lap_timer: public lap_timer {
-  void start() {
-    timer_.start_timer();
-  }
-  void stop() {
-    timer_.stop_timer();
-  }
-  void record() {
-    times_.push_back(timer_.get_elapsed_s());
-  }
-  gpu_timer timer_;
-};
-#endif
-
 struct cpu_lap_timer: public lap_timer {
   void start() {
     start_ = std::chrono::high_resolution_clock::now();
@@ -94,12 +77,49 @@ struct cpu_lap_timer: public lap_timer {
   std::chrono::time_point<std::chrono::high_resolution_clock> start_, end_;
 };
 
+#if !defined(NOGPU)
+template <typename T>
+struct device_vector {
+  device_vector(std::size_t size, bool use_pinned_host_memory = false)
+      : d_buffer_(nullptr), use_pinned_host_memory_(use_pinned_host_memory) {
+    if (size > 0) {
+      if (use_pinned_host_memory) {
+        cuda_try(cudaMallocHost(&d_buffer_, sizeof(T) * size));
+      }
+      else {
+        cuda_try(cudaMalloc(&d_buffer_, sizeof(T) * size));
+      }
+    }
+  }
+  device_vector(const T* h_buffer, std::size_t size, bool use_pinned_host_memory = false)
+      : device_vector(size, use_pinned_host_memory) {
+    if (size > 0) {
+      cuda_try(cudaMemcpyAsync(d_buffer_, h_buffer, sizeof(T) * size,
+        use_pinned_host_memory ? cudaMemcpyHostToHost : cudaMemcpyHostToDevice ));
+    }
+  }
+  device_vector(std::vector<T>& h_vector, bool use_pinned_host_memory = false)
+    : device_vector(h_vector.data(), h_vector.size(), use_pinned_host_memory) {}
+  ~device_vector() {
+    if (d_buffer_) {
+      if (use_pinned_host_memory_) {
+        cuda_try(cudaFreeHost(d_buffer_));
+      }
+      else {
+        cuda_try(cudaFree(d_buffer_));
+      }
+    }
+  }
+  T* data() const { return d_buffer_; }
+ private:
+  T* d_buffer_;
+  bool use_pinned_host_memory_;
+};
+#endif
+
 #if defined(UNIVERSAL_BENCH_WITH_CPU_BASELINE)
-using timer_type = cpu_lap_timer;
 static bool varlen_key_big_endian = true;
 #else
-//using timer_type = gpu_lap_timer;
-using timer_type = cpu_lap_timer;
 static bool varlen_key_big_endian = false;
 #endif
 
@@ -115,13 +135,10 @@ void prefill(adapter_type& adapter,
   static const uint32_t prefill_batch = 100 * 1000 * 1000;
   for (std::size_t begin = 0; begin < num_keys; begin += prefill_batch) {
     auto batch_size = std::min<std::size_t>(num_keys - begin, prefill_batch);
-    auto d_keys = thrust::device_vector<key_slice_type>(
-      h_keys.begin() + (keylen_max * begin), h_keys.begin() + (keylen_max * (begin + batch_size)));
-    auto d_key_lengths = thrust::device_vector<size_type>(
-      h_key_lengths.begin() + begin, h_key_lengths.begin() + (begin + batch_size));
-    auto d_values = thrust::device_vector<value_type>(
-      h_values.begin() + begin, h_values.begin() + (begin + batch_size));
-    adapter.insert(d_keys.data().get(), keylen_max, d_key_lengths.data().get(), d_values.data().get(), batch_size);
+    auto d_keys = device_vector<key_slice_type>(&h_keys[begin * keylen_max], batch_size * keylen_max);
+    auto d_key_lengths = device_vector<size_type>(&h_key_lengths[begin], batch_size);
+    auto d_values = device_vector<value_type>(&h_values[begin], batch_size);
+    adapter.insert(d_keys.data(), keylen_max, d_key_lengths.data(), d_values.data(), batch_size);
     cuda_try(cudaDeviceSynchronize());
   }
   #else
@@ -163,20 +180,21 @@ void run_bench(adapter_type& adapter,
                bool print_all_measurements) {
   // measure lookup & scan
   if (args.rep_lookup > 0 || args.rep_scan > 0) {
-    timer_type lookup_timer, scan_timer;
+    cpu_lap_timer lookup_timer, scan_timer;
     prefill(adapter, h_keys, h_key_lengths, h_values, args.keylen_max, args.max_keys);
     #if !defined(NOGPU)
-    auto d_lookup_keys = thrust::device_vector<key_slice_type>(h_lookup_keys.begin(), h_lookup_keys.end());
-    auto d_lookup_key_lengths = thrust::device_vector<size_type>(h_lookup_key_lengths.begin(), h_lookup_key_lengths.end());
-    auto d_results = thrust::device_vector<value_type>(result_buffer_size);
-    auto d_scan_upper_keys_if_btree = thrust::device_vector<key_slice_type>(h_scan_upper_keys_if_btree.begin(), h_scan_upper_keys_if_btree.end());
+    auto d_lookup_keys = device_vector<key_slice_type>(h_lookup_keys, args.use_pinned_host_memory);
+    auto d_lookup_key_lengths = device_vector<size_type>(h_lookup_key_lengths, args.use_pinned_host_memory);
+    auto d_results = device_vector<value_type>(result_buffer_size, args.use_pinned_host_memory);
+    auto d_scan_upper_keys_if_btree = device_vector<key_slice_type>(h_scan_upper_keys_if_btree, args.use_pinned_host_memory);
+    cuda_try(cudaDeviceSynchronize());
     #else
     std::vector<value_type> h_results(result_buffer_size);
     #endif
     for (uint32_t r = 0; r < args.rep_lookup; r++) {
       lookup_timer.start();
       #if !defined(NOGPU)
-      adapter.find(d_lookup_keys.data().get(), args.keylen_max, d_lookup_key_lengths.data().get(), d_results.data().get(), args.num_lookups);
+      adapter.find(d_lookup_keys.data(), args.keylen_max, d_lookup_key_lengths.data(), d_results.data(), args.num_lookups);
       #else
       helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
           h_results[task_idx] = adapter.find(&h_lookup_keys[task_idx * args.keylen_max], h_lookup_key_lengths[task_idx], thread_id);
@@ -195,7 +213,7 @@ void run_bench(adapter_type& adapter,
       for (uint32_t r = 0; r < args.rep_scan; r++) {
         scan_timer.start();
         #if !defined(NOGPU)
-        adapter.scan(d_lookup_keys.data().get(), args.keylen_max, d_lookup_key_lengths.data().get(), args.scan_count, d_results.data().get(), args.num_scans, d_scan_upper_keys_if_btree.data().get());
+        adapter.scan(d_lookup_keys.data(), args.keylen_max, d_lookup_key_lengths.data(), args.scan_count, d_results.data(), args.num_scans, d_scan_upper_keys_if_btree.data());
         #else
         helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
             adapter.scan(&h_lookup_keys[task_idx * args.keylen_max], h_lookup_key_lengths[task_idx], args.scan_count, &h_results[task_idx * args.scan_count], thread_id);
@@ -222,25 +240,20 @@ void run_bench(adapter_type& adapter,
 
   // measure insert & delete
   if (args.rep_insdel > 0) {
-    timer_type insert_timer, delete_timer;
+    cpu_lap_timer insert_timer, delete_timer;
     std::size_t num_prefill = args.max_keys - args.num_insdel;
     for (uint32_t r = 0; r < args.rep_insdel; r++) {
       prefill(adapter, h_keys, h_key_lengths, h_values, args.keylen_max, num_prefill);
       {
         #if !defined(NOGPU)
-        auto d_insert_keys = thrust::device_vector<key_slice_type>(
-          h_keys.begin() + (num_prefill * args.keylen_max),
-          h_keys.begin() + (args.max_keys * args.keylen_max));
-        auto d_insert_key_lengths = thrust::device_vector<size_type>(
-          h_key_lengths.begin() + num_prefill,
-          h_key_lengths.begin() + args.max_keys);
-        auto d_insert_values = thrust::device_vector<value_type>(
-          h_values.begin() + num_prefill,
-          h_values.begin() + args.max_keys);
+        auto d_insert_keys = device_vector<key_slice_type>(&h_keys[num_prefill * args.keylen_max], static_cast<std::size_t>(args.num_insdel) * args.keylen_max, args.use_pinned_host_memory);
+        auto d_insert_key_lengths = device_vector<size_type>(&h_key_lengths[num_prefill], args.num_insdel, args.use_pinned_host_memory);
+        auto d_insert_values = device_vector<value_type>(&h_values[num_prefill], args.num_insdel, args.use_pinned_host_memory);
+        cuda_try(cudaDeviceSynchronize());
         #endif
         insert_timer.start();
         #if !defined(NOGPU)
-        adapter.insert(d_insert_keys.data().get(), args.keylen_max, d_insert_key_lengths.data().get(), d_insert_values.data().get(), args.num_insdel);
+        adapter.insert(d_insert_keys.data(), args.keylen_max, d_insert_key_lengths.data(), d_insert_values.data(), args.num_insdel);
         #else
         helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
             auto tuple_id = num_prefill + task_idx;
@@ -261,14 +274,13 @@ void run_bench(adapter_type& adapter,
       }
       {
         #if !defined(NOGPU)
-        auto d_delete_keys = thrust::device_vector<key_slice_type>(
-          h_keys.begin(), h_keys.begin() + (static_cast<std::size_t>(args.num_insdel) * args.keylen_max));
-        auto d_delete_key_lengths = thrust::device_vector<size_type>(
-          h_key_lengths.begin(), h_key_lengths.begin() + args.num_insdel);
+        auto d_delete_keys = device_vector<key_slice_type>(&h_keys[0], static_cast<std::size_t>(args.num_insdel) * args.keylen_max, args.use_pinned_host_memory);
+        auto d_delete_key_lengths = device_vector<size_type>(&h_key_lengths[0], args.num_insdel, args.use_pinned_host_memory);
+        cuda_try(cudaDeviceSynchronize());
         #endif
         delete_timer.start();
         #if !defined(NOGPU)
-        adapter.erase(d_delete_keys.data().get(), args.keylen_max, d_delete_key_lengths.data().get(), args.num_insdel);
+        adapter.erase(d_delete_keys.data(), args.keylen_max, d_delete_key_lengths.data(), args.num_insdel);
         #else
         helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
             adapter.erase(&h_keys[task_idx * args.keylen_max],
@@ -295,31 +307,23 @@ void run_bench(adapter_type& adapter,
   #if !defined(NOGPU)
   if (args.rep_space > 0) {
     uint32_t rep_del = args.max_keys / args.num_space;
-    //gpu_multiround_timer delete_space_timer(rep_del);
     // repeat just once, ignore rep_space, as we don't measure time here
     for (uint32_t r = 0; r < 1; r++) {
       prefill(adapter, h_keys, h_key_lengths, h_values, args.keylen_max, args.max_keys);
       if (r == 0) { adapter.print_stats(); }
-      //delete_space_timer.start_round();
       for (uint32_t d = 0; d < rep_del; d++) {
-        auto d_delete_keys = thrust::device_vector<key_slice_type>(
-          h_keys.begin() + (static_cast<std::size_t>(args.num_space) * d * args.keylen_max),
-          h_keys.begin() + (static_cast<std::size_t>(args.num_space) * (d + 1) * args.keylen_max));
-        auto d_delete_key_lengths = thrust::device_vector<size_type>(
-          h_key_lengths.begin() + (static_cast<std::size_t>(args.num_space) * d),
-          h_key_lengths.begin() + (static_cast<std::size_t>(args.num_space) * (d + 1)));
-        //delete_space_timer.start_lap();
-        adapter.erase(d_delete_keys.data().get(), args.keylen_max, d_delete_key_lengths.data().get(), args.num_space);
-        //delete_space_timer.stop_lap();
+        auto d_delete_keys = device_vector<key_slice_type>(
+          &h_keys[static_cast<std::size_t>(args.num_space) * args.keylen_max * d],
+          static_cast<std::size_t>(args.num_space) * args.keylen_max);
+        auto d_delete_key_lengths = device_vector<size_type>(
+          &h_key_lengths[static_cast<std::size_t>(args.num_space) * d], args.num_space);
+        adapter.erase(d_delete_keys.data(), args.keylen_max, d_delete_key_lengths.data(), args.num_space);
         cuda_try(cudaDeviceSynchronize());
-        //delete_space_timer.record_lap();
         if (r == 0) { adapter.print_stats(); }
       }
-      //delete_space_timer.record_round();
       adapter.destroy();
       if (verbose) { std::cout << "space tested " << r + 1 << "/" << args.rep_space << std::endl; }
     }
-    //delete_space_timer.print_rate_Mops("delete_space", args.num_space);
   }
   #endif
 
@@ -327,22 +331,19 @@ void run_bench(adapter_type& adapter,
   if constexpr (adapter_type::support_mixed) {
     if (args.rep_mixed > 0) {
       std::size_t num_prefill = args.max_keys - mix_get_num_insdel(args.num_mixed, args.mix_read_ratio);
-      timer_type mix_timer;
+      cpu_lap_timer mix_timer;
       for (uint32_t r = 0; r < args.rep_mixed; r++) {
         prefill(adapter, h_keys, h_key_lengths, h_values, args.keylen_max, num_prefill);
         #if !defined(NOGPU)
-        auto d_mix_types = thrust::device_vector<kernels::request_type>(
-          h_mix_types.begin(), h_mix_types.end());
-        auto d_mix_keys = thrust::device_vector<key_slice_type>(
-          h_mix_keys.begin(), h_mix_keys.end());
-        auto d_mix_key_lengths = thrust::device_vector<size_type>(
-          h_mix_key_lengths.begin(), h_mix_key_lengths.end());
-        auto d_mix_values = thrust::device_vector<value_type>(
-          h_mix_values.begin(), h_mix_values.end());
+        auto d_mix_types = device_vector<kernels::request_type>(h_mix_types, args.use_pinned_host_memory);
+        auto d_mix_keys = device_vector<key_slice_type>(h_mix_keys, args.use_pinned_host_memory);
+        auto d_mix_key_lengths = device_vector<size_type>(h_mix_key_lengths, args.use_pinned_host_memory);
+        auto d_mix_values = device_vector<value_type>(h_mix_values, args.use_pinned_host_memory);
+        cuda_try(cudaDeviceSynchronize());
         #endif
         mix_timer.start();
         #if !defined(NOGPU)
-        adapter.mixed_batch(d_mix_types.data().get(), d_mix_keys.data().get(), args.keylen_max, d_mix_key_lengths.data().get(), d_mix_values.data().get(), args.num_mixed);
+        adapter.mixed_batch(d_mix_types.data(), d_mix_keys.data(), args.keylen_max, d_mix_key_lengths.data(), d_mix_values.data(), args.num_mixed);
         #else
         helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
             if (h_mix_types[task_idx] == kernels::request_type_find) {
