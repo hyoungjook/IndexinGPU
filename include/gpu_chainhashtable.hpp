@@ -33,7 +33,6 @@
 #include <type_traits>
 
 #include <dynamic_stack.hpp>
-#include <varlen_key_store.hpp>
 #include <simple_bump_alloc.hpp>
 #include <simple_slab_alloc.hpp>
 #include <simple_dummy_reclaim.hpp>
@@ -99,7 +98,8 @@ struct gpu_chainhashtable {
   // host-side APIs
   // if key_lengths == NULL, we use max_key_length as a fixed length
   template <bool concurrent = false,
-            bool use_hash_tag = true>
+            bool use_hash_tag = true,
+            bool use_shmem_key = false>
   void find(const key_slice_type* keys,
             const size_type max_key_length,
             const size_type* key_lengths,
@@ -108,10 +108,11 @@ struct gpu_chainhashtable {
             cudaStream_t stream = 0) {
     kernels::GpuHashtable::find_device_func<gpu_chainhashtable, concurrent, use_hash_tag>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values};
-    kernels::launch_batch_kernel(*this, func, num_keys, stream);
+    kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
 
-  template <bool use_hash_tag = true>
+  template <bool use_hash_tag = true,
+            bool use_shmem_key = false>
   void insert(const key_slice_type* keys,
               const size_type max_key_length,
               const size_type* key_lengths,
@@ -121,11 +122,12 @@ struct gpu_chainhashtable {
               bool update_if_exists = false) {
     kernels::GpuHashtable::insert_device_func<gpu_chainhashtable, use_hash_tag>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .update_if_exists = update_if_exists};
-    kernels::launch_batch_kernel(*this, func, num_keys, stream);
+    kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
 
   template <bool use_hash_tag = true,
-            bool do_merge = true>
+            bool do_merge = true,
+            bool use_shmem_key = false>
   void erase(const key_slice_type* keys,
              const size_type max_key_length,
              const size_type* key_lengths,
@@ -133,11 +135,12 @@ struct gpu_chainhashtable {
              cudaStream_t stream = 0) {
     kernels::GpuHashtable::erase_device_func<gpu_chainhashtable, use_hash_tag, do_merge>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths};
-    kernels::launch_batch_kernel(*this, func, num_keys, stream);
+    kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
 
   template <bool use_hash_tag = true,
-            bool erase_do_merge = true>
+            bool erase_do_merge = true,
+            bool use_shmem_key = false>
   void mixed_batch(const kernels::request_type* request_types,
                    const key_slice_type* keys,
                    const size_type max_key_length,
@@ -149,12 +152,12 @@ struct gpu_chainhashtable {
                    bool insert_update_if_exists = false) {
     kernels::GpuHashtable::mixed_device_func<gpu_chainhashtable, use_hash_tag, erase_do_merge>
       func{.d_types = request_types, .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .d_results = results, .insert_update_if_exists = insert_update_if_exists};
-    kernels::launch_batch_kernel(*this, func, num_requests, stream);
+    kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_requests, stream);
   }
 
   // device-side APIs
-  template <bool concurrent, bool use_hash_tag, typename tile_type>
-  DEVICE_QUALIFIER value_type cooperative_find(utils::varlen_key_store& key,
+  template <bool concurrent, bool use_hash_tag, typename tile_type, typename keyptr_or_keystore>
+  DEVICE_QUALIFIER value_type cooperative_find(keyptr_or_keystore& key,
                                                size_type key_length,
                                                const tile_type& tile,
                                                device_allocator_context_type& allocator) {
@@ -190,8 +193,8 @@ struct gpu_chainhashtable {
     return invalid_value;
   }
 
-  template <bool use_hash_tag, typename tile_type>
-  DEVICE_QUALIFIER bool cooperative_insert(utils::varlen_key_store& key,
+  template <bool use_hash_tag, typename tile_type, typename keyptr_or_keystore>
+  DEVICE_QUALIFIER bool cooperative_insert(keyptr_or_keystore& key,
                                            const size_type key_length,
                                            const value_type& value,
                                            const tile_type& tile,
@@ -259,8 +262,8 @@ struct gpu_chainhashtable {
     return true;
   }
 
-  template <bool use_hash_tag, bool do_merge, typename tile_type>
-  DEVICE_QUALIFIER bool cooperative_erase(utils::varlen_key_store& key,
+  template <bool use_hash_tag, bool do_merge, typename tile_type, typename keyptr_or_keystore>
+  DEVICE_QUALIFIER bool cooperative_erase(keyptr_or_keystore& key,
                                           const size_type key_length,
                                           const tile_type& tile,
                                           device_allocator_context_type& allocator,
@@ -309,11 +312,11 @@ struct gpu_chainhashtable {
 
  private:
   // device-side helper functions
-  template <bool concurrent, bool use_hash_tag, typename tile_type>
+  template <bool concurrent, bool use_hash_tag, typename tile_type, typename keyptr_or_keystore>
   DEVICE_QUALIFIER int coop_traverse_until_found(hashtable_node<tile_type, device_allocator_context_type>& node,
                                                  const key_slice_type& first_slice,
                                                  bool more_key,
-                                                 utils::varlen_key_store& key,
+                                                 keyptr_or_keystore& key,
                                                  const size_type& key_length,
                                                  suffix_node<tile_type, device_allocator_context_type>& suffix_if_found,
                                                  const tile_type& tile,
@@ -355,11 +358,11 @@ struct gpu_chainhashtable {
     return -1;
   }
 
-  template <bool use_hash_tag, typename tile_type>
+  template <bool use_hash_tag, typename tile_type, typename keyptr_or_keystore>
   DEVICE_QUALIFIER int coop_traverse_until_found_merge(hashtable_node<tile_type, device_allocator_context_type>& node,
                                                        const key_slice_type& first_slice,
                                                        bool more_key,
-                                                       utils::varlen_key_store& key,
+                                                       keyptr_or_keystore& key,
                                                        const size_type& key_length,
                                                        suffix_node<tile_type, device_allocator_context_type>& suffix_if_found,
                                                        const tile_type& tile,
@@ -555,7 +558,7 @@ struct gpu_chainhashtable {
   template <uint32_t _tile_size, typename hashtable>
   friend __global__ void kernels::GpuHashtable::initialize_kernel(hashtable);
 
-  template <bool do_reclaim, uint32_t _tile_size, typename device_func, typename index_type>
+  template <bool do_reclaim, uint32_t _tile_size, bool use_shmem_key, typename device_func, typename index_type>
   friend __global__ void kernels::batch_kernel(index_type index,
                                               const device_func func,
                                               uint32_t num_requests);

@@ -28,7 +28,7 @@ namespace kernels {
 
 static constexpr auto target_blocks_per_sm = 8;
 
-template <bool do_reclaim, uint32_t tile_size, typename device_func, typename index_type>
+template <bool do_reclaim, uint32_t tile_size, bool use_shmem_key, typename device_func, typename index_type>
 __launch_bounds__(index_type::host_reclaimer_type::block_size_, target_blocks_per_sm)
 __global__ void batch_kernel(index_type index,
                              const device_func func,
@@ -50,9 +50,12 @@ __global__ void batch_kernel(index_type index,
   uint32_t block_size = blockDim.x;
   uint32_t num_request_blocks = (num_requests + block_size - 1) / block_size;
   uint32_t num_worker_blocks = gridDim.x;
-  uint32_t* key_shmem_buffer = reclaimer_shmem_buffer +
-    (do_reclaim ? reclaimer_type::required_shmem_size() : 0) +
-    utils::varlen_key_store::shmem_buffer_size * (threadIdx.x / tile_size);
+  [[maybe_unused]] uint32_t* key_shmem_buffer;
+  if constexpr (use_shmem_key) {
+    key_shmem_buffer = reclaimer_shmem_buffer +
+      (do_reclaim ? reclaimer_type::required_shmem_size() : 0) +
+      utils::varlen_key_store::shmem_buffer_size * (threadIdx.x / tile_size);
+  }
   for (uint32_t thread_id = threadIdx.x + blockIdx.x * blockDim.x;
        thread_id < (num_request_blocks * block_size);
        thread_id += (num_worker_blocks * block_size)) {
@@ -66,7 +69,7 @@ __global__ void batch_kernel(index_type index,
     }
     while (work_queue) {
       int cur_rank = __ffs(work_queue) - 1;
-      func.exec(index, regs, tile, allocator, reclaimer, key_shmem_buffer, cur_rank);
+      func.template exec<use_shmem_key>(index, regs, tile, allocator, reclaimer, key_shmem_buffer, cur_rank);
       if (tile.thread_rank() == cur_rank) { task_exists = false; }
       work_queue = tile.ballot(task_exists);
     }
@@ -76,27 +79,43 @@ __global__ void batch_kernel(index_type index,
   if constexpr (do_reclaim) { reclaimer.drain_all(block_wide_tile, warp_wide_tile, allocator); }
 }
 
-template <typename index_type, typename device_func>
+template <bool use_shmem_key, typename index_type, typename device_func>
 void launch_batch_kernel(index_type& index, const device_func& func, uint32_t num_requests, cudaStream_t stream) {
   static constexpr bool do_reclaim = device_func::reclaim_required;
   int block_size = index_type::host_reclaimer_type::block_size_;
   std::size_t shmem_size = do_reclaim ? sizeof(uint32_t) * index_type::device_reclaimer_context_type::required_shmem_size() : 0;
-  shmem_size += sizeof(typename index_type::key_slice_type) *
-                utils::varlen_key_store::shmem_buffer_size *
-                (block_size / index_type::tile_size_);
+  if (use_shmem_key) {
+    shmem_size += sizeof(typename index_type::key_slice_type) *
+                  utils::varlen_key_store::shmem_buffer_size *
+                  (block_size / index_type::tile_size_);
+  }
   int num_blocks_per_sm;
   cudaOccupancyMaxActiveBlocksPerMultiprocessor(
     &num_blocks_per_sm,
-    kernels::batch_kernel<do_reclaim, index_type::tile_size_, device_func, index_type>,
+    kernels::batch_kernel<do_reclaim, index_type::tile_size_, use_shmem_key, device_func, index_type>,
     block_size,
     shmem_size);
   cudaDeviceProp device_prop;
   cudaGetDeviceProperties(&device_prop, 0);
   uint32_t num_blocks = num_blocks_per_sm * device_prop.multiProcessorCount;
 
-  kernels::batch_kernel<do_reclaim, index_type::tile_size_><<<num_blocks, block_size, shmem_size, stream>>>(
+  kernels::batch_kernel<do_reclaim, index_type::tile_size_, use_shmem_key><<<num_blocks, block_size, shmem_size, stream>>>(
       index, func, num_requests);
 }
+
+namespace detail {
+
+template <bool use_shmem_key, typename key_slice_type, typename size_type, typename tile_type>
+DEVICE_QUALIFIER auto make_key(const key_slice_type* key_ptr, size_type& key_length, key_slice_type* shmem_buffer, const tile_type& tile) {
+  if constexpr (use_shmem_key) {
+    return utils::varlen_key_store(shmem_buffer, key_ptr, key_length, tile);
+  }
+  else {
+    return key_ptr;
+  }
+}
+
+} // namespace detail
 
 namespace GpuMasstree {
 
@@ -144,17 +163,16 @@ struct insert_device_func {
       regs.value = d_values[thread_id];
     }
   }
-  template <typename tile_type, typename allocator_type, typename reclaimer_type>
+  template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
-    auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_value = tile.shfl(regs.value, cur_rank);
-    auto key_store = utils::varlen_key_store(key_shmem_buffer, cur_key, cur_key_length, tile);
+    auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
     if constexpr (reuse_root) {
-      tree.template cooperative_insert_from_root<enable_suffix>(regs.root_lane_elem, key_store, cur_key_length, cur_value, tile, allocator, reclaimer, update_if_exists);
+      tree.template cooperative_insert_from_root<enable_suffix>(regs.root_lane_elem, cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, update_if_exists);
     }
     else {
-      tree.template cooperative_insert<enable_suffix>(key_store, cur_key_length, cur_value, tile, allocator, reclaimer, update_if_exists);
+      tree.template cooperative_insert<enable_suffix>(cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, update_if_exists);
     }
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
@@ -193,14 +211,13 @@ struct find_device_func {
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
     }
   }
-  template <typename tile_type, typename allocator_type, typename reclaimer_type>
+  template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
-    auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    auto key_store = utils::varlen_key_store(key_shmem_buffer, cur_key, cur_key_length, tile);
+    auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
     auto cur_value = reuse_root ?
-      tree.template cooperative_find_from_root<concurrent>(regs.root_lane_elem, key_store ,cur_key_length, tile, allocator) :
-      tree.template cooperative_find<concurrent>(key_store, cur_key_length, tile, allocator);
+      tree.template cooperative_find_from_root<concurrent>(regs.root_lane_elem, cur_key ,cur_key_length, tile, allocator) :
+      tree.template cooperative_find<concurrent>(cur_key, cur_key_length, tile, allocator);
     if (tile.thread_rank() == cur_rank) {
       regs.value = cur_value;
     }
@@ -241,16 +258,15 @@ struct erase_device_func {
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
     }
   }
-  template <typename tile_type, typename allocator_type, typename reclaimer_type>
+  template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
-    auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    auto key_store = utils::varlen_key_store(key_shmem_buffer, cur_key, cur_key_length, tile);
+    auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
     if constexpr (reuse_root) {
-      tree.template cooperative_erase_from_root<concurrent, do_merge, pessimistic_merge, do_remove_empty_root>(regs.root_lane_elem, key_store, cur_key_length, tile, allocator, reclaimer);
+      tree.template cooperative_erase_from_root<concurrent, do_merge, pessimistic_merge, do_remove_empty_root>(regs.root_lane_elem, cur_key, cur_key_length, tile, allocator, reclaimer);
     }
     else {
-      tree.template cooperative_erase<concurrent, do_merge, pessimistic_merge, do_remove_empty_root>(key_store, cur_key_length, tile, allocator, reclaimer);
+      tree.template cooperative_erase<concurrent, do_merge, pessimistic_merge, do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, reclaimer);
     }
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
@@ -305,23 +321,22 @@ struct scan_device_func {
       regs.out_key_length = d_out_key_lengths ? &d_out_key_lengths[max_count_per_query * thread_id] : nullptr;
     }
   }
-  template <typename tile_type, typename allocator_type, typename reclaimer_type>
+  template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
-    auto cur_lower_key = tile.shfl(regs.lower_key, cur_rank);
     auto cur_lower_key_length = tile.shfl(regs.lower_key_length, cur_rank);
     auto cur_upper_key = tile.shfl(regs.upper_key, cur_rank);
     auto cur_upper_key_length = tile.shfl(regs.upper_key_length, cur_rank);
     auto cur_value = tile.shfl(regs.value, cur_rank);
     auto cur_out_key = tile.shfl(regs.out_key, cur_rank);
     auto cur_out_key_length = tile.shfl(regs.out_key_length, cur_rank);
-    auto lower_key_store = utils::varlen_key_store(key_shmem_buffer, cur_lower_key, cur_lower_key_length, tile);
+    auto cur_lower_key = detail::make_key<use_shmem_key>(tile.shfl(regs.lower_key, cur_rank), cur_lower_key_length, key_shmem_buffer, tile);
     auto cur_count = reuse_root ?
       tree.template cooperative_scan_from_root<use_upper_key, concurrent>(
         regs.root_lane_elem,
-        lower_key_store, cur_lower_key_length, tile, allocator, cur_upper_key, cur_upper_key_length,
+        cur_lower_key, cur_lower_key_length, tile, allocator, cur_upper_key, cur_upper_key_length,
         max_count_per_query, cur_value, cur_out_key, cur_out_key_length, max_key_length) :
       tree.template cooperative_scan<use_upper_key, concurrent>(
-        lower_key_store, cur_lower_key_length, tile, allocator, cur_upper_key, cur_upper_key_length,
+        cur_lower_key, cur_lower_key_length, tile, allocator, cur_upper_key, cur_upper_key_length,
         max_count_per_query, cur_value, cur_out_key, cur_out_key_length, max_key_length);
     if (tile.thread_rank() == cur_rank) {
       regs.count = cur_count;
@@ -377,29 +392,28 @@ struct mixed_device_func {
       regs.value = d_values[thread_id];
     }
   }
-  template <typename tile_type, typename allocator_type, typename reclaimer_type>
+  template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_type = tile.shfl(regs.type, cur_rank);
-    auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    auto key_store = utils::varlen_key_store(key_shmem_buffer, cur_key, cur_key_length, tile);
+    auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
     if (cur_type == request_type_insert) {
       auto cur_value = tile.shfl(regs.value, cur_rank);
       auto cur_result = reuse_root ?
-        tree.template cooperative_insert_from_root<enable_suffix>(regs.root_lane_elem, key_store, cur_key_length, cur_value, tile, allocator, reclaimer, insert_update_if_exists) :  
-        tree.template cooperative_insert<enable_suffix>(key_store, cur_key_length, cur_value, tile, allocator, reclaimer, insert_update_if_exists);
+        tree.template cooperative_insert_from_root<enable_suffix>(regs.root_lane_elem, cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, insert_update_if_exists) :  
+        tree.template cooperative_insert<enable_suffix>(cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, insert_update_if_exists);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else if (cur_type == request_type_find) {
       auto cur_value = reuse_root ?
-        tree.template cooperative_find_from_root<true>(regs.root_lane_elem, key_store, cur_key_length, tile, allocator) :
-        tree.template cooperative_find<true>(key_store, cur_key_length, tile, allocator);
+        tree.template cooperative_find_from_root<true>(regs.root_lane_elem, cur_key, cur_key_length, tile, allocator) :
+        tree.template cooperative_find<true>(cur_key, cur_key_length, tile, allocator);
       if (tile.thread_rank() == cur_rank) { regs.value = cur_value; }
     }
     else if (cur_type == request_type_erase) {
       auto cur_result = reuse_root ?
-        tree.template cooperative_erase_from_root<true, erase_do_merge, erase_pessimistic_merge, erase_do_remove_empty_root>(regs.root_lane_elem, key_store, cur_key_length, tile, allocator, reclaimer) :
-        tree.template cooperative_erase<true, erase_do_merge, erase_pessimistic_merge, erase_do_remove_empty_root>(key_store, cur_key_length, tile, allocator, reclaimer);
+        tree.template cooperative_erase_from_root<true, erase_do_merge, erase_pessimistic_merge, erase_do_remove_empty_root>(regs.root_lane_elem, cur_key, cur_key_length, tile, allocator, reclaimer) :
+        tree.template cooperative_erase<true, erase_do_merge, erase_pessimistic_merge, erase_do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, reclaimer);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else {  // request_type_successor
@@ -471,13 +485,12 @@ struct insert_device_func {
       regs.value = d_values[thread_id];
     }
   }
-  template <typename tile_type, typename allocator_type, typename reclaimer_type>
+  template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
-    auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_value = tile.shfl(regs.value, cur_rank);
-    auto key_store = utils::varlen_key_store(key_shmem_buffer, cur_key, cur_key_length, tile);
-    table.template cooperative_insert<use_hash_tag>(key_store, cur_key_length, cur_value, tile, allocator, update_if_exists);
+    auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
+    table.template cooperative_insert<use_hash_tag>(cur_key, cur_key_length, cur_value, tile, allocator, update_if_exists);
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
@@ -509,12 +522,11 @@ struct find_device_func {
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
     }
   }
-  template <typename tile_type, typename allocator_type, typename reclaimer_type>
+  template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
-    auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    auto key_store = utils::varlen_key_store(key_shmem_buffer, cur_key, cur_key_length, tile);
-    auto cur_value = table.template cooperative_find<concurrent, use_hash_tag>(key_store, cur_key_length, tile, allocator);
+    auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
+    auto cur_value = table.template cooperative_find<concurrent, use_hash_tag>(cur_key, cur_key_length, tile, allocator);
     if (tile.thread_rank() == cur_rank) {
       regs.value = cur_value;
     }
@@ -549,12 +561,11 @@ struct erase_device_func {
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
     }
   }
-  template <typename tile_type, typename allocator_type, typename reclaimer_type>
+  template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
-    auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    auto key_store = utils::varlen_key_store(key_shmem_buffer, cur_key, cur_key_length, tile);
-    table.template cooperative_erase<use_hash_tag, do_merge>(key_store, cur_key_length, tile, allocator, reclaimer);
+    auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
+    table.template cooperative_erase<use_hash_tag, do_merge>(cur_key, cur_key_length, tile, allocator, reclaimer);
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
@@ -595,23 +606,22 @@ struct mixed_device_func {
       regs.value = d_values[thread_id];
     }
   }
-  template <typename tile_type, typename allocator_type, typename reclaimer_type>
+  template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_type = tile.shfl(regs.type, cur_rank);
-    auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    auto key_store = utils::varlen_key_store(key_shmem_buffer, cur_key, cur_key_length, tile);
+    auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
     if (cur_type == request_type_insert) {
       auto cur_value = tile.shfl(regs.value, cur_rank);
-      auto cur_result = table.template cooperative_insert<use_hash_tag>(key_store, cur_key_length, cur_value, tile, allocator, insert_update_if_exists);
+      auto cur_result = table.template cooperative_insert<use_hash_tag>(cur_key, cur_key_length, cur_value, tile, allocator, insert_update_if_exists);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else if (cur_type == request_type_find) {
-      auto cur_value = table.template cooperative_find<true, use_hash_tag>(key_store, cur_key_length, tile, allocator);
+      auto cur_value = table.template cooperative_find<true, use_hash_tag>(cur_key, cur_key_length, tile, allocator);
       if (tile.thread_rank() == cur_rank) { regs.value = cur_value; }
     }
     else if (cur_type == request_type_erase) {
-      auto cur_result = table.template cooperative_erase<use_hash_tag, erase_do_merge>(key_store, cur_key_length, tile, allocator, reclaimer);
+      auto cur_result = table.template cooperative_erase<use_hash_tag, erase_do_merge>(cur_key, cur_key_length, tile, allocator, reclaimer);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else {  // request_type_successor
@@ -688,17 +698,16 @@ struct insert_device_func {
       regs.value = d_values[thread_id];
     }
   }
-  template <typename tile_type, typename allocator_type, typename reclaimer_type>
+  template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
-    auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_value = tile.shfl(regs.value, cur_rank);
-    auto key_store = utils::varlen_key_store(key_shmem_buffer, cur_key, cur_key_length, tile);
+    auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
     if constexpr (reuse_dirsize) {
-      table.template cooperative_insert_from_dirsize<use_hash_tag, tag_use_same_hash, do_merge_chains>(regs.directory_size, key_store, cur_key_length, cur_value, tile, allocator, reclaimer, update_if_exists);
+      table.template cooperative_insert_from_dirsize<use_hash_tag, tag_use_same_hash, do_merge_chains>(regs.directory_size, cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, update_if_exists);
     }
     else {
-      table.template cooperative_insert<use_hash_tag, tag_use_same_hash, do_merge_chains>(key_store, cur_key_length, cur_value, tile, allocator, reclaimer, update_if_exists);
+      table.template cooperative_insert<use_hash_tag, tag_use_same_hash, do_merge_chains>(cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, update_if_exists);
     }
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
@@ -736,14 +745,13 @@ struct find_device_func {
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
     }
   }
-  template <typename tile_type, typename allocator_type, typename reclaimer_type>
+  template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
-    auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    auto key_store = utils::varlen_key_store(key_shmem_buffer, cur_key, cur_key_length, tile);
+    auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
     auto cur_value = reuse_dirsize ?
-      table.template cooperative_find_from_dirsize<concurrent, use_hash_tag, tag_use_same_hash>(regs.directory_size, key_store, cur_key_length, tile, allocator) :
-      table.template cooperative_find<concurrent, use_hash_tag, tag_use_same_hash>(key_store, cur_key_length, tile, allocator);
+      table.template cooperative_find_from_dirsize<concurrent, use_hash_tag, tag_use_same_hash>(regs.directory_size, cur_key, cur_key_length, tile, allocator) :
+      table.template cooperative_find<concurrent, use_hash_tag, tag_use_same_hash>(cur_key, cur_key_length, tile, allocator);
     if (tile.thread_rank() == cur_rank) {
       regs.value = cur_value;
     }
@@ -783,16 +791,15 @@ struct erase_device_func {
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
     }
   }
-  template <typename tile_type, typename allocator_type, typename reclaimer_type>
+  template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
-    auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    auto key_store = utils::varlen_key_store(key_shmem_buffer, cur_key, cur_key_length, tile);
+    auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
     if constexpr (reuse_dirsize) {
-      table.template cooperative_erase_from_dirsize<use_hash_tag, tag_use_same_hash, do_merge_chains, do_merge_buckets>(regs.directory_size, key_store, cur_key_length, tile, allocator, reclaimer);
+      table.template cooperative_erase_from_dirsize<use_hash_tag, tag_use_same_hash, do_merge_chains, do_merge_buckets>(regs.directory_size, cur_key, cur_key_length, tile, allocator, reclaimer);
     }
     else {
-      table.template cooperative_erase<use_hash_tag, tag_use_same_hash, do_merge_chains, do_merge_buckets>(key_store, cur_key_length, tile, allocator, reclaimer);
+      table.template cooperative_erase<use_hash_tag, tag_use_same_hash, do_merge_chains, do_merge_buckets>(cur_key, cur_key_length, tile, allocator, reclaimer);
     }
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
@@ -842,29 +849,28 @@ struct mixed_device_func {
       regs.value = d_values[thread_id];
     }
   }
-  template <typename tile_type, typename allocator_type, typename reclaimer_type>
+  template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_type = tile.shfl(regs.type, cur_rank);
-    auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    auto key_store = utils::varlen_key_store(key_shmem_buffer, cur_key, cur_key_length, tile);
+    auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
     if (cur_type == request_type_insert) {
       auto cur_value = tile.shfl(regs.value, cur_rank);
       auto cur_result = reuse_dirsize ?
-        table.template cooperative_insert_from_dirsize<use_hash_tag, tag_use_same_hash, do_merge_chains>(regs.directory_size, key_store, cur_key_length, cur_value, tile, allocator, reclaimer, insert_update_if_exists) :
-        table.template cooperative_insert<use_hash_tag, tag_use_same_hash, do_merge_chains>(key_store, cur_key_length, cur_value, tile, allocator, reclaimer, insert_update_if_exists);
+        table.template cooperative_insert_from_dirsize<use_hash_tag, tag_use_same_hash, do_merge_chains>(regs.directory_size, cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, insert_update_if_exists) :
+        table.template cooperative_insert<use_hash_tag, tag_use_same_hash, do_merge_chains>(cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, insert_update_if_exists);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else if (cur_type == request_type_find) {
       auto cur_value = reuse_dirsize ?
-        table.template cooperative_find_from_dirsize<true, use_hash_tag, tag_use_same_hash>(regs.directory_size, key_store, cur_key_length, tile, allocator) :
-        table.template cooperative_find<true, use_hash_tag, tag_use_same_hash>(key_store, cur_key_length, tile, allocator);
+        table.template cooperative_find_from_dirsize<true, use_hash_tag, tag_use_same_hash>(regs.directory_size, cur_key, cur_key_length, tile, allocator) :
+        table.template cooperative_find<true, use_hash_tag, tag_use_same_hash>(cur_key, cur_key_length, tile, allocator);
       if (tile.thread_rank() == cur_rank) { regs.value = cur_value; }
     }
     else if (cur_type == request_type_erase) {
       auto cur_result = reuse_dirsize ?
-        table.template cooperative_erase_from_dirsize<use_hash_tag, tag_use_same_hash, do_merge_chains, erase_do_merge_buckets>(regs.directory_size, key_store, cur_key_length, tile, allocator, reclaimer) :
-        table.template cooperative_erase<use_hash_tag, tag_use_same_hash, do_merge_chains, erase_do_merge_buckets>(key_store, cur_key_length, tile, allocator, reclaimer);
+        table.template cooperative_erase_from_dirsize<use_hash_tag, tag_use_same_hash, do_merge_chains, erase_do_merge_buckets>(regs.directory_size, cur_key, cur_key_length, tile, allocator, reclaimer) :
+        table.template cooperative_erase<use_hash_tag, tag_use_same_hash, do_merge_chains, erase_do_merge_buckets>(cur_key, cur_key_length, tile, allocator, reclaimer);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else {  // request_type_successor

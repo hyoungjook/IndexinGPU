@@ -18,7 +18,6 @@
 #include <cstdint>
 #include <macros.hpp>
 #include <utils.hpp>
-#include <varlen_key_store.hpp>
 
 template <typename tile_type, typename allocator_type>
 struct suffix_node_warp {
@@ -74,7 +73,8 @@ struct suffix_node_warp {
     return ((length + 2) + node_max_len_ - 1) / node_max_len_;
   }
 
-  DEVICE_QUALIFIER bool streq(utils::varlen_key_store key, uint32_t key_length) const {
+  template <typename keyptr_or_keystore>
+  DEVICE_QUALIFIER bool streq(keyptr_or_keystore key, uint32_t key_length) const {
     if (get_key_length() != key_length) { return false; }
     // now key_length == this_key_length, compare head node
     // ignore first two elements in head
@@ -259,7 +259,8 @@ struct suffix_node_warp {
     return make_uint2(tile_.shfl(hash, 0), tile_.shfl(hash1, 0));
   }
 
-  DEVICE_QUALIFIER void create_from(utils::varlen_key_store key, size_type key_length, elem_type value) {
+  template <typename keyptr_or_keystore>
+  DEVICE_QUALIFIER void create_from(keyptr_or_keystore key, size_type key_length, elem_type value) {
     // head node metadata
     elem_type elem;
     elem_type* curr_ptr = nullptr;  // NULL if head, else appendix

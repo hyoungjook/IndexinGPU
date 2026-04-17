@@ -307,10 +307,10 @@ struct masstree_node_subwarp {
   DEVICE_QUALIFIER static bool cmp_key(const key_type& k1, bool morekey1, const key_type& k2, bool morekey2) {
     return (k1 < k2) || ((k1 == k2) && (static_cast<int>(morekey1) <= static_cast<int>(morekey2)));
   }
-  template <bool use_upper_key>
+  template <bool use_upper_key, typename keyptr_or_keystore>
   DEVICE_QUALIFIER uint32_t scan(const key_type& lower_key_slice,
                                  const bool lower_key_more,
-                                 utils::varlen_key_store& lower_key,// original argument
+                                 keyptr_or_keystore& lower_key,// original argument
                                  const size_type lower_key_length,  // original argument
                                  bool& passed_lower_key,
                                  const key_type& upper_key_slice,

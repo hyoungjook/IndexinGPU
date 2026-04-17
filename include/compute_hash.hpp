@@ -37,8 +37,8 @@ DEVICE_QUALIFIER uint32_t finalize(uint32_t x) {
   return x;
 }
 
-template <uint32_t prime0, typename tile_type, typename keyptr_or_store>
-DEVICE_QUALIFIER uint32_t compute_hash(keyptr_or_store input, uint32_t length, const tile_type& tile) {
+template <uint32_t prime0, typename tile_type, typename keyptr_or_keystore>
+DEVICE_QUALIFIER uint32_t compute_hash(keyptr_or_keystore input, uint32_t length, const tile_type& tile) {
   // parallel polynomial rolling hash
   static constexpr uint32_t tile_size = tile_type::size();
   static constexpr uint32_t prime0_mult = utils::constexpr_pow(prime0, tile_size);
@@ -80,8 +80,8 @@ DEVICE_QUALIFIER uint32_t compute_hash_slice(uint32_t slice) {
   return finalize(hash);
 }
 
-template <uint32_t prime0, uint32_t prime1, typename tile_type, typename keyptr_or_store>
-DEVICE_QUALIFIER uint2 compute_hashx2(keyptr_or_store input, uint32_t length, const tile_type& tile) {
+template <uint32_t prime0, uint32_t prime1, typename tile_type, typename keyptr_or_keystore>
+DEVICE_QUALIFIER uint2 compute_hashx2(keyptr_or_keystore input, uint32_t length, const tile_type& tile) {
   // do compute_hash() for two different primes
   static constexpr uint32_t tile_size = tile_type::size();
   static constexpr uint32_t prime0_mult = utils::constexpr_pow(prime0, tile_size);
