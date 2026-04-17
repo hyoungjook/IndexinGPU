@@ -127,9 +127,11 @@ struct hashtable_node_subwarp {
     return (num_keys() + next_node.num_keys()) <= max_num_keys_;
   }
   DEVICE_QUALIFIER bool get_suffix_of_location(int location) const {
+    if (location < 0 || location >= static_cast<int>(max_num_keys_)) { return false; }
     return (metadata_ >> (suffix_bits_offset_ + location)) & 1u;
   }
   DEVICE_QUALIFIER void set_suffix_of_location(int location, bool more_key) {
+    assert(0 <= location && location < static_cast<int>(max_num_keys_));
     auto mask = (1u << (suffix_bits_offset_ + location));
     if (more_key) { metadata_ |= mask; }
     else { metadata_ &= ~mask; }

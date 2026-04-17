@@ -582,7 +582,7 @@ struct gpu_extendhashtable {
                   node1.template store_to_allocator<true>();
                   auto local_depth_mask = (1u << local_depth);
                   directory_size = d_global_state_->template load_directory_size<true, true>(tile);
-                  for (size_type index = bucket_index; index < directory_size; index += local_depth_mask) {
+                  for (size_type index = bucket_index; index < directory_size; index += (tile_type::size() * local_depth_mask)) {
                     size_type lane_index = index + local_depth_mask * tile.thread_rank();
                     if (lane_index < directory_size) {
                       directory_entry_at(lane_index, allocator) = head1_index;
