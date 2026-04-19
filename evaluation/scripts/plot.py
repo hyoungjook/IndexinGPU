@@ -5,6 +5,7 @@ import matplotlib.lines as mline
 import matplotlib.patches as mpatch
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
+import statistics
 
 GPU_VM_HOURLY_PRICE = 3.673
 CPU_VM_HOURLY_PRICE = 3.648
@@ -50,6 +51,15 @@ def _convert_mops_to_bops(values, index_type):
     if index_type in INDEX_TYPES_CPU_BASELINE:
         bops = [v * CPU_BASELINE_ADJUST for v in bops]
     return bops
+
+def _compute_avg_min_max_from_raw(raw_values):
+    assert len(raw_values) >= 10
+    average = sum(raw_values) / len(raw_values)
+    percentiles = statistics.quantiles(raw_values, n=100)
+    cutoff_percent = 5
+    return {'avg': average,
+            'min': percentiles[cutoff_percent-1],
+            'max': percentiles[100-cutoff_percent-1]}
 
 def _add_throughput_error_bars(ax, xdata, avg_values, min_values, max_values, *, color, for_barplot=False):
     # Some throughput plots include placeholders (for example OOM entries), so skip
@@ -134,8 +144,9 @@ def key_length_plots(configs_and_results, plot_file_prefix):
                     desired_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
                     desired_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
                 result = filter(configs_and_results, desired_config, result_type)
+                processed_result = _compute_avg_min_max_from_raw(result[result_type.name]['raw'])
                 for metric_type in ['avg', 'min', 'max']:
-                    tputs[index_type][result_type][metric_type].append(float(result[result_type.name][metric_type]))
+                    tputs[index_type][result_type][metric_type].append(processed_result[metric_type])
     # plot trees
     key_lengths_bytes = [4 * l for l in EXP_KEY_LENGTHS]
     legend_handles = []
@@ -252,8 +263,9 @@ def key_length_cpu_plots(configs_and_results, plot_file_prefix):
                     desired_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
                     desired_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
                 result = filter(configs_and_results, desired_config, result_type)
+                processed_result = _compute_avg_min_max_from_raw(result[result_type.name]['raw'])
                 for metric_type in ['avg', 'min', 'max']:
-                    tputs[index_type][result_type][metric_type].append(float(result[result_type.name][metric_type]))
+                    tputs[index_type][result_type][metric_type].append(processed_result[metric_type])
     # plot trees
     key_lengths_bytes = [4 * l for l in EXP_KEY_LENGTHS]
     tree_indexes = [i for i in all_index_types if i in IS_INDEX_TYPE_ORDERED]
@@ -261,10 +273,10 @@ def key_length_cpu_plots(configs_and_results, plot_file_prefix):
     plot_spec = [
         [
             (tree_indexes, ResultType.lookup, True, False, False),
+            (tree_indexes, ResultType.scan, False, False, True),
             (tree_indexes, ResultType.insert, False, False, True),
             (tree_indexes, ResultType.delete, False, False, True),
             (tree_indexes, ResultType.mixed, False, False, True),
-            (tree_indexes, ResultType.scan, False, False, True),
         ],
         [
             (hashtable_indexes, ResultType.lookup, True, True, False),
@@ -346,8 +358,9 @@ def suffix_plots(configs_and_results, plot_file_prefix):
                 tputs[idx]['max'].append(None)
             else:
                 result = filter(configs_and_results, {**desired_config, **opt_config}, result_type)
+                processed_result = _compute_avg_min_max_from_raw(result[result_type.name]['raw'])
                 for metric_type in ['avg', 'min', 'max']:
-                    tputs[idx][metric_type].append(float(result[result_type.name][metric_type]))
+                    tputs[idx][metric_type].append(processed_result[metric_type])
     # plot
     mt_xticklabels = ['C', 'R', 'RS']
     et_xticklabels = ['R', 'C', 'CT', 'Ct']
@@ -407,8 +420,9 @@ def tile_plots(configs_and_results, plot_file_prefix):
                     ConfigType.mix_read_ratio: mix_read_ratio,
                 }
                 result = filter(configs_and_results, {**desired_config, **opt_config}, ResultType.mixed)
+                processed_result = _compute_avg_min_max_from_raw(result['mixed']['raw'])
                 for metric_type in ['avg', 'min', 'max']:
-                    tputs[(index_type, opt_idx)][metric_type].append(float(result['mixed'][metric_type]))
+                    tputs[(index_type, opt_idx)][metric_type].append(processed_result[metric_type])
     # plot
     labels = ['FullWarp', 'HalfWarp', 'HalfWarp+SemiSort']
     styles = [
@@ -511,9 +525,10 @@ def merge_plots(configs_and_results, plot_file_prefix):
                 OptionalConfigType.merge_level: merge_level,
             }
             result = filter(configs_and_results, desired_config, ResultType.delete)
-            tputs[index_type]['avg'].append(float(result['delete']['avg']))
-            tputs[index_type]['min'].append(float(result['delete']['min']))
-            tputs[index_type]['max'].append(float(result['delete']['max']))
+            processed_result = _compute_avg_min_max_from_raw(result['delete']['raw'])
+            tputs[index_type]['avg'].append(processed_result['avg'])
+            tputs[index_type]['min'].append(processed_result['min'])
+            tputs[index_type]['max'].append(processed_result['max'])
     # space plot
     labels = {
         (0, 0): '4B Key (Naive)',
@@ -658,10 +673,11 @@ def intro_plots(configs_and_results, plot_file_prefix):
                         desired_config[ConfigType.num_mixed] = DEFAULT_BATCH_SIZE
                         desired_config[ConfigType.mix_read_ratio] = DEFAULT_MIX_READ_RATIO
                     result = filter(configs_and_results, desired_config, result_type)
+                    processed_result = _compute_avg_min_max_from_raw(result[result_type.name]['raw'])
                     tputs[(index_type, result_type)] = {
-                        'avg': [float(result[result_type.name]['avg'])],
-                        'min': [float(result[result_type.name]['min'])],
-                        'max': [float(result[result_type.name]['max'])],
+                        'avg': [processed_result['avg']],
+                        'min': [processed_result['min']],
+                        'max': [processed_result['max']],
                     }
     # plot
     for idx, index_types, result_types in plot_spec:
