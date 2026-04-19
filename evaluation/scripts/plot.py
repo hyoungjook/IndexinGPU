@@ -232,17 +232,23 @@ def key_length_plots(configs_and_results, plot_file_prefix):
 
 def key_length_cpu_plots(configs_and_results, plot_file_prefix):
     tputs = {}
-    all_index_types = INDEX_TYPES_ROBUST + INDEX_TYPES_CPU_BASELINE
+    all_index_types = INDEX_TYPES_ROBUST + INDEX_TYPES_GPU_BASELINE + INDEX_TYPES_CPU_BASELINE
     for index_type in all_index_types:
         tputs[index_type] = {}
-        result_types = [ResultType.lookup, ResultType.insert, ResultType.delete, ResultType.mixed]
+        result_types = [ResultType.lookup, ResultType.insert, ResultType.delete]
+        if index_type in IS_INDEX_TYPE_SUPPORT_MIX:
+            result_types.append(ResultType.mixed)
         if index_type in IS_INDEX_TYPE_ORDERED:
             result_types.append(ResultType.scan)
+        if index_type in IS_INDEX_TYPE_SUPPORT_LONGKEY:
+            key_lengths = EXP_KEY_LENGTHS
+        else:
+            key_lengths = [1]
         for result_type in result_types:
             tputs[index_type][result_type] = {
                 'avg': [], 'min': [], 'max': []
             }
-            for key_length in EXP_KEY_LENGTHS:
+            for key_length in key_lengths:
                 desired_config = {
                     ConfigType.index_type: index_type,
                     ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
@@ -250,7 +256,7 @@ def key_length_cpu_plots(configs_and_results, plot_file_prefix):
                     ConfigType.keylen_min: key_length,
                     ConfigType.keylen_max: key_length,
                 }
-                if index_type in INDEX_TYPES_ROBUST:
+                if index_type in INDEX_TYPES_ROBUST + INDEX_TYPES_GPU_BASELINE:
                     desired_config[ConfigType.use_pinned_host_memory] = 1
                 if result_type == ResultType.lookup:
                     desired_config[ConfigType.num_lookups] = DEFAULT_BATCH_SIZE
@@ -272,55 +278,65 @@ def key_length_cpu_plots(configs_and_results, plot_file_prefix):
     hashtable_indexes = [i for i in all_index_types if i not in IS_INDEX_TYPE_ORDERED]
     plot_spec = [
         [
-            (tree_indexes, ResultType.lookup, True, False, False),
-            (tree_indexes, ResultType.scan, False, False, True),
-            (tree_indexes, ResultType.insert, False, False, True),
-            (tree_indexes, ResultType.delete, False, False, True),
-            (tree_indexes, ResultType.mixed, False, False, True),
+            (tree_indexes, ResultType.lookup),
+            (tree_indexes, ResultType.scan),
+            (tree_indexes, ResultType.insert),
+            (tree_indexes, ResultType.delete),
+            (tree_indexes, ResultType.mixed),
         ],
         [
-            (hashtable_indexes, ResultType.lookup, True, True, False),
-            (hashtable_indexes, ResultType.insert, False, False, False),
-            (hashtable_indexes, ResultType.delete, False, False, True),
-            (hashtable_indexes, ResultType.mixed, False, False, True),
+            (hashtable_indexes, ResultType.lookup),
+            (hashtable_indexes, ResultType.insert),
+            (hashtable_indexes, ResultType.delete),
+            (hashtable_indexes, ResultType.mixed),
         ],
     ]
     plot_names = ['tree', 'ht']
     for idx, plots in enumerate(plot_spec):
         figwidth = 6
-        figheight = 1.6 if idx == 0 else 1.8
+        figheight = 1.8 if idx == 0 else 2.0
         fig, axes = plt.subplots(1, len(plots), figsize=(figwidth, figheight), constrained_layout=True)
-        common_ylim = 0
-        for subplot_idx, (index_types, result_type, _, ylim_except, _) in enumerate(plots):
-            if ylim_except:
-                continue
+        for subplot_idx, (index_types, result_type) in enumerate(plots):
+            ymax = 0
             for index_type in index_types:
-                max_values = _convert_mops_to_bops(tputs[index_type][result_type]['max'], index_type)
-                common_ylim = max(common_ylim, max(max_values))
-        for subplot_idx, (index_types, result_type, set_ylabel, ylim_except, disable_yticklabels) in enumerate(plots):
-            for index_type in index_types:
+                if result_type not in tputs[index_type]:
+                    continue
                 avg_values = _convert_mops_to_bops(tputs[index_type][result_type]['avg'], index_type)
                 min_values = _convert_mops_to_bops(tputs[index_type][result_type]['min'], index_type)
                 max_values = _convert_mops_to_bops(tputs[index_type][result_type]['max'], index_type)
+                ydata = avg_values.copy()
+                ymax = max(ymax, max(ydata))
+                markevery = range(len(ydata))
+                if len(markevery) == 1:
+                    ydata.append(ydata[0] * 0.7)
+                xdata = key_lengths_bytes[0:len(ydata)]
                 axes[subplot_idx].plot(
-                    key_lengths_bytes, avg_values,
+                    xdata, ydata,
                     label=INDEX_LABELS[index_type],
+                    markevery=markevery,
                     linewidth=2, markersize=6,
                     **INDEX_STYLES[index_type]
                 )
                 _add_throughput_error_bars(
                     axes[subplot_idx], key_lengths_bytes, avg_values, min_values, max_values, color=INDEX_STYLES[index_type]['color']
                 )
-            axes[subplot_idx].set_ylim(bottom=0)
-            if not ylim_except:
-                axes[subplot_idx].set_ylim(top=common_ylim * 1.1)
+                if len(markevery) == 1:
+                    axes[subplot_idx].text(xdata[1], ydata[1], "X", fontsize=10, color='red', fontweight='bold', ha='center', va='center')
+            axes[subplot_idx].set_ylim(bottom=0, top=ymax * 1.2)
             axes[subplot_idx].set_xlim(left=0)
+            _, ymax = axes[subplot_idx].get_ylim()
+            ytick_candidates = [0.1, 0.2, 0.5, 1.0]
+            for ytick in ytick_candidates:
+                num_ticks = int(ymax // ytick)
+                if 1 <= num_ticks and num_ticks < 4:
+                    yticks = [ytick * x for x in range(num_ticks + 1)]
+                    break
+            axes[subplot_idx].set_yticks(yticks)
+            axes[subplot_idx].yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
             axes[subplot_idx].grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
             axes[subplot_idx].set_title(result_type.name, fontsize=10)
-            if set_ylabel:
+            if subplot_idx == 0:
                 axes[subplot_idx].set_ylabel(r'Throughput ($10^9$/s)')
-            if disable_yticklabels:
-                axes[subplot_idx].set_yticklabels([])
         if idx == 1:
             fig.supxlabel('Key Length (B)', fontsize=10)
         fig.savefig(f'{plot_file_prefix}-{plot_names[idx]}.pdf', bbox_inches='tight')
