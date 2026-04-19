@@ -13,10 +13,10 @@ CPU_VM_HOURLY_PRICE = 3.648
 CPU_BASELINE_ADJUST = 1
 
 INDEX_LABELS = {
-    IndexType.gpu_masstree: "GPUMasstree",
-    IndexType.gpu_chainhashtable: "GPUChainHT",
-    IndexType.gpu_cuckoohashtable: "GPUCuckooHT",
-    IndexType.gpu_extendhashtable: "GPUExtendHT",
+    IndexType.gpu_masstree: "GpuMasstree",
+    IndexType.gpu_chainhashtable: "GpuChainHT",
+    IndexType.gpu_cuckoohashtable: "GpuCuckooHT",
+    IndexType.gpu_extendhashtable: "GpuExtendHT",
     IndexType.gpu_blink_tree: "GPUBtree",
     IndexType.gpu_dycuckoo: "DyCuckoo",
     IndexType.cpu_art: "ART",
@@ -28,11 +28,11 @@ INDEX_STYLES = {
     IndexType.gpu_chainhashtable: {"color": "#D1495B", "marker": "s", "linestyle": "-"},
     IndexType.gpu_cuckoohashtable: {"color": "#00798C", "marker": "^", "linestyle": "-"},
     IndexType.gpu_extendhashtable: {"color": "#EDAE49", "marker": "D", "linestyle": "-"},
-    IndexType.gpu_blink_tree: {"color": "#8F2D56", "marker": "<", "linestyle": ":"},
+    IndexType.gpu_blink_tree: {"color": "#9C6644", "marker": "<", "linestyle": ":"},
     IndexType.gpu_dycuckoo: {"color": "#3B60E4", "marker": "h", "linestyle": ":"},
     IndexType.cpu_art: {"color": "#5C4D7D", "marker": "P", "linestyle": "--"},
     IndexType.cpu_masstree: {"color": "#6C9A8B", "marker": "X", "linestyle": "--"},
-    IndexType.cpu_libcuckoo: {"color": "#9C6644", "marker": "v", "linestyle": "--"},
+    IndexType.cpu_libcuckoo: {"color": "#8F2D56", "marker": "v", "linestyle": "--"},
 }
 HATCH_STYLES = {
     IndexType.gpu_masstree: 'o',
@@ -56,10 +56,15 @@ def _compute_avg_min_max_from_raw(raw_values):
     assert len(raw_values) >= 10
     average = sum(raw_values) / len(raw_values)
     percentiles = statistics.quantiles(raw_values, n=100)
-    cutoff_percent = 5
+    cutoff_percent = 10
     return {'avg': average,
             'min': percentiles[cutoff_percent-1],
             'max': percentiles[100-cutoff_percent-1]}
+
+def _record_max_tput(index_type, avg_tputs, max_tputs):
+    for i in range(len(avg_tputs)):
+        if max_tputs[i] is None or avg_tputs[i] > max_tputs[i][0]:
+            max_tputs[i] = (avg_tputs[i], index_type.name)
 
 def _add_throughput_error_bars(ax, xdata, avg_values, min_values, max_values, *, color, for_barplot=False):
     # Some throughput plots include placeholders (for example OOM entries), so skip
@@ -107,6 +112,39 @@ def _make_fixed_plot_area_figure(plot_width, plot_height, *, include_xlabel=Fals
     ])
     return fig, ax
 
+def _save_grouped_legend_pdf(legend_groups, output_file):
+    group_order = ['ours', 'gpu_baseline', 'cpu_baseline']
+    group_names = {
+        'ours': 'Our Libgpumap',
+        'gpu_baseline': 'GPU Baselines',
+        'cpu_baseline': 'CPU Baselines',
+    }
+    fig, axes = plt.subplots(3, 1,
+        figsize=(2.6, 2.3),
+        constrained_layout=True,
+        gridspec_kw={
+            'height_ratios': [len(legend_groups[group]['labels']) + 1 for group in group_order]
+        },
+    )
+    for ax, group_name in zip(axes, group_order):
+        ax.legend(
+            legend_groups[group_name]['handles'],
+            legend_groups[group_name]['labels'],
+            loc='center',
+            ncol=1,
+            bbox_to_anchor=(0.05, 0, 0.9, 1),
+            mode='expand',
+            borderaxespad=0.0,
+            handlelength=3,
+            title=group_names[group_name],
+            title_fontproperties={'weight': 'bold'},
+            frameon=True,
+            labelspacing=0.3,
+        )
+        ax.axis('off')
+    fig.savefig(output_file, bbox_inches='tight')
+    plt.close(fig)
+
 def key_length_plots(configs_and_results, plot_file_prefix):
     tputs = {}
     all_index_types = INDEX_TYPES_ROBUST + INDEX_TYPES_GPU_BASELINE + INDEX_TYPES_CPU_BASELINE
@@ -147,10 +185,21 @@ def key_length_plots(configs_and_results, plot_file_prefix):
                 processed_result = _compute_avg_min_max_from_raw(result[result_type.name]['raw'])
                 for metric_type in ['avg', 'min', 'max']:
                     tputs[index_type][result_type][metric_type].append(processed_result[metric_type])
-    # plot trees
+    # plot
     key_lengths_bytes = [4 * l for l in EXP_KEY_LENGTHS]
-    legend_handles = []
-    legend_labels = []
+    legends = {
+        'ours': {'handles': [], 'labels': []},
+        'gpu_baseline': {'handles': [], 'labels': []},
+        'cpu_baseline': {'handles': [], 'labels': []},
+    }
+    def get_index_group(index_type):
+        if index_type in INDEX_TYPES_ROBUST:
+            return 'ours'
+        if index_type in INDEX_TYPES_GPU_BASELINE:
+            return 'gpu_baseline'
+        if index_type in INDEX_TYPES_CPU_BASELINE:
+            return 'cpu_baseline'
+        assert False
     tree_indexes = [i for i in all_index_types if i in IS_INDEX_TYPE_ORDERED]
     hashtable_indexes = [i for i in all_index_types if i not in IS_INDEX_TYPE_ORDERED]
     plot_spec = [
@@ -173,12 +222,21 @@ def key_length_plots(configs_and_results, plot_file_prefix):
             include_xlabel=set_xlabel,
             include_ylabel=set_ylabel,
         )
+        our_max = [None for _ in range(len(EXP_KEY_LENGTHS))]
+        gpu_baseline_max = [None for _ in range(len(EXP_KEY_LENGTHS))]
+        cpu_baseline_max = [None for _ in range(len(EXP_KEY_LENGTHS))]
         for index_type in index_types:
             if result_type not in tputs[index_type]:
                 continue
             avg_values = _convert_mops_to_bops(tputs[index_type][result_type]['avg'], index_type)
             min_values = _convert_mops_to_bops(tputs[index_type][result_type]['min'], index_type)
             max_values = _convert_mops_to_bops(tputs[index_type][result_type]['max'], index_type)
+            if index_type in INDEX_TYPES_ROBUST:
+                _record_max_tput(index_type, avg_values, our_max)
+            elif index_type in INDEX_TYPES_GPU_BASELINE:
+                _record_max_tput(index_type, avg_values, gpu_baseline_max)
+            else:
+                _record_max_tput(index_type, avg_values, cpu_baseline_max)
             ydata = avg_values.copy()
             markevery = range(len(ydata))
             if len(markevery) == 1:
@@ -202,9 +260,13 @@ def key_length_plots(configs_and_results, plot_file_prefix):
             )
             if len(markevery) == 1:
                 ax.text(xdata[1], ydata[1], "X", fontsize=10, color='red', fontweight='bold', ha='center', va='center')
-            if index_label not in legend_labels:
-                legend_handles.append(line)
-                legend_labels.append(index_label)
+            if index_type in IS_INDEX_TYPE_ORDERED:
+                index_label = f'[Tree] {index_label}'
+            else:
+                index_label = f'[HT] {index_label}'
+            if index_label not in legends[get_index_group(index_type)]['labels']:
+                legends[get_index_group(index_type)]['labels'].append(index_label)
+                legends[get_index_group(index_type)]['handles'].append(line)
         ax.set_ylim(bottom = 0)
         ax.set_xlim(left = 0)
         _, ymax = ax.get_ylim()
@@ -224,11 +286,13 @@ def key_length_plots(configs_and_results, plot_file_prefix):
             ax.set_ylabel(r'Throughput ($10^9$/s)')
         fig.savefig(f'{plot_file_prefix}-{plot_names[idx]}.pdf', bbox_inches='tight')
         plt.close(fig)
-    fig, ax = plt.subplots(1, 1, figsize=(2.3, 2), constrained_layout=True)
-    ax.legend(legend_handles, legend_labels, loc='center', ncol=1, handlelength=3)
-    ax.axis('off')
-    plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
-    plt.close(fig)
+        for i in range(len(EXP_KEY_LENGTHS)):
+            speedup_over_cpu = our_max[i][0] / cpu_baseline_max[i][0]
+            speedup_over_gpu = our_max[i][0] / gpu_baseline_max[i][0] if gpu_baseline_max[i] is not None else 0
+            print(f'{plot_names[idx]}: key={EXP_KEY_LENGTHS[i]} ' + \
+                  f'over cpu: {speedup_over_cpu:.1f} ({our_max[i][1]}, {cpu_baseline_max[i][1]})' + \
+                  f'over gpu: {speedup_over_gpu:.1f}')
+    _save_grouped_legend_pdf(legends, f'{plot_file_prefix}-legend.pdf')
 
 def key_length_cpu_plots(configs_and_results, plot_file_prefix):
     tputs = {}
@@ -272,7 +336,7 @@ def key_length_cpu_plots(configs_and_results, plot_file_prefix):
                 processed_result = _compute_avg_min_max_from_raw(result[result_type.name]['raw'])
                 for metric_type in ['avg', 'min', 'max']:
                     tputs[index_type][result_type][metric_type].append(processed_result[metric_type])
-    # plot trees
+    # plot
     key_lengths_bytes = [4 * l for l in EXP_KEY_LENGTHS]
     tree_indexes = [i for i in all_index_types if i in IS_INDEX_TYPE_ORDERED]
     hashtable_indexes = [i for i in all_index_types if i not in IS_INDEX_TYPE_ORDERED]
@@ -298,14 +362,23 @@ def key_length_cpu_plots(configs_and_results, plot_file_prefix):
         fig, axes = plt.subplots(1, len(plots), figsize=(figwidth, figheight), constrained_layout=True)
         for subplot_idx, (index_types, result_type) in enumerate(plots):
             ymax = 0
+            our_max = [None for _ in range(len(EXP_KEY_LENGTHS))]
+            gpu_baseline_max = [None for _ in range(len(EXP_KEY_LENGTHS))]
+            cpu_baseline_max = [None for _ in range(len(EXP_KEY_LENGTHS))]
             for index_type in index_types:
                 if result_type not in tputs[index_type]:
                     continue
                 avg_values = _convert_mops_to_bops(tputs[index_type][result_type]['avg'], index_type)
                 min_values = _convert_mops_to_bops(tputs[index_type][result_type]['min'], index_type)
                 max_values = _convert_mops_to_bops(tputs[index_type][result_type]['max'], index_type)
+                if index_type in INDEX_TYPES_ROBUST:
+                    _record_max_tput(index_type, avg_values, our_max)
+                elif index_type in INDEX_TYPES_GPU_BASELINE:
+                    _record_max_tput(index_type, avg_values, gpu_baseline_max)
+                else:
+                    _record_max_tput(index_type, avg_values, cpu_baseline_max)
                 ydata = avg_values.copy()
-                ymax = max(ymax, max(ydata))
+                ymax = max(ymax, max(max_values))
                 markevery = range(len(ydata))
                 if len(markevery) == 1:
                     ydata.append(ydata[0] * 0.7)
@@ -322,7 +395,7 @@ def key_length_cpu_plots(configs_and_results, plot_file_prefix):
                 )
                 if len(markevery) == 1:
                     axes[subplot_idx].text(xdata[1], ydata[1], "X", fontsize=10, color='red', fontweight='bold', ha='center', va='center')
-            axes[subplot_idx].set_ylim(bottom=0, top=ymax * 1.2)
+            axes[subplot_idx].set_ylim(bottom=0, top=ymax * 1.1)
             axes[subplot_idx].set_xlim(left=0)
             _, ymax = axes[subplot_idx].get_ylim()
             ytick_candidates = [0.1, 0.2, 0.5, 1.0]
@@ -336,12 +409,59 @@ def key_length_cpu_plots(configs_and_results, plot_file_prefix):
             axes[subplot_idx].grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
             axes[subplot_idx].set_title(result_type.name, fontsize=10)
             if subplot_idx == 0:
-                axes[subplot_idx].set_ylabel(r'Throughput ($10^9$/s)')
+                if idx == 0:
+                    axes[subplot_idx].set_ylabel('Tree Indexes\n' + r'Throughput ($10^9$/s)')
+                else:
+                    axes[subplot_idx].set_ylabel('Hash Table Indexes\n' + r'Throughput ($10^9$/s)')
+            for i in range(len(EXP_KEY_LENGTHS)):
+                speedup_over_cpu = our_max[i][0] / cpu_baseline_max[i][0]
+                speedup_over_gpu = our_max[i][0] / gpu_baseline_max[i][0] if gpu_baseline_max[i] is not None else 0
+                print(f'{plot_names[idx]}-{result_type.name}-cpu: key={EXP_KEY_LENGTHS[i]} ' + \
+                      f'over cpu: {speedup_over_cpu:.1f} ({our_max[i][1]}, {cpu_baseline_max[i][1]})' + \
+                      f'over gpu: {speedup_over_gpu:.1f}')
         if idx == 1:
             fig.supxlabel('Key Length (B)', fontsize=10)
         fig.savefig(f'{plot_file_prefix}-{plot_names[idx]}.pdf', bbox_inches='tight')
         plt.close(fig)
 
+def average_slowdown_cpu(configs_and_results):
+    slowdowns = []
+    all_index_types = INDEX_TYPES_ROBUST
+    for index_type in all_index_types:
+        result_types = [ResultType.lookup, ResultType.insert, ResultType.delete]
+        result_types.append(ResultType.mixed)
+        if index_type in IS_INDEX_TYPE_ORDERED:
+            result_types.append(ResultType.scan)
+        key_lengths = EXP_KEY_LENGTHS
+        for result_type in result_types:
+            for key_length in key_lengths:
+                desired_config = {
+                    ConfigType.index_type: index_type,
+                    ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+                    ConfigType.keylen_prefix: 0,
+                    ConfigType.keylen_min: key_length,
+                    ConfigType.keylen_max: key_length,
+                }
+                if result_type == ResultType.lookup:
+                    desired_config[ConfigType.num_lookups] = DEFAULT_BATCH_SIZE
+                elif result_type in [ResultType.insert, ResultType.delete]:
+                    desired_config[ConfigType.num_insdel] = DEFAULT_BATCH_SIZE
+                elif result_type == ResultType.mixed:
+                    desired_config[ConfigType.num_mixed] = DEFAULT_BATCH_SIZE
+                    desired_config[ConfigType.mix_read_ratio] = DEFAULT_MIX_READ_RATIO
+                elif result_type == ResultType.scan:
+                    desired_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
+                    desired_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
+                desired_config[ConfigType.use_pinned_host_memory] = 0
+                result = filter(configs_and_results, desired_config, result_type)
+                tput_gpu_input = float(result[result_type.name]['avg'])
+                desired_config[ConfigType.use_pinned_host_memory] = 1
+                result = filter(configs_and_results, desired_config, result_type)
+                tput_cpu_input = float(result[result_type.name]['avg'])
+                slowdown = tput_gpu_input / tput_cpu_input
+                slowdowns.append(slowdown)
+    avg_slowdown = sum(slowdowns) / len(slowdowns)
+    print(f'average slowdown for cpu inputs: {avg_slowdown}')
 
 def suffix_plots(configs_and_results, plot_file_prefix):
     tputs = {}
@@ -763,6 +883,7 @@ def intro_plots(configs_and_results, plot_file_prefix):
 def generate_plots(args, configs_and_results):
     key_length_plots(configs_and_results, Path(args.result_dir) / 'plot_keylength')
     key_length_cpu_plots(configs_and_results, Path(args.result_dir) / 'plot_keylength_cpu')
+    average_slowdown_cpu(configs_and_results)
     suffix_plots(configs_and_results, Path(args.result_dir) / 'plot_suffix')
     tile_plots(configs_and_results, Path(args.result_dir) / 'plot_tile')
     merge_plots(configs_and_results, Path(args.result_dir) / 'plot_merge')
