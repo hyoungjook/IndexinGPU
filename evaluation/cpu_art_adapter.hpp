@@ -22,10 +22,12 @@
 #include <string>
 #include <vector>
 #include <cmd.hpp>
+#include <generate_workload.hpp>
 #include <ROWEX/Tree.h>
 
 struct cpu_art_adapter {
   static constexpr bool is_ordered = true;
+  static constexpr bool support_mixed = true;
   using key_slice_type = uint32_t;
   using value_type = uint32_t;
   using size_type = uint32_t;
@@ -41,6 +43,7 @@ struct cpu_art_adapter {
     keys_ = keys;
     key_lengths_ = key_lengths;
     values_ = values;
+    key_stride_ = configs_.keylen_max;
   }
   void initialize() {
     tree_ = std::make_unique<ART_ROWEX::Tree>(&load_key);
@@ -48,28 +51,29 @@ struct cpu_art_adapter {
   void destroy() {
     tree_.reset();
   }
-  void thread_enter() {
+  void thread_enter([[maybe_unused]] unsigned thread_idx) {
     (void)current_threadinfo();
   }
-  void thread_exit() {
+  void thread_exit([[maybe_unused]] unsigned thread_idx) {
     auto& state = current_thread_state();
     state.threadinfo.reset();
     state.tree = nullptr;
   }
-  void insert(const key_slice_type* key, size_type key_length, value_type value) {
+  void insert(const key_slice_type* key, size_type key_length, value_type value, std::size_t tuple_id, unsigned thread_idx) {
     (void)value;
-    auto tid = static_cast<TID>(key - keys_) + 1;
+    (void)thread_idx;
+    auto tid = static_cast<TID>(tuple_id) + 1;
     Key art_key = make_key(key, key_length);
     tree_->insert(art_key, tid, current_threadinfo());
   }
-  void erase(const key_slice_type* key, size_type key_length) {
+  void erase(const key_slice_type* key, size_type key_length, [[maybe_unused]] unsigned thread_idx) {
     Key art_key = make_key(key, key_length);
     TID tid = tree_->lookup(art_key, current_threadinfo());
     if (tid != 0) {
       tree_->remove(art_key, tid, current_threadinfo());
     }
   }
-  value_type find(const key_slice_type* key, size_type key_length) {
+  value_type find(const key_slice_type* key, size_type key_length, [[maybe_unused]] unsigned thread_idx) {
     Key art_key = make_key(key, key_length);
     TID tid = tree_->lookup(art_key, current_threadinfo());
     if (tid == 0) {
@@ -77,7 +81,7 @@ struct cpu_art_adapter {
     }
     return values_[tid - 1];
   }
-  void scan(const key_slice_type* key, size_type key_length, uint32_t count, value_type* results) {
+  void scan(const key_slice_type* key, size_type key_length, uint32_t count, value_type* results, [[maybe_unused]] unsigned thread_idx) {
     Key start_key = make_key(key, key_length);
     Key end_key = make_upper_bound_key();
     Key continue_key;
@@ -86,11 +90,21 @@ struct cpu_art_adapter {
                        reinterpret_cast<TID*>(results), count, num_results,
                        current_threadinfo());
   }
+  void print_stats() {}
 
  private:
   struct configs {
+    std::size_t keylen_max; // parse again here; do not print
     configs() {}
-    configs(std::vector<std::string>& arguments) {}
+    configs(std::vector<std::string>& arguments) {
+      #define PARSE_DEFAULT_ARGUMENTS(arg, type, default_value) \
+      [[maybe_unused]] auto tmp_##arg = get_arg_value<type>(arguments, #arg).value_or(default_value);
+      FORALL_ARGUMENTS(PARSE_DEFAULT_ARGUMENTS)
+      #undef PARSE_DEFAULT_ARGUMENTS
+      keylen_max = tmp_keylen_max;
+      // ART does not support a key being prefix of another, so only support fixed length keys effectively
+      check_argument(tmp_keylen_min == tmp_keylen_max);
+    }
     void print() const {}
   };
 
@@ -125,7 +139,7 @@ struct cpu_art_adapter {
   }
   static void load_key(TID tid, Key& key) {
     auto tuple_idx = static_cast<std::size_t>(tid - 1);
-    key.set(reinterpret_cast<const char*>(&keys_[tuple_idx]), sizeof(key_slice_type) * key_lengths_[tuple_idx]);
+    key.set(reinterpret_cast<const char*>(&keys_[tuple_idx * key_stride_]), sizeof(key_slice_type) * key_lengths_[tuple_idx]);
   }
 
   configs configs_;
@@ -133,8 +147,10 @@ struct cpu_art_adapter {
   static const key_slice_type* keys_;
   static const size_type* key_lengths_;
   static const value_type* values_;
+  static size_type key_stride_;
 };
 
 const cpu_art_adapter::key_slice_type* cpu_art_adapter::keys_;
 const cpu_art_adapter::size_type* cpu_art_adapter::key_lengths_;
 const cpu_art_adapter::value_type* cpu_art_adapter::values_;
+cpu_art_adapter::size_type cpu_art_adapter::key_stride_;

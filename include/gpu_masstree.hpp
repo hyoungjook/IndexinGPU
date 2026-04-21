@@ -42,7 +42,7 @@ namespace GpuMasstree {
 
 template <typename Allocator,
           typename Reclaimer,
-          uint32_t tile_size = 32>
+          uint32_t tile_size = 16>
 struct gpu_masstree {
   using size_type = uint32_t;
   using key_slice_type = uint32_t;
@@ -84,7 +84,8 @@ struct gpu_masstree {
   // host-side APIs
   // if key_lengths == NULL, we use max_key_length as a fixed length
   template <bool concurrent = false,
-            bool reuse_root = true>
+            bool reuse_root = true,
+            bool use_shmem_key = false>
   void find(const key_slice_type* keys,
             const size_type max_key_length,
             const size_type* key_lengths,
@@ -93,11 +94,12 @@ struct gpu_masstree {
             cudaStream_t stream = 0) {
     kernels::GpuMasstree::find_device_func<gpu_masstree, concurrent, reuse_root>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values};
-    kernels::launch_batch_kernel(*this, func, num_keys, stream);
+    kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
 
   template <bool enable_suffix = true,
-            bool reuse_root = true>
+            bool reuse_root = true,
+            bool use_shmem_key = false>
   void insert(const key_slice_type* keys,
               const size_type max_key_length,
               const size_type* key_lengths,
@@ -107,26 +109,29 @@ struct gpu_masstree {
               bool update_if_exists = false) {
     kernels::GpuMasstree::insert_device_func<gpu_masstree, enable_suffix, reuse_root>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .update_if_exists = update_if_exists};
-    kernels::launch_batch_kernel(*this, func, num_keys, stream);
+    kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
 
   template <bool do_remove_empty_root = true,
+            bool pessimistic_merge = true,
             bool do_merge = true,
             bool concurrent = true,
-            bool reuse_root = true>
+            bool reuse_root = true,
+            bool use_shmem_key = false>
   void erase(const key_slice_type* keys,
              const size_type max_key_length,
              const size_type* key_lengths,
              const size_type num_keys,
              cudaStream_t stream = 0) {
-    kernels::GpuMasstree::erase_device_func<gpu_masstree, concurrent, do_merge, do_remove_empty_root, reuse_root>
+    kernels::GpuMasstree::erase_device_func<gpu_masstree, concurrent, do_merge, pessimistic_merge, do_remove_empty_root, reuse_root>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths};
-    kernels::launch_batch_kernel(*this, func, num_keys, stream);
+    kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
 
   template <bool use_upper_key = true,
             bool concurrent = false,
-            bool reuse_root = true>
+            bool reuse_root = true,
+            bool use_shmem_key = false>
   void scan(const key_slice_type* lower_keys,
             const size_type* lower_key_lengths,
             const size_type max_key_length,
@@ -144,13 +149,15 @@ struct gpu_masstree {
            .max_key_length = max_key_length, .max_count_per_query = max_count_per_query,
            .d_upper_keys = upper_keys, .d_upper_key_lengths = upper_key_lengths,
            .d_counts = counts, .d_values = values, .d_out_keys = out_keys, .d_out_key_lengths = out_key_lengths};
-    kernels::launch_batch_kernel(*this, func, num_queries, stream);
+    kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_queries, stream);
   }
 
   template <bool enable_suffix = true,
             bool erase_do_remove_empty_root = true,
+            bool erase_pessimistic_merge = true,
             bool erase_do_merge = true,
-            bool reuse_root = true>
+            bool reuse_root = true,
+            bool use_shmem_key = false>
   void mixed_batch(const kernels::request_type* request_types,
                    const key_slice_type* keys,
                    const size_type max_key_length,
@@ -160,9 +167,9 @@ struct gpu_masstree {
                    const size_type num_requests,
                    cudaStream_t stream = 0,
                    bool insert_update_if_exists = false) {
-    kernels::GpuMasstree::mixed_device_func<gpu_masstree, enable_suffix, erase_do_merge, erase_do_remove_empty_root, reuse_root>
+    kernels::GpuMasstree::mixed_device_func<gpu_masstree, enable_suffix, erase_do_merge, erase_pessimistic_merge, erase_do_remove_empty_root, reuse_root>
       func{.d_types = request_types, .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .d_results = results, .insert_update_if_exists = insert_update_if_exists};
-    kernels::launch_batch_kernel(*this, func, num_requests, stream);
+    kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_requests, stream);
   }
 
   // device-side APIs
@@ -175,9 +182,19 @@ struct gpu_masstree {
     return root_node.get_lane_elem();
   }
 
-  template <bool concurrent, typename tile_type>
+  template <bool concurrent, typename warp_type, typename tile_type>
+  DEVICE_QUALIFIER elem_type cooperative_fetch_root(const warp_type& warp_wide_tile,
+                                                    const tile_type& tile,
+                                                    device_allocator_context_type& allocator) {
+    using node_type = masstree_node<tile_type, device_allocator_context_type>;
+    auto root_node = node_type(root_index_, tile, allocator);
+    root_node.template load_warpwidesync<concurrent>(warp_wide_tile);
+    return root_node.get_lane_elem();
+  }
+
+  template <bool concurrent, typename tile_type, typename keyptr_or_keystore>
   DEVICE_QUALIFIER value_type cooperative_find_from_root(elem_type root_lane_elem,
-                                                         const key_slice_type* key,
+                                                         keyptr_or_keystore& key,
                                                          size_type key_length,
                                                          const tile_type& tile,
                                                          device_allocator_context_type& allocator) {
@@ -206,7 +223,7 @@ struct gpu_masstree {
         if (found_keystate == node_type::KEYSTATE_SUFFIX) {
           auto suffix = suffix_type(found_value, tile, allocator);
           suffix.load_head();
-          const bool suffix_eq = suffix.streq(key + slice + 1, key_length - slice - 1);
+          const bool suffix_eq = suffix.streq(key + (slice + 1), key_length - slice - 1);
           found_value = suffix_eq ? suffix.get_value() : invalid_value;
         }
         return found_value;
@@ -216,8 +233,8 @@ struct gpu_masstree {
     return invalid_value;
   }
 
-  template <bool concurrent, typename tile_type>
-  DEVICE_QUALIFIER value_type cooperative_find(const key_slice_type* key,
+  template <bool concurrent, typename tile_type, typename keyptr_or_keystore>
+  DEVICE_QUALIFIER value_type cooperative_find(keyptr_or_keystore& key,
                                                size_type key_length,
                                                const tile_type& tile,
                                                device_allocator_context_type& allocator) {
@@ -225,9 +242,9 @@ struct gpu_masstree {
     return cooperative_find_from_root<concurrent>(root_lane_elem, key, key_length, tile, allocator);
   }
 
-  template <bool use_upper_key, bool concurrent, typename tile_type>
+  template <bool use_upper_key, bool concurrent, typename tile_type, typename keyptr_or_keystore>
   DEVICE_QUALIFIER size_type cooperative_scan_from_root(elem_type root_lane_elem,
-                                                        const key_slice_type* lower_key,
+                                                        keyptr_or_keystore& lower_key,
                                                         const size_type lower_key_length,
                                                         const tile_type& tile,
                                                         device_allocator_context_type& allocator,
@@ -371,8 +388,8 @@ struct gpu_masstree {
     assert(false);
   }
 
-  template <bool use_upper_key, bool concurrent, typename tile_type>
-  DEVICE_QUALIFIER size_type cooperative_scan(const key_slice_type* lower_key,
+  template <bool use_upper_key, bool concurrent, typename tile_type, typename keyptr_or_keystore>
+  DEVICE_QUALIFIER size_type cooperative_scan(keyptr_or_keystore& lower_key,
                                               const size_type lower_key_length,
                                               const tile_type& tile,
                                               device_allocator_context_type& allocator,
@@ -390,9 +407,9 @@ struct gpu_masstree {
       out_max_count, out_value, out_keys, out_key_lengths, out_key_max_length);
   }
 
-  template <bool enable_suffix, typename tile_type>
+  template <bool enable_suffix, typename tile_type, typename keyptr_or_keystore>
   DEVICE_QUALIFIER bool cooperative_insert_from_root(elem_type root_lane_elem,
-                                                     const key_slice_type* key,
+                                                     keyptr_or_keystore& key,
                                                      const size_type key_length,
                                                      const value_type& value,
                                                      const tile_type& tile,
@@ -480,7 +497,7 @@ struct gpu_masstree {
           auto suffix = suffix_type(found_value, tile, allocator);
           suffix.load_head();
           key_slice_type mismatch_suffix_slice;
-          int cmp = suffix.strcmp(key + slice + 1, key_length - slice - 1, &mismatch_suffix_slice);
+          int cmp = suffix.strcmp(key + (slice + 1), key_length - slice - 1, &mismatch_suffix_slice);
           if (cmp == 0) { // already exists
             if (update_if_exists) {
               // protected by current_node.lock()
@@ -532,7 +549,7 @@ struct gpu_masstree {
             else {
               node_chain_index = allocator.allocate(tile);
               suffix = suffix_type(node_chain_index, tile, allocator);
-              suffix.create_from(key + slice + 1, key_length - slice - 1, value);
+              suffix.create_from(key + (slice + 1), key_length - slice - 1, value);
               suffix.store_head();
               doubleton_node.insert(key[slice], node_chain_index, node_type::KEYSTATE_SUFFIX);
             }
@@ -547,7 +564,7 @@ struct gpu_masstree {
             // insert suffix entry
             found_value = allocator.allocate(tile);
             auto suffix = suffix_type(found_value, tile, allocator);
-            suffix.create_from(key + slice + 1, key_length - slice - 1, value);
+            suffix.create_from(key + (slice + 1), key_length - slice - 1, value);
             suffix.store_head();
             keystate = node_type::KEYSTATE_SUFFIX;
           }
@@ -580,8 +597,8 @@ struct gpu_masstree {
     return false;
   }
 
-  template <bool enable_suffix, typename tile_type>
-  DEVICE_QUALIFIER bool cooperative_insert(const key_slice_type* key,
+  template <bool enable_suffix, typename tile_type, typename keyptr_or_keystore>
+  DEVICE_QUALIFIER bool cooperative_insert(keyptr_or_keystore& key,
                                            const size_type key_length,
                                            const value_type& value,
                                            const tile_type& tile,
@@ -592,15 +609,16 @@ struct gpu_masstree {
     return cooperative_insert_from_root<enable_suffix>(root_lane_elem, key, key_length, value, tile, allocator, reclaimer, update_if_exists);
   }
 
-  template <bool concurrent, bool do_merge, bool do_remove_empty_root, typename tile_type>
+  template <bool concurrent, bool do_merge, bool pessimistic_merge, bool do_remove_empty_root, typename tile_type, typename keyptr_or_keystore>
   DEVICE_QUALIFIER bool cooperative_erase_from_root(elem_type root_lane_elem,
-                                                    const key_slice_type* key,
+                                                    keyptr_or_keystore& key,
                                                     const size_type key_length,
                                                     const tile_type& tile,
                                                     device_allocator_context_type& allocator,
                                                     device_reclaimer_context_type& reclaimer) {
-    static_assert(concurrent || (!do_merge && !do_remove_empty_root));
-    static_assert(do_merge || !do_remove_empty_root);
+    static_assert(concurrent || (!do_merge && !pessimistic_merge && !do_remove_empty_root));
+    static_assert(do_merge || (!pessimistic_merge && !do_remove_empty_root));
+    static_assert(pessimistic_merge || !do_remove_empty_root);
     using node_type = masstree_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     using dynamic_stack_type = utils::dynamic_stack_u32<2, tile_type, device_allocator_context_type>;
@@ -627,7 +645,7 @@ struct gpu_masstree {
       bool border_node_locked_by_me = true;
       {
         merge_early_exit_check early_exit{key_slice, more_key};
-        if (do_merge && (!more_key || retry_with_merge)) {
+        if (do_merge && (!pessimistic_merge || (!more_key || retry_with_merge))) {
           coop_traverse_until_border_merge(current_node, key_slice, tile, allocator, reclaimer, early_exit);
           retry_with_merge = false;
         }
@@ -668,7 +686,7 @@ struct gpu_masstree {
         else {  // KEYSTATE_SUFFIX
           auto suffix = suffix_type(found_value, tile, allocator);
           suffix.load_head();
-          const bool suffix_eq = suffix.streq(key + slice + 1, key_length - slice - 1);
+          const bool suffix_eq = suffix.streq(key + (slice + 1), key_length - slice - 1);
           if (suffix_eq) {
             // key exists, erase suffix value and mark suffix nodes garbage
             if (do_merge && current_node.is_underflow()) {
@@ -807,14 +825,14 @@ struct gpu_masstree {
     return false;
   }
 
-  template <bool concurrent, bool do_merge, bool do_remove_empty_root, typename tile_type>
-  DEVICE_QUALIFIER bool cooperative_erase(const key_slice_type* key,
+  template <bool concurrent, bool do_merge, bool pessimistic_merge, bool do_remove_empty_root, typename tile_type, typename keyptr_or_keystore>
+  DEVICE_QUALIFIER bool cooperative_erase(keyptr_or_keystore& key,
                                           const size_type key_length,
                                           const tile_type& tile,
                                           device_allocator_context_type& allocator,
                                           device_reclaimer_context_type& reclaimer) {
     auto root_lane_elem = cooperative_fetch_root<concurrent>(tile, allocator);
-    return cooperative_erase_from_root<concurrent, do_merge, do_remove_empty_root>(
+    return cooperative_erase_from_root<concurrent, do_merge, pessimistic_merge, do_remove_empty_root>(
       root_lane_elem, key, key_length, tile, allocator, reclaimer);
   }
 
@@ -1388,7 +1406,7 @@ struct gpu_masstree {
   template <uint32_t _tile_size, typename masstree, typename size_type>
   friend __global__ void kernels::GpuMasstree::initialize_kernel(masstree, size_type*);
 
-  template <bool do_reclaim, uint32_t _tile_size, typename device_func, typename index_type>
+  template <bool do_reclaim, uint32_t _tile_size, bool use_shmem_key, typename device_func, typename index_type>
   friend __global__ void kernels::batch_kernel(index_type index,
                                               const device_func func,
                                               uint32_t num_requests);

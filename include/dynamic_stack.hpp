@@ -15,9 +15,6 @@
  */
 
 #pragma once
-#define _CG_ABI_EXPERIMENTAL  // enable experimental CGs API
-
-#include <cooperative_groups.h>
 #include <cuda_runtime.h>
 #include <cstdint>
 #include <macros.hpp>

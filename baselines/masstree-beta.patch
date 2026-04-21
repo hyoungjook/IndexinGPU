@@ -1,0 +1,142 @@
+diff --git a/kvthread.cc b/kvthread.cc
+index 140e94d..f2df447 100644
+--- a/kvthread.cc
++++ b/kvthread.cc
+@@ -35,6 +35,7 @@ inline threadinfo::threadinfo(int purpose, int index) {
+     next_ = nullptr;
+     purpose_ = purpose;
+     index_ = index;
++    pool_allocations_ = nullptr;
+ 
+     for (size_t i = 0; i != sizeof(pool_) / sizeof(pool_[0]); ++i) {
+         pool_[i] = nullptr;
+@@ -68,6 +69,38 @@ threadinfo *threadinfo::make(int purpose, int index) {
+     return ti;
+ }
+ 
++void threadinfo::destroy(threadinfo* ti) {
++    if (!ti)
++        return;
++
++    threadinfo** pnext = &allthreads;
++    while (*pnext && *pnext != ti)
++        pnext = &(*pnext)->next_;
++    if (*pnext == ti)
++        *pnext = ti->next_;
++
++    limbo_group* lg = ti->limbo_head_;
++    while (lg) {
++        limbo_group* next = lg->next_;
++        ti->deallocate(lg, sizeof(limbo_group), memtag_limbo);
++        lg = next;
++    }
++
++    pool_allocation* pa = ti->pool_allocations_;
++    while (pa) {
++        pool_allocation* next = pa->next;
++        if (pa->use_mmap)
++            munmap(pa->base, pa->size);
++        else
++            free(pa->base);
++        free(pa);
++        pa = next;
++    }
++
++    ti->~threadinfo();
++    free(ti);
++}
++
+ void threadinfo::refill_rcu() {
+     if (!limbo_tail_->next_) {
+         void *limbo_space = allocate(sizeof(limbo_group), memtag_limbo);
+@@ -211,6 +244,7 @@ void threadinfo::refill_pool(int nl) {
+ 
+     void* pool = 0;
+     size_t pool_size = 0;
++    bool pool_uses_mmap = false;
+     int r;
+ 
+ #if HAVE_SUPERPAGE && !NOSUPERPAGE
+@@ -234,7 +268,8 @@ void threadinfo::refill_pool(int nl) {
+             perror("mmap superpage");
+             pool = 0;
+             superpage_size = (size_t) -1;
+-        }
++        } else
++            pool_uses_mmap = true;
+ # else
+         superpage_size = (size_t) -1;
+ # endif
+@@ -249,6 +284,20 @@ void threadinfo::refill_pool(int nl) {
+         }
+     }
+ 
++    remember_pool_allocation(pool, pool_size, pool_uses_mmap);
+     initialize_pool(pool, pool_size, nl * CACHE_LINE_SIZE);
+     pool_[nl - 1] = pool;
+ }
++
++void threadinfo::remember_pool_allocation(void* base, size_t size, bool use_mmap) {
++    pool_allocation* pa = static_cast<pool_allocation*>(malloc(sizeof(pool_allocation)));
++    if (!pa) {
++        fprintf(stderr, "malloc: out of memory\n");
++        abort();
++    }
++    pa->base = base;
++    pa->size = size;
++    pa->use_mmap = use_mmap;
++    pa->next = pool_allocations_;
++    pool_allocations_ = pa;
++}
+diff --git a/kvthread.hh b/kvthread.hh
+index 707b1e7..0a9ed05 100644
+--- a/kvthread.hh
++++ b/kvthread.hh
+@@ -104,7 +104,7 @@ class threadinfo {
+     }
+ 
+     static threadinfo* make(int purpose, int index);
+-    // XXX destructor
++    static void destroy(threadinfo* ti);
+ 
+     // thread information
+     int purpose() const {
+@@ -291,8 +291,22 @@ class threadinfo {
+     void report_rcu(void* ptr) const;
+     static void report_rcu_all(void* ptr);
+     static inline mrcu_epoch_type min_active_epoch();
++    bool has_pending_rcu() const {
++        for (const limbo_group* lg = limbo_head_; lg; lg = lg->next_) {
++            if (lg->head_ != lg->tail_)
++                return true;
++        }
++        return false;
++    }
+ 
+   private:
++    struct pool_allocation {
++        void* base;
++        size_t size;
++        bool use_mmap;
++        pool_allocation* next;
++    };
++
+     union {
+         struct {
+             mrcu_epoch_type gc_epoch_;
+@@ -311,6 +325,7 @@ class threadinfo {
+ 
+     enum { pool_max_nlines = 20 };
+     void* pool_[pool_max_nlines];
++    pool_allocation* pool_allocations_;
+ 
+     limbo_group* limbo_head_;
+     limbo_group* limbo_tail_;
+@@ -321,6 +336,7 @@ class threadinfo {
+     uint64_t counters_[ncounters];
+ 
+     void refill_pool(int nl);
++    void remember_pool_allocation(void* base, size_t size, bool use_mmap);
+     void refill_rcu();
+ 
+     void free_rcu(void *p, memtag tag) {

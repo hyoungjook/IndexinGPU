@@ -73,7 +73,8 @@ struct suffix_node_warp {
     return ((length + 2) + node_max_len_ - 1) / node_max_len_;
   }
 
-  DEVICE_QUALIFIER bool streq(const elem_type* key, uint32_t key_length) const {
+  template <typename keyptr_or_keystore>
+  DEVICE_QUALIFIER bool streq(keyptr_or_keystore key, uint32_t key_length) const {
     if (get_key_length() != key_length) { return false; }
     // now key_length == this_key_length, compare head node
     // ignore first two elements in head
@@ -99,7 +100,8 @@ struct suffix_node_warp {
     assert(false);
   }
 
-  DEVICE_QUALIFIER int strcmp(const elem_type* key, uint32_t key_length, elem_type* mismatch_value = nullptr) const {
+  template <typename keyptr_or_keystore>
+  DEVICE_QUALIFIER int strcmp(keyptr_or_keystore key, uint32_t key_length, elem_type* mismatch_value = nullptr) const {
     // strcmp(this, key) -> 0 (match), +(this<key), -(this>key)
     // the absolute of return value: (1 + num_matches)
     // NOTE if one is prefix of the other, num_matches is (len(smaller) - 1)
@@ -117,7 +119,8 @@ struct suffix_node_warp {
       // compare elements
       bool this_more = (tile_.thread_rank() < this_length - 1);
       bool key_more = (tile_.thread_rank() < key_length - 1);
-      bool valid_cmp = (tile_.thread_rank() < node_max_len_) &&
+      bool valid_cmp = (skip_elems <= tile_.thread_rank()) &&
+                       (tile_.thread_rank() < node_max_len_) &&
                        (tile_.thread_rank() < cmp_length);
       elem_type other = valid_cmp ? (key[tile_.thread_rank()]) : 0;
       bool match = valid_cmp &&
@@ -256,7 +259,8 @@ struct suffix_node_warp {
     return make_uint2(tile_.shfl(hash, 0), tile_.shfl(hash1, 0));
   }
 
-  DEVICE_QUALIFIER void create_from(const elem_type* key, size_type key_length, elem_type value) {
+  template <typename keyptr_or_keystore>
+  DEVICE_QUALIFIER void create_from(keyptr_or_keystore key, size_type key_length, elem_type value) {
     // head node metadata
     elem_type elem;
     elem_type* curr_ptr = nullptr;  // NULL if head, else appendix
@@ -389,7 +393,11 @@ struct suffix_node_warp {
     auto suffix_index = get_next();
     while (num_nodes > 0) {
       auto* suffix_ptr = reinterpret_cast<elem_type*>(allocator_.address(suffix_index));
-      auto next_index = utils::memory::load<elem_type, false>(suffix_ptr + next_lane_);
+      elem_type next_index;
+      if (tile_.thread_rank() == 0) {
+        next_index = utils::memory::load<elem_type, false>(suffix_ptr + next_lane_);
+      }
+      next_index = tile_.shfl(next_index, 0);
       reclaimer.retire(suffix_index, tile_);
       suffix_index = next_index;
       num_nodes--;

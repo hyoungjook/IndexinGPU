@@ -1,0 +1,109 @@
+diff --git a/include/btree_kernels.hpp b/include/btree_kernels.hpp
+index 6679b7f..74eaaa5 100644
+--- a/include/btree_kernels.hpp
++++ b/include/btree_kernels.hpp
+@@ -17,6 +17,7 @@
+ 
+ #define _CG_ABI_EXPERIMENTAL
+ #include <cooperative_groups.h>
++#include <macros.hpp>
+ 
+ #include <memory_reclaimer.hpp>
+ 
+@@ -668,6 +669,60 @@ __global__ void erase_kernel(const key_type* keys,
+ B-link-Tree kernels
+ */
+ 
++template <typename key_type, typename value_type, typename size_type, typename btree>
++__global__ void mixed_batch_kernel(const ::kernels::request_type* types,
++                                   const key_type* keys,
++                                   value_type* values,
++                                   const size_type keys_count,
++                                   btree tree) {
++  using pair_type = typename btree::pair_type;
++  auto thread_id  = threadIdx.x + blockIdx.x * blockDim.x;
++
++  auto block = cg::this_thread_block();
++  auto tile  = cg::tiled_partition<btree::branching_factor>(block);
++
++  if ((thread_id - tile.thread_rank()) >= keys_count) { return; }
++
++  ::kernels::request_type type;
++  auto key     = btree::invalid_key;
++  auto value   = btree::invalid_value;
++  bool to_work = false;
++  if (thread_id < keys_count) {
++    type = types[thread_id];
++    key     = keys[thread_id];
++    value = values[thread_id];
++    to_work = true;
++  }
++
++  using allocator_type = device_allocator_context<typename btree::allocator_type>;
++  allocator_type allocator{tree.allocator_, tile};
++
++  auto work_queue = tile.ballot(to_work);
++  while (work_queue) {
++    auto cur_rank = __ffs(work_queue) - 1;
++    auto cur_type = tile.shfl(type, cur_rank);
++    auto cur_key  = tile.shfl(key, cur_rank);
++    auto cur_value = tile.shfl(value, cur_rank);
++    value_type cur_result;
++    if (cur_type == ::kernels::request_type_find) {
++      cur_result = tree.cooperative_find(cur_key, tile, allocator, true);
++    }
++    else if (cur_type == ::kernels::request_type_insert) {
++      tree.cooperative_insert(cur_key, cur_value, tile, allocator);
++    }
++    else {
++      tree.cooperative_erase(cur_key, tile, allocator, true);
++    }
++    if (cur_rank == tile.thread_rank()) {
++      value   = cur_result;
++      to_work = false;
++    }
++    work_queue = tile.ballot(to_work);
++  }
++
++  if (thread_id < keys_count) { values[thread_id] = value; }
++}
++
+ template <typename key_type, typename value_type, typename size_type, typename btree>
+ __global__ void concurrent_find_erase_kernel_blink(const key_type* find_keys,
+                                                    value_type* find_result,
+diff --git a/include/gpu_blink_tree.hpp b/include/gpu_blink_tree.hpp
+index e8c8fd8..d050e17 100644
+--- a/include/gpu_blink_tree.hpp
++++ b/include/gpu_blink_tree.hpp
+@@ -264,6 +264,17 @@ struct gpu_blink_tree {
+                                                                        concurrent);
+   }
+ 
++  void mixed_batch(const ::kernels::request_type* types,
++                   const Key* keys,
++                   Value* values,
++                   const size_type num_keys,
++                   cudaStream_t stream = 0) {
++    const uint32_t block_size = 512;
++    const uint32_t num_blocks = (num_keys + block_size - 1) / block_size;
++    kernels::mixed_batch_kernel<<<num_blocks, block_size, 0, stream>>>(
++        types, keys, values, num_keys, *this);
++  }
++
+   // Device-side APIs
+   template <typename tile_type, typename DeviceAllocator>
+   DEVICE_QUALIFIER bool cooperative_insert(const Key& key,
+@@ -1145,6 +1156,13 @@ struct gpu_blink_tree {
+                                                      size_type*,
+                                                      const bool);
+ 
++  template <typename key_type, typename value_type, typename size_type, typename btree>
++  friend __global__ void kernels::mixed_batch_kernel(const ::kernels::request_type*,
++                                                     const key_type*,
++                                                     value_type*,
++                                                     const size_type,
++                                                     btree);
++
+   template <typename key_type, typename size_type, typename btree>
+   friend __global__ void kernels::erase_kernel(const key_type*, const size_type, btree, const bool);
+ 

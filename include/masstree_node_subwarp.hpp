@@ -20,6 +20,7 @@
 #include <macros.hpp>
 #include <utils.hpp>
 #include <suffix_node_subwarp.hpp>
+#include <varlen_key_store.hpp>
 
 template <typename tile_type, typename allocator_type>
 struct masstree_node_subwarp {
@@ -68,8 +69,8 @@ struct masstree_node_subwarp {
     auto node_ptr = reinterpret_cast<elem_unsigned_type*>(allocator_.address(node_index_));
     if constexpr (atomic) { tile_.sync(); }
     auto elem = utils::memory::load<elem_unsigned_type, atomic, acquire>(node_ptr + tile_.thread_rank());
-    lane_elem_ = *reinterpret_cast<elem_type*>(&elem);
     if constexpr (atomic) { tile_.sync(); }
+    lane_elem_ = *reinterpret_cast<elem_type*>(&elem);
     read_metadata_from_registers();
   }
   template <bool atomic, bool acquire = true>
@@ -77,8 +78,24 @@ struct masstree_node_subwarp {
     auto node_ptr = reinterpret_cast<elem_unsigned_type*>(allocator_.address(node_index_));
     if constexpr (atomic) { tile_.sync(); }
     auto elem = utils::memory::load<elem_unsigned_type, atomic, acquire>(node_ptr + tile_.thread_rank());
-    lane_elem_ = *reinterpret_cast<elem_type*>(&elem);
     if constexpr (atomic) { tile_.sync(); }
+    lane_elem_ = *reinterpret_cast<elem_type*>(&elem);
+  }
+  template <bool atomic, bool acquire = true, typename warp_type>
+  DEVICE_QUALIFIER void load_warpwidesync(const warp_type& warp) {
+    auto node_ptr = reinterpret_cast<key_type*>(allocator_.address(node_index_));
+    // 1. fetch once: thread0-15 fetches tile.rank()*2, thread16-31 fetches tile.rank()*2+1
+    int fetch_idx = (tile_.thread_rank() * 2) + (warp.thread_rank() < 16 ? 0 : 1);
+    if constexpr (atomic) { warp.sync(); }
+    auto tmp_elem = utils::memory::load<key_type, atomic, acquire>(node_ptr + fetch_idx);
+    if constexpr (atomic) { warp.sync(); }
+    // 2. re-distribute tmp_elem
+    lane_elem_.key = tmp_elem;
+    lane_elem_.value = tmp_elem;
+    auto up_elem = warp.shfl_up(tmp_elem, 16);
+    if (warp.thread_rank() >= 16) { lane_elem_.key = up_elem; }
+    auto down_elem = warp.shfl_down(tmp_elem, 16);
+    if (warp.thread_rank() < 16) { lane_elem_.value = down_elem; }
   }
   template <bool atomic, bool release = true>
   DEVICE_QUALIFIER void store() {
@@ -166,8 +183,7 @@ struct masstree_node_subwarp {
     return static_cast<bool>(metadata_ & garbage_bit_mask_);
   }
   DEVICE_QUALIFIER key_type get_high_key() const {
-    assert(is_border() || num_keys() > 0); // never called
-    return tile_.shfl(lane_elem_.key, is_border() ? (border_high_key_lane_) : (num_keys() - 1));
+    return tile_.shfl(lane_elem_.key, high_key_lane_);
   }
   DEVICE_QUALIFIER value_type get_sibling_index() const {
     return tile_.shfl(lane_elem_.value, sibling_ptr_lane_);
@@ -291,10 +307,10 @@ struct masstree_node_subwarp {
   DEVICE_QUALIFIER static bool cmp_key(const key_type& k1, bool morekey1, const key_type& k2, bool morekey2) {
     return (k1 < k2) || ((k1 == k2) && (static_cast<int>(morekey1) <= static_cast<int>(morekey2)));
   }
-  template <bool use_upper_key>
+  template <bool use_upper_key, typename keyptr_or_keystore>
   DEVICE_QUALIFIER uint32_t scan(const key_type& lower_key_slice,
                                  const bool lower_key_more,
-                                 const key_type* lower_key,         // original argument
+                                 keyptr_or_keystore& lower_key,// original argument
                                  const size_type lower_key_length,  // original argument
                                  bool& passed_lower_key,
                                  const key_type& upper_key_slice,
@@ -335,7 +351,7 @@ struct masstree_node_subwarp {
         auto suffix_index = get_value_from_location(first_location);
         auto suffix = suffix_type(suffix_index, tile_, allocator_);
         suffix.load_head();
-        if (suffix.strcmp(lower_key + layer + 1, lower_key_length - layer - 1) > 0) {
+        if (suffix.strcmp(lower_key + (layer + 1), lower_key_length - layer - 1) > 0) {
           if (tile_.thread_rank() == first_location) { in_range = false; }
           in_range_ballot = tile_.ballot(in_range);
           if (in_range_ballot == 0) {
@@ -360,7 +376,7 @@ struct masstree_node_subwarp {
         auto suffix_index = get_value_from_location(last_location - 1);
         auto suffix = suffix_type(suffix_index, tile_, allocator_);
         suffix.load_head();
-        if (suffix.strcmp(upper_key + layer + 1, upper_key_length - layer - 1) < 0) {
+        if (suffix.strcmp(upper_key + (layer + 1), upper_key_length - layer - 1) < 0) {
           last_location--;
         }
       }
@@ -413,6 +429,15 @@ struct masstree_node_subwarp {
     return count;
   }
 
+  DEVICE_QUALIFIER void update_interior_high_key() {
+    assert(!is_border() && num_keys() > 0);
+    // if interior node, key14 aliases key[num_keys-1]
+    auto high_key = tile_.shfl(lane_elem_.key, num_keys() - 1);
+    if (tile_.thread_rank() == high_key_lane_) {
+      lane_elem_.key = high_key;
+    }
+  }
+
   DEVICE_QUALIFIER int get_split_left_width() const {
     // normally, location is left_half_width_
     // but a value entry and a link entry with the same key should be in the same node
@@ -432,7 +457,8 @@ struct masstree_node_subwarp {
     //));
     assert(is_full());
     // prepare the upper half in right sibling
-    right_sibling_node.lane_elem_ = tile_.shfl_down(lane_elem_, left_width);
+    right_sibling_node.lane_elem_.key = tile_.shfl_down(lane_elem_.key, left_width);
+    right_sibling_node.lane_elem_.value = tile_.shfl_down(lane_elem_.value, left_width);
     // keystate
     if (is_border()) {
       if (tile_.thread_rank() == keystate_bits_lane_) {
@@ -447,14 +473,12 @@ struct masstree_node_subwarp {
       lane_elem_.value = right_sibling_node.get_node_index();
     }
     // reassign high keys
-    if (is_border()) {
-      auto pivot_key = get_key_from_location(left_width - 1);
-      if (tile_.thread_rank() == border_high_key_lane_) {
-        // right's high key = this node's previous high key
-        right_sibling_node.lane_elem_.key = lane_elem_.key;
-        // left's high key = pivot key
-        lane_elem_.key = pivot_key;
-      }
+    auto pivot_key = get_key_from_location(left_width - 1);
+    if (tile_.thread_rank() == high_key_lane_) {
+      // right's high key = this node's previous high key
+      right_sibling_node.lane_elem_.key = lane_elem_.key;
+      // left's high key = pivot key
+      lane_elem_.key = pivot_key;
     }
     // update metadata
     right_sibling_node.metadata_ = (metadata_ & ~(num_keys_mask_ | sibling_bit_mask_));
@@ -497,7 +521,9 @@ struct masstree_node_subwarp {
     if (tile_.thread_rank() == 0) {
       lane_elem_ = {pivot_key, left_child_node.node_index_};
     }
-    else if (tile_.thread_rank() == 1) {
+    else if (tile_.thread_rank() == 1 ||
+             tile_.thread_rank() == high_key_lane_) {
+      // high_key_lane_ only needs max_key, but store index (garbage value) too
       lane_elem_ = {max_key, right_child_node.node_index_};
     }
     assert(!has_sibling()); // root has no sibling
@@ -511,7 +537,9 @@ struct masstree_node_subwarp {
     // shuffle the keys and do the insertion
     assert(!is_full());
     metadata_++;  // equiv. to num_keys++;
-    auto up_elem = tile_.shfl_up(lane_elem_, 1);
+    elem_type up_elem;
+    up_elem.key = tile_.shfl_up(lane_elem_.key, 1);
+    up_elem.value = tile_.shfl_up(lane_elem_.value, 1);
     const int value_location = key_location + (is_border() ? 0 : 1);
     if (is_valid_lane()) {
       if (tile_.thread_rank() == key_location) {
@@ -535,6 +563,9 @@ struct masstree_node_subwarp {
                      ((lane_elem_.value & ~key_lane_x2_mask) << 2);
         lane_elem_.value |= ((keystate & keystate_mask_) << key_lane_x2);
       }
+    }
+    else {
+      update_interior_high_key();
     }
     write_metadata_to_registers();
   }
@@ -612,14 +643,17 @@ struct masstree_node_subwarp {
                               masstree_node_subwarp& parent_node) {
     // this node is the left sibling
     // copy elements from right sibling node
-    elem_type shifted_elem = tile_.shfl_up(right_sibling_node.lane_elem_, num_keys());
-    auto new_num_keys = num_keys() + right_sibling_node.num_keys();
-    if ((num_keys() <= tile_.thread_rank() && tile_.thread_rank() < new_num_keys)) {
+    elem_type shifted_elem;
+    auto this_num_keys = num_keys();
+    shifted_elem.key = tile_.shfl_up(right_sibling_node.lane_elem_.key, this_num_keys);
+    shifted_elem.value = tile_.shfl_up(right_sibling_node.lane_elem_.value, this_num_keys);
+    auto new_num_keys = this_num_keys + right_sibling_node.num_keys();
+    if ((this_num_keys <= tile_.thread_rank() && tile_.thread_rank() < new_num_keys)) {
       lane_elem_ = shifted_elem;
     }
     if (is_border()) {
       if (tile_.thread_rank() == keystate_bits_lane_) {
-        const int num_keys_x2 = 2 * num_keys();
+        const int num_keys_x2 = 2 * this_num_keys;
         lane_elem_.value &= ((1u << num_keys_x2) - 1);
         lane_elem_.value |= (right_sibling_node.lane_elem_.value << num_keys_x2);
       }
@@ -630,7 +664,7 @@ struct masstree_node_subwarp {
     if (tile_.thread_rank() == sibling_ptr_lane_) {
       lane_elem_.value = right_sibling_node.lane_elem_.value;
     }
-    if (is_border() && tile_.thread_rank() == border_high_key_lane_) {
+    if (tile_.thread_rank() == high_key_lane_) {
       lane_elem_.key = right_sibling_node.lane_elem_.key;
     }
     write_metadata_to_registers();
@@ -649,15 +683,18 @@ struct masstree_node_subwarp {
     assert(is_root() && num_keys() == 2);
     // copy the children into current node
     lane_elem_ = left_child_node.lane_elem_;
-    set_num_keys(left_child_node.num_keys() + right_child_node.num_keys());
+    auto left_child_node_num_keys = left_child_node.num_keys();
+    set_num_keys(left_child_node_num_keys + right_child_node.num_keys());
     metadata_ = (metadata_ & ~border_bit_mask_) ^ (left_child_node.metadata_ & border_bit_mask_); // is_border = left.is_border;
-    auto right_elem = tile_.shfl_up(right_child_node.lane_elem_, left_child_node.num_keys());
-    if (left_child_node.num_keys() <= tile_.thread_rank() && tile_.thread_rank() < num_keys()) {
+    elem_type right_elem;
+    right_elem.key = tile_.shfl_up(right_child_node.lane_elem_.key, left_child_node_num_keys);
+    right_elem.value = tile_.shfl_up(right_child_node.lane_elem_.value, left_child_node_num_keys);
+    if (left_child_node_num_keys <= tile_.thread_rank() && tile_.thread_rank() < num_keys()) {
       lane_elem_ = right_elem;
     }
     if (is_border()) {
       if (tile_.thread_rank() == keystate_bits_lane_) {
-        const int num_keys_x2 = 2 * left_child_node.num_keys();
+        const int num_keys_x2 = 2 * left_child_node_num_keys;
         lane_elem_.value &= ((1u << num_keys_x2) - 1);
         lane_elem_.value |= (right_child_node.lane_elem_.value << num_keys_x2);
       }
@@ -667,7 +704,7 @@ struct masstree_node_subwarp {
     if (tile_.thread_rank() == sibling_ptr_lane_) {
       lane_elem_.value = right_child_node.lane_elem_.value;
     }
-    if (is_border() && tile_.thread_rank() == border_high_key_lane_) {
+    if (tile_.thread_rank() == high_key_lane_) {
       lane_elem_.key = right_child_node.lane_elem_.key;
     }
     write_metadata_to_registers();
@@ -684,13 +721,17 @@ struct masstree_node_subwarp {
       num_shift++;
     }
     // copy last num_shift entries of the sibling into current
-    elem_type shifted_elem = tile_.shfl_up(lane_elem_, num_shift);
+    elem_type shifted_elem;
+    shifted_elem.key = tile_.shfl_up(lane_elem_.key, num_shift);
+    shifted_elem.value = tile_.shfl_up(lane_elem_.value, num_shift);
     metadata_ += num_shift; // equiv. to num_keys += num_shift;
     if (tile_.thread_rank() < num_keys()) {
       lane_elem_ = shifted_elem;
     }
     sibling_node.metadata_ -= num_shift;  // equiv. to num_keys -= num_shift;
-    shifted_elem = tile_.shfl_down(sibling_node.lane_elem_, sibling_node.num_keys());
+    auto sibling_node_num_keys = sibling_node.num_keys();
+    shifted_elem.key = tile_.shfl_down(sibling_node.lane_elem_.key, sibling_node_num_keys);
+    shifted_elem.value = tile_.shfl_down(sibling_node.lane_elem_.value, sibling_node_num_keys);
     if (tile_.thread_rank() < num_shift) {
       lane_elem_ = shifted_elem;
     }
@@ -698,16 +739,14 @@ struct masstree_node_subwarp {
       if (tile_.thread_rank() == keystate_bits_lane_) {
         const auto num_shift_x2 = 2 * num_shift;
         lane_elem_.value <<= num_shift_x2;
-        lane_elem_.value |= ((sibling_node.lane_elem_.value >> (2 * sibling_node.num_keys())) & ((1u << num_shift_x2) - 1));
+        lane_elem_.value |= ((sibling_node.lane_elem_.value >> (2 * sibling_node_num_keys)) & ((1u << num_shift_x2) - 1));
       }
     }
     write_metadata_to_registers();
     // remove last num_shift entries from the sibling
-    key_type pivot_key = sibling_node.get_key_from_location(sibling_node.num_keys() - 1);
-    if (is_border()) {
-      if (tile_.thread_rank() == border_high_key_lane_) {
-        sibling_node.lane_elem_.key = pivot_key;
-      }
+    key_type pivot_key = sibling_node.get_key_from_location(sibling_node_num_keys - 1);
+    if (tile_.thread_rank() == high_key_lane_) {
+      sibling_node.lane_elem_.key = pivot_key;
     }
     sibling_node.write_metadata_to_registers();
     // update parent
@@ -727,28 +766,29 @@ struct masstree_node_subwarp {
                                      masstree_node_subwarp& new_sibling_node) {
     // new_sibling_node: only its node_index_ is valid. this fills its lane_elem_.
     // compute num shift; adjust similar to get_split_left_width()
-    uint32_t num_shift = (sibling_node.num_keys() - num_keys()) / 2;
+    auto this_num_keys = num_keys();
+    uint32_t num_shift = (sibling_node.num_keys() - this_num_keys) / 2;
     if (is_border() && (sibling_node.get_keystate_from_location(num_shift - 1) == KEYSTATE_VALUE)) {
       num_shift--;
     }
     // copy first num_shift entries of the sibling into current
-    elem_type shifted_elem = tile_.shfl_up(sibling_node.lane_elem_, num_keys());
-    if (num_keys() <= tile_.thread_rank() && tile_.thread_rank() < num_keys() + num_shift) {
+    elem_type shifted_elem;
+    shifted_elem.key = tile_.shfl_up(sibling_node.lane_elem_.key, this_num_keys);
+    shifted_elem.value = tile_.shfl_up(sibling_node.lane_elem_.value, this_num_keys);
+    if (this_num_keys <= tile_.thread_rank() && tile_.thread_rank() < this_num_keys + num_shift) {
       lane_elem_ = shifted_elem;
     }
     if (is_border()) {
       if (tile_.thread_rank() == keystate_bits_lane_) {
-        const int num_keys_x2 = 2 * num_keys();
+        const int num_keys_x2 = 2 * this_num_keys;
         lane_elem_.value &= ((1u << num_keys_x2) - 1);
         lane_elem_.value |= (sibling_node.lane_elem_.value << num_keys_x2);
       }
     }
     metadata_ += num_shift; // equiv. to num_keys += num_shift;
     key_type pivot_key = get_key_from_location(num_keys() - 1);
-    if (is_border()) {
-      if (tile_.thread_rank() == border_high_key_lane_) {
-        lane_elem_.key = pivot_key;
-      }
+    if (tile_.thread_rank() == high_key_lane_) {
+      lane_elem_.key = pivot_key;
     }
     write_metadata_to_registers();
     // current points to the new sibling
@@ -759,7 +799,8 @@ struct masstree_node_subwarp {
     new_sibling_node.lane_elem_ = sibling_node.lane_elem_;
     new_sibling_node.metadata_ = sibling_node.metadata_;
     // remove first num_shift entries from the new_sibling
-    shifted_elem = tile_.shfl_down(new_sibling_node.lane_elem_, num_shift);
+    shifted_elem.key = tile_.shfl_down(new_sibling_node.lane_elem_.key, num_shift);
+    shifted_elem.value = tile_.shfl_down(new_sibling_node.lane_elem_.value, num_shift);
     new_sibling_node.metadata_ -= num_shift;  // equiv. to new_sibling_node.num_keys -= num_shift;
     if (tile_.thread_rank() < new_sibling_node.num_keys()) {
       new_sibling_node.lane_elem_ = shifted_elem;
@@ -790,7 +831,9 @@ struct masstree_node_subwarp {
   DEVICE_QUALIFIER void do_erase(int key_location, int value_location) {
     assert(num_keys() > 0);
     metadata_--;  // equiv. to num_keys--;
-    auto down_elem = tile_.shfl_down(lane_elem_, 1);
+    elem_type down_elem;
+    down_elem.key = tile_.shfl_down(lane_elem_.key, 1);
+    down_elem.value = tile_.shfl_down(lane_elem_.value, 1);
     if (is_valid_lane()) {
       if (tile_.thread_rank() >= key_location) {
         lane_elem_.key = down_elem.key;
@@ -805,6 +848,9 @@ struct masstree_node_subwarp {
         lane_elem_.value = (lane_elem_.value & key_lane_x2_mask) |
                      ((lane_elem_.value >> 2) & ~key_lane_x2_mask);
       }
+    }
+    else {
+      update_interior_high_key();
     }
     write_metadata_to_registers();
   }
@@ -884,6 +930,7 @@ struct masstree_node_subwarp {
   // for interior nodes,
   //    ptr_i contains subtree with keys: key_(i-1) < key <= key_i.
   //    key[num_keys-1] is high key (upper bound of the subtree), used for B-link traversal.
+  //    key[num_keys-1] is aliased to key14.
 
   // for border nodes,
   //    key14 is high key, used for B-link traversal
@@ -906,7 +953,7 @@ struct masstree_node_subwarp {
   static_assert(sizeof(elem_type) == sizeof(uint64_t));
   static constexpr uint32_t metadata_lane_ = node_width - 1;        // key
   static constexpr uint32_t sibling_ptr_lane_ = node_width - 1;     // value
-  static constexpr uint32_t border_high_key_lane_ = node_width - 2; // key
+  static constexpr uint32_t high_key_lane_ = node_width - 2; // key
   static constexpr uint32_t keystate_bits_lane_ = node_width - 2;   // value
   
   static constexpr uint32_t num_keys_offset_ = 0;

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CXX_BIN="${CXX:-c++}"
 CC_BIN="${CC:-cc}"
-OUTPUT_PATH="${OUTPUT:-${ROOT_DIR}/build/universal_bench_with_cpu_baseline}"
+OUTPUT_PATH="${OUTPUT:-${ROOT_DIR}/build/bin/universal_bench_with_cpu_baseline}"
 MASSTREE_DIR="${ROOT_DIR}/baselines/masstree-beta"
 ARTSYNC_DIR="${ROOT_DIR}/baselines/ARTSynchronized"
 
@@ -52,7 +52,10 @@ fi
   -I"${ROOT_DIR}/baselines/libcuckoo" \
   -I"${MASSTREE_DIR}" \
   -I"${ARTSYNC_DIR}" \
-  "${ROOT_DIR}/evaluation/universal_bench_cpu.cpp" \
+  -DUNIVERSAL_BENCH_WITH_CPU_BASELINE \
+  -DNOGPU \
+  -x c++ \
+  "${ROOT_DIR}/evaluation/universal_bench.cu" \
   "${MASSTREE_SOURCES[@]}" \
   "${ROWEX_SOURCES[@]}" \
   -o "${OUTPUT_PATH}" \

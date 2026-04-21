@@ -39,6 +39,7 @@ using size_type = uint32_t;
 template <typename masstree_type,
           bool enable_suffix = true,
           bool erase_remove_empty_root = true,
+          bool erase_pessimistic_merge = true,
           bool erase_merge = true,
           bool reuse_root = true>
 void mix_bench_masstree(thrust::device_vector<key_slice_type>& d_insert_keys,
@@ -79,7 +80,8 @@ void mix_bench_masstree(thrust::device_vector<key_slice_type>& d_insert_keys,
     mix_timer.start_timer();
     tree.template mixed_batch<enable_suffix,
                               erase_remove_empty_root,
-                              erase_merge || erase_remove_empty_root,
+                              erase_pessimistic_merge || erase_remove_empty_root,
+                              erase_merge || erase_pessimistic_merge || erase_remove_empty_root,
                               reuse_root>(
       d_mix_types.data().get(), d_mix_keys.data().get(), max_key_length, d_mix_lengths.data().get(), d_mix_values.data().get(), nullptr, mix_num_requests);
     mix_timer.stop_timer();
@@ -109,11 +111,17 @@ int main(int argc, char** argv) {
   uint32_t min_key_length = get_arg_value<uint32_t>(arguments, "min-key-length").value_or(1u);
   uint32_t max_key_length = get_arg_value<uint32_t>(arguments, "max-key-length").value_or(1u);
   float common_prefix_ratio = get_arg_value<float>(arguments, "common-prefix-ratio").value_or(0.1f);
+  bool presort_ops = get_arg_value<bool>(arguments, "presort-ops").value_or(true);
+  if (presort_ops && (num_keys % 64 != 0)) {
+    std::cerr << "presort-ops require num-keys be multiple of 64" << std::endl;
+    exit(1);
+  }
   float insert_ratio = get_arg_value<float>(arguments, "insert-ratio").value_or(0.33f);
   float erase_ratio = get_arg_value<float>(arguments, "erase-ratio").value_or(0.33f);
   float find_ratio = 1.0f - insert_ratio - erase_ratio;
   if (find_ratio < 0.f) {
     std::cerr << "insert-ratio " << insert_ratio << " + erase_ratio " << erase_ratio << " > 1" << std::endl;
+    exit(1);
   }
   float allocator_pool_ratio = get_arg_value<float>(arguments, "allocator-pool-ratio").value_or(0.9f);
   bool verbose   = get_arg_value<bool>(arguments, "verbose").value_or(false);
@@ -231,7 +239,9 @@ int main(int argc, char** argv) {
   for (uint32_t i = 0; i < 2 * half_num_keys; i++) {
     find_mix_order[i] = i;
   }
-  std::shuffle(mix_order.begin(), mix_order.end(), rng);
+  if (!presort_ops) {
+    std::shuffle(mix_order.begin(), mix_order.end(), rng);
+  }
   std::shuffle(insert_mix_order.begin(), insert_mix_order.end(), rng);
   std::shuffle(erase_mix_order.begin(), erase_mix_order.end(), rng);
   std::shuffle(find_mix_order.begin(), find_mix_order.end(), rng);

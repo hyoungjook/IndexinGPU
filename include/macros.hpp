@@ -47,3 +47,11 @@ if (!(expr)) { \
   std::cerr << "Argument check failed at " << __FILE__ << ":" << __LINE__ << " on " << #expr << std::endl; \
   std::abort(); \
 }
+
+namespace kernels {
+enum request_type: uint8_t {
+  request_type_insert = 0,
+  request_type_erase = 1,
+  request_type_find = 2
+};
+} // namespace kernels

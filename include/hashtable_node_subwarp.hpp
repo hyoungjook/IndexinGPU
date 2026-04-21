@@ -127,9 +127,11 @@ struct hashtable_node_subwarp {
     return (num_keys() + next_node.num_keys()) <= max_num_keys_;
   }
   DEVICE_QUALIFIER bool get_suffix_of_location(int location) const {
+    if (location < 0 || location >= static_cast<int>(max_num_keys_)) { return false; }
     return (metadata_ >> (suffix_bits_offset_ + location)) & 1u;
   }
   DEVICE_QUALIFIER void set_suffix_of_location(int location, bool more_key) {
+    assert(0 <= location && location < static_cast<int>(max_num_keys_));
     auto mask = (1u << (suffix_bits_offset_ + location));
     if (more_key) { metadata_ |= mask; }
     else { metadata_ &= ~mask; }
@@ -263,10 +265,13 @@ struct hashtable_node_subwarp {
     assert(is_mergeable(next_node));
     // copy elements from next node
     bool suffix_bit = get_suffix_of_location(tile_.thread_rank());
-    elem_type shifted_elem = tile_.shfl_up(next_node.lane_elem_, num_keys());
-    bool shifted_suffix_bit = next_node.get_suffix_of_location(tile_.thread_rank() - num_keys());
-    auto new_num_keys = num_keys() + next_node.num_keys();
-    if (num_keys() <= tile_.thread_rank() && tile_.thread_rank() < new_num_keys) {
+    elem_type shifted_elem;
+    auto this_num_keys = num_keys();
+    shifted_elem.key = tile_.shfl_up(next_node.lane_elem_.key, this_num_keys);
+    shifted_elem.value = tile_.shfl_up(next_node.lane_elem_.value, this_num_keys);
+    bool shifted_suffix_bit = next_node.get_suffix_of_location(tile_.thread_rank() - this_num_keys);
+    auto new_num_keys = this_num_keys + next_node.num_keys();
+    if (this_num_keys <= tile_.thread_rank() && tile_.thread_rank() < new_num_keys) {
       lane_elem_ = shifted_elem;
       suffix_bit = shifted_suffix_bit;
     }
@@ -288,7 +293,9 @@ struct hashtable_node_subwarp {
     assert(location < num_keys());
     metadata_--;    // equiv. to num_keys--
     bool suffix_bit = get_suffix_of_location(tile_.thread_rank());
-    auto down_elem = tile_.shfl_down(lane_elem_, 1);
+    elem_type down_elem;
+    down_elem.key = tile_.shfl_down(lane_elem_.key, 1);
+    down_elem.value = tile_.shfl_down(lane_elem_.value, 1);
     auto down_suffix_bit = get_suffix_of_location(tile_.thread_rank() + 1);
     if (is_valid_lane()) {
       if (tile_.thread_rank() >= location) {

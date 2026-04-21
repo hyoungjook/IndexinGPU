@@ -1,10 +1,13 @@
-cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
-if (CMAKE_VERSION VERSION_GREATER_EQUAL 3.18)
-  cmake_policy(SET CMP0104 OLD)
+cmake_minimum_required(VERSION 3.24 FATAL_ERROR)
+
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+  set(CMAKE_CUDA_ARCHITECTURES native CACHE STRING
+      "CUDA architectures to build for. Defaults to the host GPU architecture(s).")
 endif()
 
-
 project(GpuBTree LANGUAGES CXX CUDA)
+
+message(STATUS "CMAKE_CUDA_ARCHITECTURES=${CMAKE_CUDA_ARCHITECTURES}")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CUDA_STANDARD 17)
@@ -18,9 +21,6 @@ option(build_benchmarks "Build benchmarks" ON)
 option(build_tests "Build tests" ON)
 option(build_evaluation "Build evaluation" ON)
 
-
-# Auto-detect GPU architecture, sets ${CUDA_ARCHS}
-include("cmake/AutoDetectCudaArch.cmake")
 
 # Direct all output to /bin directory
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
@@ -47,7 +47,6 @@ set(CUDA_FLAGS
     $<IF:$<CONFIG:Debug>,
         -G -dopt=on -src-in-ptx,
         -lineinfo>
-    ${CUDA_ARCHS}
     -maxrregcount=64
 	--expt-extended-lambda
     --expt-relaxed-constexpr

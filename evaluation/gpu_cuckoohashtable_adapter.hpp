@@ -26,6 +26,7 @@
 
 struct gpu_cuckoohashtable_adapter {
   static constexpr bool is_ordered = false;
+  static constexpr bool support_mixed = true;
   using key_slice_type = uint32_t;
   using value_type = uint32_t;
   using size_type = uint32_t;
@@ -67,7 +68,9 @@ struct gpu_cuckoohashtable_adapter {
               std::size_t num_keys) {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_bool(configs_.use_hash_tag, [&](auto t2, auto h2) {
-        do_insert<t2.value, h2.value>(keys, keylen_max, key_lengths, values, num_keys);
+        adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t3, auto h3, auto k3) {
+          do_insert<t3.value, h3.value, k3.value>(keys, keylen_max, key_lengths, values, num_keys);
+        }, t2, h2);
       }, t1);
     });
   }
@@ -77,7 +80,9 @@ struct gpu_cuckoohashtable_adapter {
              std::size_t num_keys) {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_bool(configs_.use_hash_tag, [&](auto t2, auto h2) {
-        do_erase<t2.value, h2.value>(keys, keylen_max, key_lengths, num_keys);
+        adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t3, auto h3, auto k3) {
+          do_erase<t3.value, h3.value, k3.value>(keys, keylen_max, key_lengths, num_keys);
+        }, t2, h2);
       }, t1);
     });
   }
@@ -89,19 +94,45 @@ struct gpu_cuckoohashtable_adapter {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_bool(configs_.lookup_concurrent, [&](auto t2, auto c2) {
         adapter_util::dispatch_bool(configs_.use_hash_tag, [&](auto t3, auto c3, auto h3) {
-          do_find<t3.value, c3.value, h3.value>(keys, keylen_max, key_lengths, results, num_keys);
+          adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t4, auto c4, auto h4, auto k4) {
+            do_find<t4.value, c4.value, h4.value, k4.value>(keys, keylen_max, key_lengths, results, num_keys);
+          }, t3, c3, h3);
         }, t2, c2);
       }, t1);
     });
   }
+  void mixed_batch(const kernels::request_type* types,
+                   const key_slice_type* keys,
+                   uint32_t keylen_max,
+                   const size_type* key_lengths,
+                   value_type* values,
+                   std::size_t num_keys) {
+    adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
+      adapter_util::dispatch_bool(configs_.use_hash_tag, [&](auto t2, auto h2) {
+        adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t3, auto h3, auto k3) {
+          do_mixed<t3.value, h3.value, k3.value>(types, keys, keylen_max, key_lengths, values, nullptr, num_keys);
+        }, t2, h2);
+      }, t1);
+    });
+  }
+  void print_stats() {
+    allocator_->print_stats();
+    //if (configs_.tile_size == 32) {
+    //  reinterpret_cast<index32_type*>(index_)->validate();
+    //}
+    //else {
+    //  reinterpret_cast<index16_type*>(index_)->validate();
+    //}
+  }
 
  private:
   #define FORALL_ARGUMENTS_GPU_CUCKOOHASHTABLE(x) \
-    x(allocator_pool_ratio, float, 0.1f) \
-    x(tile_size, uint32_t, 32) \
-    x(lookup_concurrent, bool, true) \
+    x(allocator_pool_ratio, float, 0.8f) \
+    x(tile_size, uint32_t, 16) \
+    x(lookup_concurrent, bool, false) \
     x(initial_array_fill_factor, float, 0.8f) \
-    x(use_hash_tag, bool, true)
+    x(use_hash_tag, bool, true) \
+    x(use_shmem_key, bool ,false)
   struct configs {
     #define DECLARE_ARGUMENTS(arg, type, default_value) type arg;
     FORALL_ARGUMENTS_GPU_CUCKOOHASHTABLE(DECLARE_ARGUMENTS)
@@ -117,7 +148,7 @@ struct gpu_cuckoohashtable_adapter {
       [[maybe_unused]] auto tmp_##arg = get_arg_value<type>(arguments, #arg).value_or(default_value);
       FORALL_ARGUMENTS(PARSE_DEFAULT_ARGUMENTS)
       #undef PARSE_DEFAULT_ARGUMENTS
-      num_keys = tmp_num_keys;
+      num_keys = tmp_max_keys;
       check_argument(tile_size == 32 || tile_size == 16);
       check_argument(0 < initial_array_fill_factor && initial_array_fill_factor <= 0.9f);
     }
@@ -130,22 +161,28 @@ struct gpu_cuckoohashtable_adapter {
   };
   #undef FORALL_ARGUMENTS_GPU_CUCKOOHASHTABLE
 
-  template <uint32_t tile_size, bool use_hash_tag, typename... arg_types>
+  template <uint32_t tile_size, bool use_hash_tag, bool use_shmem_key, typename... arg_types>
   void do_insert(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template insert<use_hash_tag>(args...);
+      ->template insert<use_hash_tag, use_shmem_key>(args...);
   }
 
-  template <uint32_t tile_size, bool use_hash_tag, typename... arg_types>
+  template <uint32_t tile_size, bool use_hash_tag, bool use_shmem_key, typename... arg_types>
   void do_erase(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template erase<use_hash_tag>(args...);
+      ->template erase<use_hash_tag, true, use_shmem_key>(args...);
   }
 
-  template <uint32_t tile_size, bool lookup_concurrent, bool use_hash_tag, typename... arg_types>
+  template <uint32_t tile_size, bool lookup_concurrent, bool use_hash_tag, bool use_shmem_key, typename... arg_types>
   void do_find(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template find<lookup_concurrent, use_hash_tag>(args...);
+      ->template find<lookup_concurrent, use_hash_tag, use_shmem_key>(args...);
+  }
+
+  template <uint32_t tile_size, bool use_hash_tag, bool use_shmem_key, typename... arg_types>
+  void do_mixed(arg_types... args) {
+    reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
+      ->template mixed_batch<use_hash_tag, true, use_shmem_key>(args...);
   }
 
   configs configs_;

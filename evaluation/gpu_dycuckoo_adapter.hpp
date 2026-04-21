@@ -28,6 +28,7 @@
 
 struct gpu_dycuckoo_adapter {
   static constexpr bool is_ordered = false;
+  static constexpr bool support_mixed = false;
   using key_slice_type = uint32_t;
   using value_type = uint32_t;
   using size_type = uint32_t;
@@ -41,13 +42,14 @@ struct gpu_dycuckoo_adapter {
   void initialize() {
     if (configs_.use_lock) {
       index_ = gpu_dycuckoo_dynamic_lock_create(configs_.initial_capacity,
-                                                configs_.small_batch_size,
+                                                configs_.initial_capacity,
                                                 configs_.fill_factor_lower_bound,
-                                                configs_.fill_factor_upper_bound);
+                                                configs_.fill_factor_upper_bound,
+                                                configs_.keylen_max);
     }
     else {
       index_ = gpu_dycuckoo_dynamic_create(configs_.initial_capacity,
-                                           configs_.small_batch_size,
+                                           configs_.initial_capacity,
                                            configs_.fill_factor_lower_bound,
                                            configs_.fill_factor_upper_bound);
     }
@@ -101,18 +103,19 @@ struct gpu_dycuckoo_adapter {
       gpu_dycuckoo_dynamic_find(index_, keys, results, num_keys);
     }
   }
+  void print_stats() {}
 
  private:
   #define FORALL_ARGUMENTS_GPU_DYCUCKOO(x) \
     x(use_lock, bool, false) \
-    x(initial_capacity, uint32_t, 1000000) \
+    x(initial_capacity, uint32_t, 1024) \
     x(fill_factor_lower_bound, float, 0.5f) \
-    x(fill_factor_upper_bound, float, 0.8f) \
-    x(small_batch_size, int, 20000)
+    x(fill_factor_upper_bound, float, 0.8f)
   struct configs {
     #define DECLARE_ARGUMENTS(arg, type, default_value) type arg;
     FORALL_ARGUMENTS_GPU_DYCUCKOO(DECLARE_ARGUMENTS)
     #undef DECLARE_ARGUMENTS
+    uint32_t keylen_max;
     configs() {}
     configs(std::vector<std::string>& arguments) {
       #define PARSE_ARGUMENTS(arg, type, default_value) \
@@ -124,10 +127,15 @@ struct gpu_dycuckoo_adapter {
                      fill_factor_lower_bound < fill_factor_upper_bound &&
                      fill_factor_upper_bound <= 1.0f);
       #define PARSE_DEFAULT_ARGUMENTS(arg, type, default_value) \
-      [[maybe_unused]] auto arg = get_arg_value<type>(arguments, #arg).value_or(default_value);
+      [[maybe_unused]] auto tmp_##arg = get_arg_value<type>(arguments, #arg).value_or(default_value);
       FORALL_ARGUMENTS(PARSE_DEFAULT_ARGUMENTS)
       #undef PARSE_DEFAULT_ARGUMENTS
-      check_argument(keylen_max == 1);
+      check_argument(tmp_keylen_min == tmp_keylen_max);
+      check_argument(tmp_keylen_max == 1 || tmp_keylen_max == 2 || tmp_keylen_max == 4 || tmp_keylen_max == 8 || tmp_keylen_max == 16);
+      keylen_max = tmp_keylen_max;
+      if (keylen_max > 1) {
+        use_lock = true;
+      }
     }
 
     void print() const {

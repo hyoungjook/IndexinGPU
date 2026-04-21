@@ -109,14 +109,19 @@ int main(int argc, char** argv) {
   uint32_t min_key_length = get_arg_value<uint32_t>(arguments, "min-key-length").value_or(1u);
   uint32_t max_key_length = get_arg_value<uint32_t>(arguments, "max-key-length").value_or(1u);
   float common_prefix_ratio = get_arg_value<float>(arguments, "common-prefix-ratio").value_or(0.1f);
+  bool presort_ops = get_arg_value<bool>(arguments, "presort-ops").value_or(true);
+  if (presort_ops && (num_keys % 64 != 0)) {
+    std::cerr << "presort-ops require num-keys be multiple of 64" << std::endl;
+    exit(1);
+  }
   float insert_ratio = get_arg_value<float>(arguments, "insert-ratio").value_or(0.33f);
   float erase_ratio = get_arg_value<float>(arguments, "erase-ratio").value_or(0.33f);
   float find_ratio = 1.0f - insert_ratio - erase_ratio;
   if (find_ratio < 0.f) {
     std::cerr << "insert-ratio " << insert_ratio << " + erase_ratio " << erase_ratio << " > 1" << std::endl;
+    exit(1);
   }
-  float chain_allocator_pool_ratio = get_arg_value<float>(arguments, "chain-allocator-pool-ratio").value_or(0.5f);
-  float cuckoo_allocator_pool_ratio = get_arg_value<float>(arguments, "cuckoo-allocator-pool-ratio").value_or(0.1f);
+  float allocator_pool_ratio = get_arg_value<float>(arguments, "chain-allocator-pool-ratio").value_or(0.5f);
   bool verbose   = get_arg_value<bool>(arguments, "verbose").value_or(false);
   std::string dataset_file = get_arg_value<std::string>(arguments, "dataset-file").value_or("");
   std::size_t num_experiments = get_arg_value<std::size_t>(arguments, "num-experiments").value_or(1llu);
@@ -232,7 +237,9 @@ int main(int argc, char** argv) {
   for (uint32_t i = 0; i < 2 * half_num_keys; i++) {
     find_mix_order[i] = i;
   }
-  std::shuffle(mix_order.begin(), mix_order.end(), rng);
+  if (!presort_ops) {
+    std::shuffle(mix_order.begin(), mix_order.end(), rng);
+  }
   std::shuffle(insert_mix_order.begin(), insert_mix_order.end(), rng);
   std::shuffle(erase_mix_order.begin(), erase_mix_order.end(), rng);
   std::shuffle(find_mix_order.begin(), find_mix_order.end(), rng);
@@ -301,25 +308,25 @@ int main(int argc, char** argv) {
   mix_bench_hashtable<chainhashtable_tile32_type>(
     d_keys, d_lengths, d_values, half_num_keys,
     d_mix_types, d_mix_keys, d_mix_lengths, d_mix_values, half_num_keys,
-    max_key_length, total_num_inserts, chain_array_factor, num_experiments, chain_allocator_pool_ratio, verbose
+    max_key_length, total_num_inserts, chain_array_factor, num_experiments, allocator_pool_ratio, verbose
   );
   std::cout << "Benchmarking chainhashtable_tile16_type" << std::endl;
   mix_bench_hashtable<chainhashtable_tile16_type>(
     d_keys, d_lengths, d_values, half_num_keys,
     d_mix_types, d_mix_keys, d_mix_lengths, d_mix_values, half_num_keys,
-    max_key_length, total_num_inserts, chain_array_factor, num_experiments, chain_allocator_pool_ratio, verbose
+    max_key_length, total_num_inserts, chain_array_factor, num_experiments, allocator_pool_ratio, verbose
   );
   std::cout << "Benchmarking cuckoohashtable_tile32_type" << std::endl;
   mix_bench_hashtable<cuckoohashtable_tile32_type>(
     d_keys, d_lengths, d_values, half_num_keys,
     d_mix_types, d_mix_keys, d_mix_lengths, d_mix_values, half_num_keys,
-    max_key_length, total_num_inserts, cuckoo_fill_factor, num_experiments, cuckoo_allocator_pool_ratio, verbose
+    max_key_length, total_num_inserts, cuckoo_fill_factor, num_experiments, allocator_pool_ratio, verbose
   );
   std::cout << "Benchmarking cuckoohashtable_tile16_type" << std::endl;
   mix_bench_hashtable<cuckoohashtable_tile16_type>(
     d_keys, d_lengths, d_values, half_num_keys,
     d_mix_types, d_mix_keys, d_mix_lengths, d_mix_values, half_num_keys,
-    max_key_length, total_num_inserts, cuckoo_fill_factor, num_experiments, cuckoo_allocator_pool_ratio, verbose
+    max_key_length, total_num_inserts, cuckoo_fill_factor, num_experiments, allocator_pool_ratio, verbose
   );
   
 }

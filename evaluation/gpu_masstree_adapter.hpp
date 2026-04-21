@@ -25,6 +25,7 @@
 
 struct gpu_masstree_adapter {
   static constexpr bool is_ordered = true;
+  static constexpr bool support_mixed = true;
   using key_slice_type = uint32_t;
   using value_type = uint32_t;
   using size_type = uint32_t;
@@ -67,7 +68,9 @@ struct gpu_masstree_adapter {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_bool(configs_.enable_suffix, [&](auto t2, auto s2) {
         adapter_util::dispatch_bool(configs_.reuse_root, [&](auto t3, auto s3, auto r3) {
-          do_insert<t3.value, s3.value, r3.value>(keys, keylen_max, key_lengths, values, num_keys);
+          adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t4, auto s4, auto r4, auto k4) {
+            do_insert<t4.value, s4.value, r4.value, k4.value>(keys, keylen_max, key_lengths, values, num_keys);
+          }, t3, s3, r3);
         }, t2, s2);
       }, t1);
     });
@@ -77,9 +80,11 @@ struct gpu_masstree_adapter {
              const size_type* key_lengths,
              std::size_t num_keys) {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
-      adapter_util::dispatch_uint32<0, 1, 2, 3>(configs_.merge_level, [&](auto t2, auto m2) {
+      adapter_util::dispatch_uint32<0, 1, 2, 3, 4>(configs_.merge_level, [&](auto t2, auto m2) {
         adapter_util::dispatch_bool(configs_.reuse_root, [&](auto t3, auto m3, auto r3) {
-          do_erase<t3.value, m3.value, r3.value>(keys, keylen_max, key_lengths, num_keys);
+          adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t4, auto m4, auto r4, auto k4) {
+            do_erase<t4.value, m4.value, r4.value, k4.value>(keys, keylen_max, key_lengths, num_keys);
+          }, t3, m3, r3);
         }, t2, m2);
       }, t1);
     });
@@ -92,7 +97,9 @@ struct gpu_masstree_adapter {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_bool(configs_.lookup_concurrent, [&](auto t2, auto c2) {
         adapter_util::dispatch_bool(configs_.reuse_root, [&](auto t3, auto c3, auto r3) {
-          do_find<t3.value, c3.value, r3.value>(keys, keylen_max, key_lengths, results, num_keys);
+          adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t4, auto c4, auto r4, auto k4) {
+            do_find<t4.value, c4.value, r4.value, k4.value>(keys, keylen_max, key_lengths, results, num_keys);
+          }, t3, c3, r3);
         }, t2, c2);
       }, t1);
     });
@@ -108,22 +115,52 @@ struct gpu_masstree_adapter {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_bool(configs_.lookup_concurrent, [&](auto t2, auto c2) {
         adapter_util::dispatch_bool(configs_.reuse_root, [&](auto t3, auto c3, auto r3) {
-          do_scan<t3.value, c3.value, r3.value>(keys, key_lengths, keylen_max, count, num_keys,
-                                                nullptr, nullptr, nullptr, results, nullptr, nullptr);
+          adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t4, auto c4, auto r4, auto k4) {
+            do_scan<t4.value, c4.value, r4.value, k4.value>(keys, key_lengths, keylen_max, count, num_keys,
+                                                            nullptr, nullptr, nullptr, results, nullptr, nullptr);
+          }, t3, c3, r3);
         }, t2, c2);
       }, t1);
     });
+  }
+  void mixed_batch(const kernels::request_type* types,
+                   const key_slice_type* keys,
+                   uint32_t keylen_max,
+                   const size_type* key_lengths,
+                   value_type* values,
+                   std::size_t num_keys) {
+    adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
+      adapter_util::dispatch_bool(configs_.enable_suffix, [&](auto t2, auto s2) {
+        adapter_util::dispatch_uint32<0, 1, 2, 3, 4>(configs_.merge_level, [&](auto t3, auto s3, auto m3) {
+          adapter_util::dispatch_bool(configs_.reuse_root, [&](auto t4, auto s4, auto m4, auto r4) {
+            adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t5, auto s5, auto m5, auto r5, auto k5) {
+              do_mixed<t5.value, s5.value, m5.value, r5.value, k5.value>(types, keys, keylen_max, key_lengths, values, nullptr, num_keys);
+            }, t4, s4, m4, r4);
+          }, t3, s3, m3);
+        }, t2, s2);
+      }, t1);
+    });
+  }
+  void print_stats() {
+    allocator_->print_stats();
+    //if (configs_.tile_size == 32) {
+    //  reinterpret_cast<index32_type*>(index_)->validate();
+    //}
+    //else {
+    //  reinterpret_cast<index16_type*>(index_)->validate();
+    //}
   }
 
  private:
   #define FORALL_ARGUMENTS_GPU_MASSTREE(x) \
     x(allocator_pool_ratio, float, 0.9f) \
-    x(tile_size, uint32_t, 32) \
-    x(lookup_concurrent, bool, true) \
+    x(tile_size, uint32_t, 16) \
+    x(lookup_concurrent, bool, false) \
     x(enable_suffix, bool, true) \
-    /* merge_level: 0(naive) 1(concurrent) 2(merge) 3(remove_root) */ \
-    x(merge_level, uint32_t, 3) \
-    x(reuse_root, bool, true)
+    /* merge_level: 0(naive) 1(concurrent) 2(merge) 3(pessimistic_merge) 4(remove_root) */ \
+    x(merge_level, uint32_t, 4) \
+    x(reuse_root, bool, true) \
+    x(use_shmem_key, bool ,false)
   struct configs {
     #define DECLARE_ARGUMENTS(arg, type, default_value) type arg;
     FORALL_ARGUMENTS_GPU_MASSTREE(DECLARE_ARGUMENTS)
@@ -135,7 +172,7 @@ struct gpu_masstree_adapter {
       FORALL_ARGUMENTS_GPU_MASSTREE(PARSE_ARGUMENTS)
       #undef PARSE_ARGUMENTS
       check_argument(tile_size == 32 || tile_size == 16);
-      check_argument(merge_level <= 3);
+      check_argument(merge_level <= 4);
     }
     void print() const {
       #define PRINT_ARGUMENTS(arg, type, default_value) \
@@ -146,28 +183,34 @@ struct gpu_masstree_adapter {
   };
   #undef FORALL_ARGUMENTS_GPU_MASSTREE
 
-  template <uint32_t tile_size, bool enable_suffix, bool reuse_root, typename... arg_types>
+  template <uint32_t tile_size, bool enable_suffix, bool reuse_root, bool use_shmem_key, typename... arg_types>
   void do_insert(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template insert<enable_suffix, reuse_root>(args...);
+      ->template insert<enable_suffix, reuse_root, use_shmem_key>(args...);
   }
 
-  template <uint32_t tile_size, uint32_t merge_level, bool reuse_root, typename... arg_types>
+  template <uint32_t tile_size, uint32_t merge_level, bool reuse_root, bool use_shmem_key, typename... arg_types>
   void do_erase(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template erase<merge_level >= 3, merge_level >= 2, merge_level >= 1, reuse_root>(args...);
+      ->template erase<merge_level >= 4, merge_level >= 3, merge_level >= 2, merge_level >= 1, reuse_root, use_shmem_key>(args...);
   }
 
-  template <uint32_t tile_size, bool lookup_concurrent, bool reuse_root, typename... arg_types>
+  template <uint32_t tile_size, bool lookup_concurrent, bool reuse_root, bool use_shmem_key, typename... arg_types>
   void do_find(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template find<lookup_concurrent, reuse_root>(args...);
+      ->template find<lookup_concurrent, reuse_root, use_shmem_key>(args...);
   }
 
-  template <uint32_t tile_size, bool lookup_concurrent, bool reuse_root, typename... arg_types>
+  template <uint32_t tile_size, bool lookup_concurrent, bool reuse_root, bool use_shmem_key, typename... arg_types>
   void do_scan(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template scan<false, lookup_concurrent, reuse_root>(args...);
+      ->template scan<false, lookup_concurrent, reuse_root, use_shmem_key>(args...);
+  }
+
+  template <uint32_t tile_size, bool enable_suffix, uint32_t merge_level, bool reuse_root, bool use_shmem_key, typename... arg_types>
+  void do_mixed(arg_types... args) {
+    reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
+      ->template mixed_batch<enable_suffix, merge_level >= 4, merge_level >= 3, merge_level >= 2, reuse_root, use_shmem_key>(args...);
   }
 
   configs configs_;

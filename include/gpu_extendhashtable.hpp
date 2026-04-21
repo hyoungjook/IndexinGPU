@@ -42,7 +42,7 @@ namespace GpuExtendHashtable {
 
 template <typename Allocator,
           typename Reclaimer,
-          uint32_t tile_size = 32>
+          uint32_t tile_size = 16>
 struct gpu_extendhashtable {
   using size_type = uint32_t;
   using elem_type = uint32_t;
@@ -80,6 +80,11 @@ struct gpu_extendhashtable {
       , initial_directory_size_(initial_directory_size)
       , resize_policy_(resize_policy)
       , load_factor_threshold_(load_factor_threshold) {
+    if (initial_directory_size == 0 || initial_directory_size % 32 != 0) {
+      fprintf(stderr, "Invalid initial_directory_size %u for GPUExtendHT: "
+                      "Must be multiple of 32\n", initial_directory_size);
+      exit(1);
+    }
     if ((resize_policy >= 0 && (resize_policy > 2.0f || resize_policy <= 1.0f)) ||
         (resize_policy < 0 && (static_cast<size_type>(-resize_policy) % 32 != 0))) {
       fprintf(stderr, "Invalid resize_policy %f for GPUExtendHT: "
@@ -110,7 +115,8 @@ struct gpu_extendhashtable {
   template <bool concurrent = false,
             bool use_hash_tag = true,
             bool tag_use_same_hash = true,
-            bool reuse_dirsize = true>
+            bool reuse_dirsize = true,
+            bool use_shmem_key = false>
   void find(const key_slice_type* keys,
             const size_type max_key_length,
             const size_type* key_lengths,
@@ -119,13 +125,14 @@ struct gpu_extendhashtable {
             cudaStream_t stream = 0) {
     kernels::GpuExtendHashtable::find_device_func<gpu_extendhashtable, concurrent, use_hash_tag, tag_use_same_hash, reuse_dirsize>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values};
-    kernels::launch_batch_kernel(*this, func, num_keys, stream);
+    kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
 
   template <bool use_hash_tag = true,
             bool tag_use_same_hash = true,
             bool do_merge_chains = true,
-            bool reuse_dirsize = true>
+            bool reuse_dirsize = true,
+            bool use_shmem_key = false>
   void insert(const key_slice_type* keys,
               const size_type max_key_length,
               const size_type* key_lengths,
@@ -135,14 +142,15 @@ struct gpu_extendhashtable {
               bool update_if_exists = false) {
     kernels::GpuExtendHashtable::insert_device_func<gpu_extendhashtable, use_hash_tag, tag_use_same_hash, do_merge_chains, reuse_dirsize>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .update_if_exists = update_if_exists};
-    kernels::launch_batch_kernel(*this, func, num_keys, stream);
+    kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
 
   template <bool use_hash_tag = true,
             bool tag_use_same_hash = true,
             bool do_merge_buckets = true,
             bool do_merge_chains = true,
-            bool reuse_dirsize = true>
+            bool reuse_dirsize = true,
+            bool use_shmem_key = false>
   void erase(const key_slice_type* keys,
              const size_type max_key_length,
              const size_type* key_lengths,
@@ -150,14 +158,15 @@ struct gpu_extendhashtable {
              cudaStream_t stream = 0) {
     kernels::GpuExtendHashtable::erase_device_func<gpu_extendhashtable, use_hash_tag, tag_use_same_hash, do_merge_chains, do_merge_buckets, reuse_dirsize>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths};
-    kernels::launch_batch_kernel(*this, func, num_keys, stream);
+    kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
 
   template <bool use_hash_tag = true,
             bool tag_use_same_hash = true,
             bool do_merge_chains = true,
             bool erase_do_merge_buckets = true,
-            bool reuse_dirsize = true>
+            bool reuse_dirsize = true,
+            bool use_shmem_key = false>
   void mixed_batch(const kernels::request_type* request_types,
                    const key_slice_type* keys,
                    const size_type max_key_length,
@@ -169,7 +178,7 @@ struct gpu_extendhashtable {
                    bool insert_update_if_exists = false) {
     kernels::GpuExtendHashtable::mixed_device_func<gpu_extendhashtable, use_hash_tag, tag_use_same_hash, do_merge_chains, erase_do_merge_buckets, reuse_dirsize>
       func{.d_types = request_types, .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .d_results = results, .insert_update_if_exists = insert_update_if_exists};
-    kernels::launch_batch_kernel(*this, func, num_requests, stream);
+    kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_requests, stream);
   }
 
   // device-side APIs
@@ -179,9 +188,9 @@ struct gpu_extendhashtable {
     return directory_size;
   }
 
-  template <bool concurrent, bool use_hash_tag, bool tag_use_same_hash, typename tile_type>
+  template <bool concurrent, bool use_hash_tag, bool tag_use_same_hash, typename tile_type, typename keyptr_or_keystore>
   DEVICE_QUALIFIER value_type cooperative_find_from_dirsize(size_type& directory_size,
-                                                            const key_slice_type* key,
+                                                            keyptr_or_keystore& key,
                                                             size_type key_length,
                                                             const tile_type& tile,
                                                             device_allocator_context_type& allocator) {
@@ -219,8 +228,8 @@ struct gpu_extendhashtable {
     return invalid_value;
   }
 
-  template <bool concurrent, bool use_hash_tag, bool tag_use_same_hash, typename tile_type>
-  DEVICE_QUALIFIER value_type cooperative_find(const key_slice_type* key,
+  template <bool concurrent, bool use_hash_tag, bool tag_use_same_hash, typename tile_type, typename keyptr_or_keystore>
+  DEVICE_QUALIFIER value_type cooperative_find(keyptr_or_keystore& key,
                                                size_type key_length,
                                                const tile_type& tile,
                                                device_allocator_context_type& allocator) {
@@ -229,9 +238,9 @@ struct gpu_extendhashtable {
         directory_size, key, key_length, tile, allocator);
   }
 
-  template <bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains, typename tile_type>
+  template <bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains, typename tile_type, typename keyptr_or_keystore>
   DEVICE_QUALIFIER bool cooperative_insert_from_dirsize(size_type& directory_size,
-                                                        const key_slice_type* key,
+                                                        keyptr_or_keystore& key,
                                                         const size_type key_length,
                                                         const value_type& value,
                                                         const tile_type& tile,
@@ -458,8 +467,8 @@ struct gpu_extendhashtable {
     assert(false);
   }
 
-  template <bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains, typename tile_type>
-  DEVICE_QUALIFIER bool cooperative_insert(const key_slice_type* key,
+  template <bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains, typename tile_type, typename keyptr_or_keystore>
+  DEVICE_QUALIFIER bool cooperative_insert(keyptr_or_keystore& key,
                                            const size_type key_length,
                                            const value_type& value,
                                            const tile_type& tile,
@@ -471,9 +480,9 @@ struct gpu_extendhashtable {
         directory_size, key, key_length, value, tile, allocator, reclaimer);
   }
 
-  template <bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains, bool do_merge_buckets, typename tile_type>
+  template <bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains, bool do_merge_buckets, typename tile_type, typename keyptr_or_keystore>
   DEVICE_QUALIFIER bool cooperative_erase_from_dirsize(size_type& directory_size,
-                                                       const key_slice_type* key,
+                                                       keyptr_or_keystore& key,
                                                        const size_type key_length,
                                                        const tile_type& tile,
                                                        device_allocator_context_type& allocator,
@@ -573,7 +582,7 @@ struct gpu_extendhashtable {
                   node1.template store_to_allocator<true>();
                   auto local_depth_mask = (1u << local_depth);
                   directory_size = d_global_state_->template load_directory_size<true, true>(tile);
-                  for (size_type index = bucket_index; index < directory_size; index += local_depth_mask) {
+                  for (size_type index = bucket_index; index < directory_size; index += (tile_type::size() * local_depth_mask)) {
                     size_type lane_index = index + local_depth_mask * tile.thread_rank();
                     if (lane_index < directory_size) {
                       directory_entry_at(lane_index, allocator) = head1_index;
@@ -605,8 +614,8 @@ struct gpu_extendhashtable {
     }
   }
 
-  template <bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains, bool do_merge_buckets, typename tile_type>
-  DEVICE_QUALIFIER bool cooperative_erase(const key_slice_type* key,
+  template <bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains, bool do_merge_buckets, typename tile_type, typename keyptr_or_keystore>
+  DEVICE_QUALIFIER bool cooperative_erase(keyptr_or_keystore& key,
                                           const size_type key_length,
                                           const tile_type& tile,
                                           device_allocator_context_type& allocator,
@@ -745,11 +754,11 @@ struct gpu_extendhashtable {
     }
   }
 
-  template <bool concurrent, bool use_hash_tag, bool count_keys, typename tile_type>
+  template <bool concurrent, bool use_hash_tag, bool count_keys, typename tile_type, typename keyptr_or_keystore>
   DEVICE_QUALIFIER int coop_traverse_until_found(hashtable_node<tile_type, device_allocator_context_type>& node,
                                                  const key_slice_type& first_slice,
                                                  bool more_key,
-                                                 const key_slice_type* key,
+                                                 keyptr_or_keystore& key,
                                                  const size_type& key_length,
                                                  suffix_node<tile_type, device_allocator_context_type>& suffix_if_found,
                                                  const tile_type& tile,
@@ -793,11 +802,11 @@ struct gpu_extendhashtable {
     return -1;
   }
 
-  template <bool use_hash_tag, bool count_keys, typename tile_type>
+  template <bool use_hash_tag, bool count_keys, typename tile_type, typename keyptr_or_keystore>
   DEVICE_QUALIFIER int coop_traverse_until_found_merge(hashtable_node<tile_type, device_allocator_context_type>& node,
                                                        const key_slice_type& first_slice,
                                                        bool more_key,
-                                                       const key_slice_type* key,
+                                                       keyptr_or_keystore& key,
                                                        const size_type& key_length,
                                                        suffix_node<tile_type, device_allocator_context_type>& suffix_if_found,
                                                        const tile_type& tile,
@@ -806,7 +815,6 @@ struct gpu_extendhashtable {
                                                        uint32_t& num_total_keys) {
     using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
-    bool current_node_store_deferred = false;
     while (true) {
       if constexpr (count_keys) { num_total_keys += node.num_keys(); }
       uint32_t to_check = node.match_key_in_node(first_slice, more_key);
@@ -821,7 +829,6 @@ struct gpu_extendhashtable {
           if (suffix.streq(key + suffix_offset, key_length - suffix_offset)) {
             // found
             suffix_if_found = suffix;
-            // current_node_store_deferred: USER SHOULD STORE the node returned
             return cur_location;
           }
           to_check &= ~(1u << cur_location);
@@ -831,13 +838,8 @@ struct gpu_extendhashtable {
         // if length == 1, match means match
         if (to_check != 0) {
           // found
-          // current_node_store_deferred: USER SHOULD STORE the node returned
           return __ffs(to_check) - 1;
         }
-      }
-      if (current_node_store_deferred) {
-        node.template store_to_allocator<false>();  // future unlock will do memory_order_release
-        current_node_store_deferred = false;
       }
       // done searching this node, move on to next
       if (!node.has_next()) { break; }
@@ -846,7 +848,7 @@ struct gpu_extendhashtable {
       next_node.template load_from_allocator<false>();  // first load after lock did memory_order_acquire
       if (node.is_mergeable(next_node)) {
         node.merge(next_node);
-        current_node_store_deferred = true;
+        node.template store_to_allocator<false>();  // future unlock will do memory_order_release
         reclaimer.retire(next_index, tile);
       }
       else {
@@ -1020,7 +1022,7 @@ struct gpu_extendhashtable {
   template <uint32_t _tile_size, typename extendhashtable>
   friend __global__ void kernels::GpuExtendHashtable::initialize_kernel(extendhashtable);
 
-  template <bool do_reclaim, uint32_t _tile_size, typename device_func, typename index_type>
+  template <bool do_reclaim, uint32_t _tile_size, bool use_shmem_key, typename device_func, typename index_type>
   friend __global__ void kernels::batch_kernel(index_type index,
                                               const device_func func,
                                               uint32_t num_requests);

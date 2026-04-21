@@ -37,8 +37,9 @@ struct simple_slab_linear_allocator {
   static_assert(num_slabs_in_block_ == 16 * sizeof(uint64_t) * 8);
   static constexpr uint32_t block_size_ = slab_size_ * num_slabs_in_block_;
   static constexpr uint32_t blocks_delta_ = 8 * 1024;
-  static constexpr float load_factor_threshold_ = 0.8f;
+  static constexpr float load_factor_threshold_ = 0.95f;
   static constexpr uint32_t check_load_factor_every_ = 128;
+  static constexpr float initial_slab_ratio = 0.9f;
   struct global_counters {
     size_type slab_block_count_;  // grows upward from the bottom
     size_type linear_count_;      // grows downward from the top
@@ -71,7 +72,7 @@ struct simple_slab_linear_allocator {
     cuda_try(cudaMemset(pool_, 0x00, total_bitmap_bytes));
     pool_ = reinterpret_cast<void*>(reinterpret_cast<uint8_t*>(pool_) + total_bitmap_bytes);
     cuda_try(cudaMalloc(&counts_, sizeof(global_counters)));
-    auto initial_blocks = (total_blocks_ / 4 + blocks_delta_ - 1) / blocks_delta_ * blocks_delta_;
+    auto initial_blocks = (static_cast<pointer_type>(initial_slab_ratio * total_blocks_) + blocks_delta_ - 1) / blocks_delta_ * blocks_delta_;
     global_counters h_counts(initial_blocks);
     cuda_try(cudaMemcpy(counts_, &h_counts, sizeof(global_counters), cudaMemcpyHostToDevice));
   }
@@ -190,8 +191,15 @@ struct device_allocator_context<simple_slab_linear_allocator<slab_size>> {
     return (utils::finalize(p) % check_load_factor_every_ == 0) ? 1 : 0;
   }
   template <typename tile_type>
-  DEVICE_QUALIFIER void deallocate_perlane_finish_sync(uint32_t sum, const tile_type& tile) {
-    sum = cooperative_groups::reduce(tile, sum, cooperative_groups::plus<uint32_t>());
+  DEVICE_QUALIFIER void deallocate_perlane_finish(uint32_t sum, const tile_type& tile) {
+    if constexpr (tile_type::size() <= 32) {
+      for (int offset = tile_type::size() / 2; offset >= 1; offset >>= 1) {
+        sum += tile.shfl_down(sum, offset);
+      }
+    }
+    else {
+      sum = cooperative_groups::reduce(tile, sum, cooperative_groups::plus<uint32_t>());
+    }
     if (tile.thread_rank() == 0) {
       cuda::atomic_ref<size_type, cuda::thread_scope_device> num_slabs_ref(alloc_.counts_->num_slabs_);
       num_slabs_ref.fetch_sub(sum, cuda::memory_order_relaxed);
@@ -319,6 +327,7 @@ private:
         reinterpret_cast<bitmap_type*>(bitmap_base) + bitmap_index;
     bitmap_type mask = static_cast<bitmap_type>(1) << bit_index;
     cuda::atomic_ref<bitmap_type, cuda::thread_scope_device> bitmap_ref(*bitmap_addr);
-    bitmap_ref.fetch_and(~mask, cuda::memory_order_relaxed);
+    [[maybe_unused]] auto old = bitmap_ref.fetch_and(~mask, cuda::memory_order_relaxed);
+    assert((old & mask) != 0);  // double free
   }
 };

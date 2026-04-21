@@ -39,6 +39,7 @@ using size_type = uint32_t;
 template <typename masstree_type,
           bool enable_suffix = true,
           bool erase_remove_empty_root = true,
+          bool erase_pessimistic_merge = true,
           bool erase_merge = true,
           bool erase_concurrent = true,
           bool reuse_root = true>
@@ -135,8 +136,9 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
     uint32_t num_erase = (uint32_t)(((float)num_keys) * erase_ratio);
     erase_timer.start_timer();
     tree.template erase<erase_remove_empty_root,
-                        erase_merge || erase_remove_empty_root,
-                        erase_concurrent || erase_merge || erase_remove_empty_root,
+                        erase_pessimistic_merge || erase_remove_empty_root,
+                        erase_merge || erase_pessimistic_merge || erase_remove_empty_root,
+                        erase_concurrent || erase_merge || erase_pessimistic_merge || erase_remove_empty_root,
                         reuse_root>(
       d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), num_erase);
     erase_timer.stop_timer();

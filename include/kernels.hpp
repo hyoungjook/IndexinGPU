@@ -19,21 +19,16 @@
 #define _CG_ABI_EXPERIMENTAL
 #include <cooperative_groups.h>
 #include <macros.hpp>
+#include <varlen_key_store.hpp>
 #include <simple_dummy_reclaim.hpp>
 #include <simple_debra_reclaim.hpp>
 
 namespace cg = cooperative_groups;
 namespace kernels {
 
-enum request_type: uint8_t {
-  request_type_insert = 0,
-  request_type_erase = 1,
-  request_type_find = 2
-};
-
 static constexpr auto target_blocks_per_sm = 8;
 
-template <bool do_reclaim, uint32_t tile_size, typename device_func, typename index_type>
+template <bool do_reclaim, uint32_t tile_size, bool use_shmem_key, typename device_func, typename index_type>
 __launch_bounds__(index_type::host_reclaimer_type::block_size_, target_blocks_per_sm)
 __global__ void batch_kernel(index_type index,
                              const device_func func,
@@ -43,9 +38,10 @@ __global__ void batch_kernel(index_type index,
   using reclaimer_type = typename index_type::device_reclaimer_context_type;
   __shared__ cg::block_tile_memory<reclaimer_type::block_size_> block_tile_shmem;
   auto block = cg::this_thread_block(block_tile_shmem);
-  auto tile = cg::tiled_partition<tile_size>(block);
-  allocator_type allocator{index.allocator_, tile};
   auto block_wide_tile = cg::tiled_partition<reclaimer_type::block_size_>(block);
+  utils::tile::lightweight_tiled_partition<32> warp_wide_tile;
+  utils::tile::lightweight_tiled_partition<tile_size> tile;
+  allocator_type allocator{index.allocator_, tile};
   extern __shared__ uint32_t reclaimer_shmem_buffer[];
   reclaimer_type reclaimer{index.reclaimer_,
                            (do_reclaim && reclaimer_type::required_shmem_size() > 0) ? &reclaimer_shmem_buffer[0] : nullptr,
@@ -54,47 +50,72 @@ __global__ void batch_kernel(index_type index,
   uint32_t block_size = blockDim.x;
   uint32_t num_request_blocks = (num_requests + block_size - 1) / block_size;
   uint32_t num_worker_blocks = gridDim.x;
+  [[maybe_unused]] uint32_t* key_shmem_buffer;
+  if constexpr (use_shmem_key) {
+    key_shmem_buffer = reclaimer_shmem_buffer +
+      (do_reclaim ? reclaimer_type::required_shmem_size() : 0) +
+      utils::varlen_key_store::shmem_buffer_size * (threadIdx.x / tile_size);
+  }
   for (uint32_t thread_id = threadIdx.x + blockIdx.x * blockDim.x;
        thread_id < (num_request_blocks * block_size);
        thread_id += (num_worker_blocks * block_size)) {
     bool task_exists = (thread_id < num_requests);
     typename device_func::dev_regs regs;
     if constexpr (do_reclaim) { reclaimer.begin_critical_section(block_wide_tile, allocator); }
+    func.load_root(regs, index, warp_wide_tile, tile, allocator);
     auto work_queue = tile.ballot(task_exists);
     if (work_queue) {
       func.load(regs, index, tile, allocator, thread_id, task_exists);
     }
     while (work_queue) {
       int cur_rank = __ffs(work_queue) - 1;
-      func.exec(index, regs, tile, allocator, reclaimer, cur_rank);
+      func.template exec<use_shmem_key>(index, regs, tile, allocator, reclaimer, key_shmem_buffer, cur_rank);
       if (tile.thread_rank() == cur_rank) { task_exists = false; }
       work_queue = tile.ballot(task_exists);
     }
     if constexpr (do_reclaim) { reclaimer.end_critical_section(block_wide_tile); }
     if (thread_id < num_requests) { func.store(regs, thread_id); }
   }
-  auto warp_wide_tile = cg::tiled_partition<32>(block);
   if constexpr (do_reclaim) { reclaimer.drain_all(block_wide_tile, warp_wide_tile, allocator); }
 }
 
-template <typename index_type, typename device_func>
+template <bool use_shmem_key, typename index_type, typename device_func>
 void launch_batch_kernel(index_type& index, const device_func& func, uint32_t num_requests, cudaStream_t stream) {
   static constexpr bool do_reclaim = device_func::reclaim_required;
   int block_size = index_type::host_reclaimer_type::block_size_;
   std::size_t shmem_size = do_reclaim ? sizeof(uint32_t) * index_type::device_reclaimer_context_type::required_shmem_size() : 0;
+  if (use_shmem_key) {
+    shmem_size += sizeof(typename index_type::key_slice_type) *
+                  utils::varlen_key_store::shmem_buffer_size *
+                  (block_size / index_type::tile_size_);
+  }
   int num_blocks_per_sm;
   cudaOccupancyMaxActiveBlocksPerMultiprocessor(
     &num_blocks_per_sm,
-    kernels::batch_kernel<do_reclaim, index_type::tile_size_, device_func, index_type>,
+    kernels::batch_kernel<do_reclaim, index_type::tile_size_, use_shmem_key, device_func, index_type>,
     block_size,
     shmem_size);
   cudaDeviceProp device_prop;
   cudaGetDeviceProperties(&device_prop, 0);
   uint32_t num_blocks = num_blocks_per_sm * device_prop.multiProcessorCount;
 
-  kernels::batch_kernel<do_reclaim, index_type::tile_size_><<<num_blocks, block_size, shmem_size, stream>>>(
+  kernels::batch_kernel<do_reclaim, index_type::tile_size_, use_shmem_key><<<num_blocks, block_size, shmem_size, stream>>>(
       index, func, num_requests);
 }
+
+namespace detail {
+
+template <bool use_shmem_key, typename key_slice_type, typename size_type, typename tile_type>
+DEVICE_QUALIFIER auto make_key(const key_slice_type* key_ptr, size_type& key_length, key_slice_type* shmem_buffer, const tile_type& tile) {
+  if constexpr (use_shmem_key) {
+    return utils::varlen_key_store(shmem_buffer, key_ptr, key_length, tile);
+  }
+  else {
+    return key_ptr;
+  }
+}
+
+} // namespace detail
 
 namespace GpuMasstree {
 
@@ -128,6 +149,12 @@ struct insert_device_func {
     elem_type root_lane_elem;
   };
   // device-side functions
+  template <typename warp_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void load_root(dev_regs& regs, masstree& tree, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
+    if constexpr (reuse_root) {
+      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(warp_tile, tile, allocator);
+    }
+  }
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
@@ -135,15 +162,12 @@ struct insert_device_func {
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
       regs.value = d_values[thread_id];
     }
-    if constexpr (reuse_root) {
-      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(tile, allocator);
-    }
   }
-  template <typename tile_type, typename allocator_type, typename reclaimer_type>
-  DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
-    auto cur_key = tile.shfl(regs.key, cur_rank);
+  template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_value = tile.shfl(regs.value, cur_rank);
+    auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
     if constexpr (reuse_root) {
       tree.template cooperative_insert_from_root<enable_suffix>(regs.root_lane_elem, cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, update_if_exists);
     }
@@ -174,20 +198,23 @@ struct find_device_func {
     elem_type root_lane_elem;
   };
   // device-side functions
+  template <typename warp_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void load_root(dev_regs& regs, masstree& tree, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
+    if constexpr (reuse_root) {
+      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(warp_tile, tile, allocator);
+    }
+  }
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
       regs.key = &d_keys[max_key_length * thread_id];
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
     }
-    if constexpr (reuse_root) {
-      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(tile, allocator);
-    }
   }
-  template <typename tile_type, typename allocator_type, typename reclaimer_type>
-  DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
-    auto cur_key = tile.shfl(regs.key, cur_rank);
+  template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
+    auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
     auto cur_value = reuse_root ?
       tree.template cooperative_find_from_root<concurrent>(regs.root_lane_elem, cur_key ,cur_key_length, tile, allocator) :
       tree.template cooperative_find<concurrent>(cur_key, cur_key_length, tile, allocator);
@@ -200,7 +227,7 @@ struct find_device_func {
   }
 };
 
-template <typename masstree, bool concurrent, bool do_merge, bool do_remove_empty_root, bool reuse_root>
+template <typename masstree, bool concurrent, bool do_merge, bool pessimistic_merge, bool do_remove_empty_root, bool reuse_root>
 struct erase_device_func {
   using key_slice_type = typename masstree::key_slice_type;
   using size_type = typename masstree::size_type;
@@ -218,25 +245,28 @@ struct erase_device_func {
     elem_type root_lane_elem;
   };
   // device-side functions
+  template <typename warp_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void load_root(dev_regs& regs, masstree& tree, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
+    if constexpr (reuse_root) {
+      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(warp_tile, tile, allocator);
+    }
+  }
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
       regs.key = &d_keys[max_key_length * thread_id];
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
     }
-    if constexpr (reuse_root) {
-      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(tile, allocator);
-    }
   }
-  template <typename tile_type, typename allocator_type, typename reclaimer_type>
-  DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
-    auto cur_key = tile.shfl(regs.key, cur_rank);
+  template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
+    auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
     if constexpr (reuse_root) {
-      tree.template cooperative_erase_from_root<concurrent, do_merge, do_remove_empty_root>(regs.root_lane_elem, cur_key, cur_key_length, tile, allocator, reclaimer);
+      tree.template cooperative_erase_from_root<concurrent, do_merge, pessimistic_merge, do_remove_empty_root>(regs.root_lane_elem, cur_key, cur_key_length, tile, allocator, reclaimer);
     }
     else {
-      tree.template cooperative_erase<concurrent, do_merge, do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, reclaimer);
+      tree.template cooperative_erase<concurrent, do_merge, pessimistic_merge, do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, reclaimer);
     }
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
@@ -273,6 +303,12 @@ struct scan_device_func {
     elem_type root_lane_elem;
   };
   // device-side functions
+  template <typename warp_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void load_root(dev_regs& regs, masstree& tree, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
+    if constexpr (reuse_root) {
+      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(warp_tile, tile, allocator);
+    }
+  }
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
@@ -284,19 +320,16 @@ struct scan_device_func {
       regs.out_key = d_out_keys ? &d_out_keys[max_count_per_query * max_key_length * thread_id] : nullptr;
       regs.out_key_length = d_out_key_lengths ? &d_out_key_lengths[max_count_per_query * thread_id] : nullptr;
     }
-    if constexpr (reuse_root) {
-      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(tile, allocator);
-    }
   }
-  template <typename tile_type, typename allocator_type, typename reclaimer_type>
-  DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
-    auto cur_lower_key = tile.shfl(regs.lower_key, cur_rank);
+  template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_lower_key_length = tile.shfl(regs.lower_key_length, cur_rank);
     auto cur_upper_key = tile.shfl(regs.upper_key, cur_rank);
     auto cur_upper_key_length = tile.shfl(regs.upper_key_length, cur_rank);
     auto cur_value = tile.shfl(regs.value, cur_rank);
     auto cur_out_key = tile.shfl(regs.out_key, cur_rank);
     auto cur_out_key_length = tile.shfl(regs.out_key_length, cur_rank);
+    auto cur_lower_key = detail::make_key<use_shmem_key>(tile.shfl(regs.lower_key, cur_rank), cur_lower_key_length, key_shmem_buffer, tile);
     auto cur_count = reuse_root ?
       tree.template cooperative_scan_from_root<use_upper_key, concurrent>(
         regs.root_lane_elem,
@@ -317,6 +350,7 @@ struct scan_device_func {
 template <typename masstree,
           bool enable_suffix,
           bool erase_do_merge,
+          bool erase_pessimistic_merge,
           bool erase_do_remove_empty_root,
           bool reuse_root>
 struct mixed_device_func {
@@ -343,6 +377,12 @@ struct mixed_device_func {
     elem_type root_lane_elem;
   };
   // device-side functions
+  template <typename warp_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void load_root(dev_regs& regs, masstree& tree, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
+    if constexpr (reuse_root) {
+      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(warp_tile, tile, allocator);
+    }
+  }
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
@@ -351,15 +391,12 @@ struct mixed_device_func {
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
       regs.value = d_values[thread_id];
     }
-    if constexpr (reuse_root) {
-      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(tile, allocator);
-    }
   }
-  template <typename tile_type, typename allocator_type, typename reclaimer_type>
-  DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
+  template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_type = tile.shfl(regs.type, cur_rank);
-    auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
+    auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
     if (cur_type == request_type_insert) {
       auto cur_value = tile.shfl(regs.value, cur_rank);
       auto cur_result = reuse_root ?
@@ -375,8 +412,8 @@ struct mixed_device_func {
     }
     else if (cur_type == request_type_erase) {
       auto cur_result = reuse_root ?
-        tree.template cooperative_erase_from_root<true, erase_do_merge, erase_do_remove_empty_root>(regs.root_lane_elem, cur_key, cur_key_length, tile, allocator, reclaimer) :
-        tree.template cooperative_erase<true, erase_do_merge, erase_do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, reclaimer);
+        tree.template cooperative_erase_from_root<true, erase_do_merge, erase_pessimistic_merge, erase_do_remove_empty_root>(regs.root_lane_elem, cur_key, cur_key_length, tile, allocator, reclaimer) :
+        tree.template cooperative_erase<true, erase_do_merge, erase_pessimistic_merge, erase_do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, reclaimer);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else {  // request_type_successor
@@ -438,6 +475,8 @@ struct insert_device_func {
     value_type value;
   };
   // device-side functions
+  template <typename warp_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const noexcept {}
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
@@ -446,11 +485,11 @@ struct insert_device_func {
       regs.value = d_values[thread_id];
     }
   }
-  template <typename tile_type, typename allocator_type, typename reclaimer_type>
-  DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
-    auto cur_key = tile.shfl(regs.key, cur_rank);
+  template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_value = tile.shfl(regs.value, cur_rank);
+    auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
     table.template cooperative_insert<use_hash_tag>(cur_key, cur_key_length, cur_value, tile, allocator, update_if_exists);
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
@@ -474,6 +513,8 @@ struct find_device_func {
     value_type value;
   };
   // device-side functions
+  template <typename warp_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const noexcept {}
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
@@ -481,10 +522,10 @@ struct find_device_func {
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
     }
   }
-  template <typename tile_type, typename allocator_type, typename reclaimer_type>
-  DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
-    auto cur_key = tile.shfl(regs.key, cur_rank);
+  template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
+    auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
     auto cur_value = table.template cooperative_find<concurrent, use_hash_tag>(cur_key, cur_key_length, tile, allocator);
     if (tile.thread_rank() == cur_rank) {
       regs.value = cur_value;
@@ -511,6 +552,8 @@ struct erase_device_func {
     size_type key_length;
   };
   // device-side functions
+  template <typename warp_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const noexcept {}
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
@@ -518,10 +561,10 @@ struct erase_device_func {
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
     }
   }
-  template <typename tile_type, typename allocator_type, typename reclaimer_type>
-  DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
-    auto cur_key = tile.shfl(regs.key, cur_rank);
+  template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
+    auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
     table.template cooperative_erase<use_hash_tag, do_merge>(cur_key, cur_key_length, tile, allocator, reclaimer);
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
@@ -552,6 +595,8 @@ struct mixed_device_func {
     bool result;
   };
   // device-side functions
+  template <typename warp_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const noexcept {}
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
@@ -561,11 +606,11 @@ struct mixed_device_func {
       regs.value = d_values[thread_id];
     }
   }
-  template <typename tile_type, typename allocator_type, typename reclaimer_type>
-  DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
+  template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_type = tile.shfl(regs.type, cur_rank);
-    auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
+    auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
     if (cur_type == request_type_insert) {
       auto cur_value = tile.shfl(regs.value, cur_rank);
       auto cur_result = table.template cooperative_insert<use_hash_tag>(cur_key, cur_key_length, cur_value, tile, allocator, insert_update_if_exists);
@@ -639,6 +684,12 @@ struct insert_device_func {
     size_type directory_size;
   };
   // device-side functions
+  template <typename warp_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
+    if constexpr (reuse_dirsize) {
+      regs.directory_size = table.template cooperative_fetch_dirsize<true>(warp_tile);
+    }
+  }
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
@@ -646,15 +697,12 @@ struct insert_device_func {
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
       regs.value = d_values[thread_id];
     }
-    if constexpr (reuse_dirsize) {
-      regs.directory_size = table.template cooperative_fetch_dirsize<true>(tile);
-    }
   }
-  template <typename tile_type, typename allocator_type, typename reclaimer_type>
-  DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
-    auto cur_key = tile.shfl(regs.key, cur_rank);
+  template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_value = tile.shfl(regs.value, cur_rank);
+    auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
     if constexpr (reuse_dirsize) {
       table.template cooperative_insert_from_dirsize<use_hash_tag, tag_use_same_hash, do_merge_chains>(regs.directory_size, cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, update_if_exists);
     }
@@ -684,20 +732,23 @@ struct find_device_func {
     size_type directory_size;
   };
   // device-side functions
+  template <typename warp_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
+    if constexpr (reuse_dirsize) {
+      regs.directory_size = table.template cooperative_fetch_dirsize<true>(warp_tile);
+    }
+  }
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
       regs.key = &d_keys[max_key_length * thread_id];
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
     }
-    if constexpr (reuse_dirsize) {
-      regs.directory_size = table.template cooperative_fetch_dirsize<concurrent>(tile);
-    }
   }
-  template <typename tile_type, typename allocator_type, typename reclaimer_type>
-  DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
-    auto cur_key = tile.shfl(regs.key, cur_rank);
+  template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
+    auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
     auto cur_value = reuse_dirsize ?
       table.template cooperative_find_from_dirsize<concurrent, use_hash_tag, tag_use_same_hash>(regs.directory_size, cur_key, cur_key_length, tile, allocator) :
       table.template cooperative_find<concurrent, use_hash_tag, tag_use_same_hash>(cur_key, cur_key_length, tile, allocator);
@@ -727,20 +778,23 @@ struct erase_device_func {
     size_type directory_size;
   };
   // device-side functions
+  template <typename warp_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
+    if constexpr (reuse_dirsize) {
+      regs.directory_size = table.template cooperative_fetch_dirsize<true>(warp_tile);
+    }
+  }
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
       regs.key = &d_keys[max_key_length * thread_id];
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
     }
-    if constexpr (reuse_dirsize) {
-      regs.directory_size = table.template cooperative_fetch_dirsize<true>(tile);
-    }
   }
-  template <typename tile_type, typename allocator_type, typename reclaimer_type>
-  DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
-    auto cur_key = tile.shfl(regs.key, cur_rank);
+  template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
+    auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
     if constexpr (reuse_dirsize) {
       table.template cooperative_erase_from_dirsize<use_hash_tag, tag_use_same_hash, do_merge_chains, do_merge_buckets>(regs.directory_size, cur_key, cur_key_length, tile, allocator, reclaimer);
     }
@@ -780,6 +834,12 @@ struct mixed_device_func {
     size_type directory_size;
   };
   // device-side functions
+  template <typename warp_type, typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
+    if constexpr (reuse_dirsize) {
+      regs.directory_size = table.template cooperative_fetch_dirsize<true>(warp_tile);
+    }
+  }
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
@@ -788,15 +848,12 @@ struct mixed_device_func {
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
       regs.value = d_values[thread_id];
     }
-    if constexpr (reuse_dirsize) {
-      regs.directory_size = table.template cooperative_fetch_dirsize<true>(tile);
-    }
   }
-  template <typename tile_type, typename allocator_type, typename reclaimer_type>
-  DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
+  template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_type = tile.shfl(regs.type, cur_rank);
-    auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
+    auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
     if (cur_type == request_type_insert) {
       auto cur_value = tile.shfl(regs.value, cur_rank);
       auto cur_result = reuse_dirsize ?

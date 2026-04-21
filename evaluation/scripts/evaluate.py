@@ -4,6 +4,7 @@ import glob
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 
@@ -24,22 +25,28 @@ class IndexType(Enum):
     cpu_art = auto()
 
 class ConfigType(Enum):
-    num_keys = auto()
+    max_keys = auto()
     keylen_prefix = auto()
     keylen_min = auto()
     keylen_max = auto()
     keylen_theta = auto()
-    delete_ratio = auto()
     num_lookups = auto()
     lookup_theta = auto()
-    lookup_exist_ratio = auto()
     num_scans = auto()
     scan_count = auto()
-    repeats_insert = auto()
-    repeats_delete = auto()
-    repeats_lookup = auto()
-    repeats_scan = auto()
+    num_insdel = auto()
+    num_mixed = auto()
+    num_space = auto()
+    mix_read_ratio = auto()
+    mix_presort = auto()
+    rep_lookup = auto()
+    rep_scan = auto()
+    rep_insdel = auto()
+    rep_mixed = auto()
+    rep_space = auto()
     index_type = auto()
+    only_check_space = auto()
+    use_pinned_host_memory = auto()
 
 class OptionalConfigType(Enum):
     allocator_pool_ratio = auto()
@@ -59,12 +66,15 @@ class OptionalConfigType(Enum):
     erase_concurrent = auto()
     use_lock = auto()
     initial_capacity = auto()
+    use_shmem_key = auto()
 
 class ResultType(Enum):
     insert = auto()
     delete = auto()
     lookup = auto()
     scan = auto()
+    mixed = auto()
+    space = auto()
 
 EXECUTABLE_INFO = {
     BenchExecutable.robust: {
@@ -84,7 +94,7 @@ EXECUTABLE_INFO = {
         ]
     },
     BenchExecutable.cpu_baseline: {
-        'path': 'universal_bench_with_cpu_baseline',
+        'path': 'bin/universal_bench_with_cpu_baseline',
         'indexes': [
             IndexType.cpu_libcuckoo,
             IndexType.cpu_masstree,
@@ -100,7 +110,8 @@ INDEX_INFO = {
         OptionalConfigType.lookup_concurrent,
         OptionalConfigType.enable_suffix,
         OptionalConfigType.merge_level,
-        OptionalConfigType.reuse_root
+        OptionalConfigType.reuse_root,
+        OptionalConfigType.use_shmem_key,
     ],
     IndexType.gpu_chainhashtable: [
         OptionalConfigType.allocator_pool_ratio,
@@ -108,7 +119,8 @@ INDEX_INFO = {
         OptionalConfigType.lookup_concurrent,
         OptionalConfigType.initial_array_fill_factor,
         OptionalConfigType.use_hash_tag,
-        OptionalConfigType.merge_chains
+        OptionalConfigType.merge_chains,
+        OptionalConfigType.use_shmem_key,
     ],
     IndexType.gpu_cuckoohashtable: [
         OptionalConfigType.allocator_pool_ratio,
@@ -116,6 +128,7 @@ INDEX_INFO = {
         OptionalConfigType.lookup_concurrent,
         OptionalConfigType.initial_array_fill_factor,
         OptionalConfigType.use_hash_tag,
+        OptionalConfigType.use_shmem_key,
     ],
     IndexType.gpu_extendhashtable: [
         OptionalConfigType.allocator_pool_ratio,
@@ -126,7 +139,8 @@ INDEX_INFO = {
         OptionalConfigType.load_factor_threshold,
         OptionalConfigType.hash_tag_level,
         OptionalConfigType.merge_level,
-        OptionalConfigType.reuse_dirsize
+        OptionalConfigType.reuse_dirsize,
+        OptionalConfigType.use_shmem_key,
     ],
     IndexType.gpu_blink_tree: [
         OptionalConfigType.lookup_concurrent,
@@ -161,6 +175,8 @@ def parse_args_for_measure():
         help='Path of the program build directory.')
     parser.add_argument('--result-dir', type=str, required=True,
         help='Path of directory to add the result JSON file.')
+    parser.add_argument('--start-from', type=int, default=0,
+        help='Skip n configs at the beginning, used for debugging')
     args = parser.parse_args()
     return args
 
@@ -172,7 +188,6 @@ def run_one(args, config):
     executable_path = str(Path(args.build_dir) / executable_path)
     cmd = []
     cmd.append(str(executable_path))
-    cmd.append('verbose=1')
     for config_type in ConfigType:
         if config_type in config:
             config_cmd = config_type.name
@@ -183,6 +198,7 @@ def run_one(args, config):
             config_cmd = optional_config_type.name
             config_value = config_value_to_str(config[optional_config_type])
             cmd.append(f'{config_cmd}={config_value}')
+    cmd.append('print_all_measurements=1')
     # execute subprocess
     print(' '.join(cmd))
     with tempfile.NamedTemporaryFile(mode='w', delete=False) as log:
@@ -198,6 +214,7 @@ def run_one(args, config):
     result_lines = result_str.split('\n')
     result = {}
     parsed_config = {}
+    space_results = []
     for result_line in result_lines:
         if 'CMD' in result_line:
             pass
@@ -209,33 +226,51 @@ def run_one(args, config):
             parsed_config[config_name] = config_value
         elif 'Mop/s' in result_line:
             result_tokens = result_line.split(' ')
-            assert len(result_tokens) == 3
+            assert len(result_tokens) >= 5
             result_type = result_tokens[0][:-1]
             assert result_type in [r.name for r in ResultType]
-            result_value = float(result_tokens[1])
-            result[result_type] = result_value
+            avg_value = float(result_tokens[1])
+            raw_values = []
+            num_values = int(re.sub(r'[();]', '', result_tokens[3]))
+            for i in range(num_values):
+                raw_values.append(float(result_tokens[4 + i]))
+            result[result_type] = {'avg': avg_value,
+                                   'raw': raw_values}
+        elif 'simple_slab' in result_line:
+            result_tokens = result_line.split(' ')
+            for token in result_tokens:
+                if '%' in token:
+                    space_results.append(float(re.sub(r'[()%]', '', token)))
+                    break
+    if len(space_results) > 0:
+        result['space'] = space_results
     print(f'parsed_config: {parsed_config}, result: {result}')
     return parsed_config, result
 
-def run_all_and_add_to_json(args, configs, result_file_name):
+def run_all_and_add_to_json(args, configs, result_file_name, start_from):
     # run all
-    parsed_configs = []
-    results = []
-    for config in configs:
+    os.makedirs(args.result_dir, exist_ok=True)
+    result_file = Path(args.result_dir) / f'{result_file_name}.json'
+    for idx in range(start_from, len(configs)):
+        print(f'Experiment {idx} (total {len(configs)})')
+        config = configs[idx]
         parsed_config, result = run_one(args, config)
-        results.append(result)
-        parsed_configs.append(parsed_config)
         for config_type, config_value in config.items():
             assert config_type.name in parsed_config and \
                 parsed_config[config_type.name] == config_value_to_str(config_value)
-    # add to json
-    json_data = []
-    for config, result in zip(parsed_configs, results):
-        json_data.append({'config': config, 'result': result})
-    os.makedirs(args.result_dir, exist_ok=True)
-    result_file = Path(args.result_dir) / f'{result_file_name}.json'
-    with Path(result_file).open("w", encoding="utf-8") as f:
-        json.dump(json_data, f, ensure_ascii=False, indent=2)
+        # add to json
+        json_data = []
+        if result_file.exists():
+            try:
+                with result_file.open("r", encoding="utf-8") as f:
+                    json_data = json.load(f)
+                if not isinstance(json_data, list):
+                    raise ValueError("JSON root must be a list")
+            except (json.JSONDecodeError, OSError):
+                json_data = []
+        json_data.append({'config': parsed_config, 'result': result})
+        with result_file.open("w", encoding="utf-8") as f:
+            json.dump(json_data, f, ensure_ascii=False, indent=2)
 
 def parse_args_for_plot():
     parser = argparse.ArgumentParser()
@@ -258,3 +293,20 @@ def read_configs_and_results(args):
         print(f'No valid json result file in {args.result_dir}')
         exit(1)
     return json_data
+
+def filter(configs_and_results: list[dict], desired_config: dict, result_type: ResultType):
+    for config_and_result in configs_and_results:
+        config = config_and_result['config']
+        result = config_and_result['result']
+        match = True
+        for desired_config_type, desired_config_value in desired_config.items():
+            if config.get(desired_config_type.name) != config_value_to_str(desired_config_value):
+                match = False
+                break
+        if not match:
+            continue
+        if result_type.name not in result:
+            continue
+        return result
+    print(f'filter fail: {desired_config} {result_type}')
+    assert False

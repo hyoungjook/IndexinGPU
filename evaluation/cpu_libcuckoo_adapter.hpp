@@ -26,6 +26,7 @@
 
 struct cpu_libcuckoo_adapter {
   static constexpr bool is_ordered = false;
+  static constexpr bool support_mixed = true;
   using key_slice_type = uint32_t;
   using value_type = uint32_t;
   using size_type = uint32_t;
@@ -77,19 +78,22 @@ struct cpu_libcuckoo_adapter {
   void destroy() {
     index_.reset();
   }
-  void thread_enter() noexcept {}
-  void thread_exit() noexcept {}
-  void insert(const key_slice_type* key, size_type key_length, value_type value) {
+  void thread_enter([[maybe_unused]] unsigned thread_idx) noexcept {}
+  void thread_exit([[maybe_unused]] unsigned thread_idx) noexcept {}
+  void insert(const key_slice_type* key, size_type key_length, value_type value, std::size_t tuple_id, unsigned thread_idx) {
+    (void)tuple_id;
+    (void)thread_idx;
     index_->insert_or_assign(key_type{key, key_length}, value);
   }
-  void erase(const key_slice_type* key, size_type key_length) {
+  void erase(const key_slice_type* key, size_type key_length, [[maybe_unused]] unsigned thread_idx) {
     index_->erase(key_type{key, key_length});
   }
-  value_type find(const key_slice_type* key, size_type key_length) {
+  value_type find(const key_slice_type* key, size_type key_length, [[maybe_unused]] unsigned thread_idx) {
     value_type value = std::numeric_limits<value_type>::max();
     index_->find(key_type{key, key_length}, value);
     return value;
   }
+  void print_stats() {}
 
  private:
   #define FORALL_ARGUMENTS_CPU_LIBCUCKOO(x) \
