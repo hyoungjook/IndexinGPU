@@ -28,6 +28,7 @@
 #include <random>
 #include <rkg.hpp>
 #include <string>
+#include <test_slab_alloc.hpp>
 #include <unordered_set>
 #include <vector>
 #include <thread>
@@ -196,6 +197,66 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
   }
 }
 
+template <typename allocator_type>
+void bench_allocator_suite(const std::string& allocator_name,
+                           thrust::device_vector<key_slice_type>& d_keys,
+                           thrust::device_vector<size_type>& d_lengths,
+                           thrust::device_vector<value_type>& d_values,
+                           thrust::device_vector<key_slice_type>& d_query_keys,
+                           thrust::device_vector<size_type>& d_query_lengths,
+                           thrust::device_vector<value_type>& d_query_results,
+                           uint32_t num_keys,
+                           uint32_t max_key_length,
+                           uint32_t max_counts_per_query,
+                           std::size_t num_experiments,
+                           float erase_ratio,
+                           float allocator_pool_ratio,
+                           bool validate_result,
+                           bool validate_index,
+                           bool verbose) {
+  using reclaimer_type = simple_debra_reclaimer<>;
+  using masstree_tile32_type =
+      GpuMasstree::gpu_masstree<allocator_type, reclaimer_type, 32>;
+  using masstree_tile16_type =
+      GpuMasstree::gpu_masstree<allocator_type, reclaimer_type, 16>;
+
+  std::cout << "Allocator: " << allocator_name << std::endl;
+  std::cout << "Benchmarking masstree_tile32_type" << std::endl;
+  bench_masstree<masstree_tile32_type>(
+      d_keys,
+      d_lengths,
+      d_values,
+      d_query_keys,
+      d_query_lengths,
+      d_query_results,
+      num_keys,
+      max_key_length,
+      max_counts_per_query,
+      num_experiments,
+      erase_ratio,
+      allocator_pool_ratio,
+      validate_result,
+      validate_index,
+      verbose);
+  std::cout << "Benchmarking masstree_tile16_type" << std::endl;
+  bench_masstree<masstree_tile16_type>(
+      d_keys,
+      d_lengths,
+      d_values,
+      d_query_keys,
+      d_query_lengths,
+      d_query_results,
+      num_keys,
+      max_key_length,
+      max_counts_per_query,
+      num_experiments,
+      erase_ratio,
+      allocator_pool_ratio,
+      validate_result,
+      validate_index,
+      verbose);
+}
+
 int main(int argc, char** argv) {
   auto arguments    = std::vector<std::string>(argv, argv + argc);
   uint32_t num_keys = get_arg_value<uint32_t>(arguments, "num-keys").value_or(1'000'000);
@@ -209,12 +270,16 @@ int main(int argc, char** argv) {
   bool validate_result   = get_arg_value<bool>(arguments, "validate-result").value_or(false);
   bool validate_index   = get_arg_value<bool>(arguments, "validate-index").value_or(false);
   bool verbose   = get_arg_value<bool>(arguments, "verbose").value_or(false);
+  std::string allocator_type =
+      get_arg_value<std::string>(arguments, "allocator-type").value_or("both");
   std::string dataset_file = get_arg_value<std::string>(arguments, "dataset-file").value_or("");
   std::size_t num_experiments = get_arg_value<std::size_t>(arguments, "num-experiments").value_or(1llu);
   if (min_key_length > max_key_length) {
     std::cerr << "min_key_lenght is larger than max_key_length" << std::endl;
     exit(1);
   }
+  check_argument(allocator_type == "simple" || allocator_type == "test" ||
+                 allocator_type == "both");
 
   int device_count;
   cudaGetDeviceCount(&device_count);
@@ -314,23 +379,45 @@ int main(int argc, char** argv) {
   std::cout << "min_key_length = " << min_key_length << ", ";
   std::cout << "max_key_length = " << max_key_length << ", ";
   std::cout << "common_prefix_ratio = " << common_prefix_ratio << ", ";
-  std::cout << "erase-ratio = " << erase_ratio << std::endl;
-  using simple_slab_alloc_type = simple_slab_allocator<128>;
-  using simple_debra_reclaim_type = simple_debra_reclaimer<>;
-  using masstree_tile32_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type, 32>;
-  using masstree_tile16_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type, 16>;
+  std::cout << "erase-ratio = " << erase_ratio << ", ";
+  std::cout << "allocator-type = " << allocator_type << std::endl;
 
-  std::cout << "Benchmarking masstree_tile32_type" << std::endl;
-  bench_masstree<masstree_tile32_type>(
-    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-    num_keys, max_key_length, max_counts_per_query, num_experiments, erase_ratio,
-    allocator_pool_ratio, validate_result, validate_index, verbose
-  );
-  std::cout << "Benchmarking masstree_tile16_type" << std::endl;
-  bench_masstree<masstree_tile16_type>(
-    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-    num_keys, max_key_length, max_counts_per_query, num_experiments, erase_ratio,
-    allocator_pool_ratio, validate_result, validate_index, verbose
-  );
-  
+  if (allocator_type == "simple" || allocator_type == "both") {
+    bench_allocator_suite<simple_slab_allocator<128>>(
+        "simple_slab_allocator",
+        d_keys,
+        d_lengths,
+        d_values,
+        d_find_keys,
+        d_find_lengths,
+        d_results,
+        num_keys,
+        max_key_length,
+        max_counts_per_query,
+        num_experiments,
+        erase_ratio,
+        allocator_pool_ratio,
+        validate_result,
+        validate_index,
+        verbose);
+  }
+  if (allocator_type == "test" || allocator_type == "both") {
+    bench_allocator_suite<test_slab_allocator<128>>(
+        "test_slab_allocator",
+        d_keys,
+        d_lengths,
+        d_values,
+        d_find_keys,
+        d_find_lengths,
+        d_results,
+        num_keys,
+        max_key_length,
+        max_counts_per_query,
+        num_experiments,
+        erase_ratio,
+        allocator_pool_ratio,
+        validate_result,
+        validate_index,
+        verbose);
+  }
 }
