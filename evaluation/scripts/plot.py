@@ -725,10 +725,10 @@ def merge_plots(configs_and_results, plot_file_prefix):
     plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
     plt.close(fig)
     #tput plot
-    mt_xticklabels = ['N', 'M', 'MP', 'MPR']
-    et_xticklabels = ['N', 'MC', 'MCB']
+    mt_xticklabels = ['Naive', 'Merge\nNodes\n(§4.2)', '+P.P.M.\n(§4.3)', '+Root\nCollect\n(§4.3)']
+    et_xticklabels = ['Naive', 'Merge\nChains\n(§5.4)', '+Merge\nBuckets\n(§5.5)']
     for idx, index_type in enumerate(index_types):
-        fig, ax = _make_fixed_plot_area_figure(0.5 * len(tputs[index_type]['avg']), 1.2,
+        fig, ax = _make_fixed_plot_area_figure(0.6 * len(tputs[index_type]['avg']), 1.2,
             include_xlabel=False, include_ylabel=(idx == 0))
         avg_values = _convert_mops_to_bops(tputs[index_type]['avg'], index_type)
         min_values = _convert_mops_to_bops(tputs[index_type]['min'], index_type)
