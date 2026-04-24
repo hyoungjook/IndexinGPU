@@ -45,13 +45,16 @@ template <typename masstree_type,
 void mix_bench_masstree(thrust::device_vector<key_slice_type>& d_insert_keys,
                         thrust::device_vector<size_type>& d_insert_lengths,
                         thrust::device_vector<value_type>& d_insert_values,
+                        thrust::device_vector<size_type>& d_insert_value_lengths,
                         uint32_t insert_num_keys,
                         thrust::device_vector<kernels::request_type>& d_mix_types,
                         thrust::device_vector<key_slice_type>& d_mix_keys,
                         thrust::device_vector<size_type>& d_mix_lengths,
                         thrust::device_vector<value_type>& d_mix_values,
+                        thrust::device_vector<size_type>& d_mix_value_lengths,
                         uint32_t mix_num_requests,
                         uint32_t max_key_length,
+                        uint32_t max_value_length,
                         std::size_t num_experiments,
                         float allocator_pool_ratio,
                         bool verbose = false) {
@@ -70,7 +73,8 @@ void mix_bench_masstree(thrust::device_vector<key_slice_type>& d_insert_keys,
     gpu_timer insert_timer;
     insert_timer.start_timer();
     tree.template insert<enable_suffix, reuse_root>(
-      d_insert_keys.data().get(), max_key_length, d_insert_lengths.data().get(), d_insert_values.data().get(), insert_num_keys);
+      d_insert_keys.data().get(), max_key_length, d_insert_lengths.data().get(),
+      d_insert_values.data().get(), max_value_length, d_insert_value_lengths.data().get(), insert_num_keys);
     insert_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
     float insert_elapsed = insert_timer.get_elapsed_s();
@@ -83,7 +87,8 @@ void mix_bench_masstree(thrust::device_vector<key_slice_type>& d_insert_keys,
                               erase_pessimistic_merge || erase_remove_empty_root,
                               erase_merge || erase_pessimistic_merge || erase_remove_empty_root,
                               reuse_root>(
-      d_mix_types.data().get(), d_mix_keys.data().get(), max_key_length, d_mix_lengths.data().get(), d_mix_values.data().get(), nullptr, mix_num_requests);
+      d_mix_types.data().get(), d_mix_keys.data().get(), max_key_length, d_mix_lengths.data().get(),
+      d_mix_values.data().get(), max_value_length, d_mix_value_lengths.data().get(), nullptr, mix_num_requests);
     mix_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
     float mix_elapsed = mix_timer.get_elapsed_s();
@@ -110,6 +115,8 @@ int main(int argc, char** argv) {
   int device_id     = get_arg_value<int>(arguments, "device").value_or(0);
   uint32_t min_key_length = get_arg_value<uint32_t>(arguments, "min-key-length").value_or(1u);
   uint32_t max_key_length = get_arg_value<uint32_t>(arguments, "max-key-length").value_or(1u);
+  uint32_t min_value_length = get_arg_value<uint32_t>(arguments, "min-value-length").value_or(1u);
+  uint32_t max_value_length = get_arg_value<uint32_t>(arguments, "max-value-length").value_or(1u);
   float common_prefix_ratio = get_arg_value<float>(arguments, "common-prefix-ratio").value_or(0.1f);
   bool presort_ops = get_arg_value<bool>(arguments, "presort-ops").value_or(true);
   if (presort_ops && (num_keys % 64 != 0)) {
@@ -129,6 +136,10 @@ int main(int argc, char** argv) {
   std::size_t num_experiments = get_arg_value<std::size_t>(arguments, "num-experiments").value_or(1llu);
   if (min_key_length > max_key_length) {
     std::cerr << "min_key_lenght is larger than max_key_length" << std::endl;
+    exit(1);
+  }
+  if (min_value_length > max_value_length) {
+    std::cerr << "min_value_length is larger than max_value_length" << std::endl;
     exit(1);
   }
 
@@ -178,7 +189,8 @@ int main(int argc, char** argv) {
   // device vectors
   auto d_keys      = thrust::device_vector<key_slice_type>(num_keys * max_key_length, 0);
   auto d_lengths      = thrust::device_vector<size_type>(num_keys, 0);
-  auto d_values    = thrust::device_vector<value_type>(num_keys, invalid_value);
+  auto d_values    = thrust::device_vector<value_type>(num_keys * max_value_length, invalid_value);
+  auto d_value_lengths = thrust::device_vector<size_type>(num_keys, 0);
 
   // host vectors
   std::vector<key_slice_type> h_keys;
@@ -207,13 +219,21 @@ int main(int argc, char** argv) {
     }
     return hash;
   };
-  std::vector<value_type> h_values(num_keys, invalid_value);
+  std::vector<value_type> h_values(num_keys * max_value_length, invalid_value);
+  std::vector<size_type> h_value_lengths(num_keys, 0);
+  std::uniform_int_distribution<uint32_t> value_length_dist(min_value_length, max_value_length);
+  for (uint32_t i = 0; i < num_keys; i++) {
+    h_value_lengths[i] = value_length_dist(rng);
+  }
   std::vector<std::thread> value_threads;
   const uint32_t num_threads = std::thread::hardware_concurrency();
   for (uint32_t tid = 0; tid < num_threads; tid++) {
     value_threads.emplace_back([&](uint32_t tid) {
       for (uint32_t i = tid; i < num_keys; i += num_threads) {
-        h_values[i] = to_value(&h_keys[i * max_key_length], h_lengths[i]);
+        value_type value = to_value(&h_keys[i * max_key_length], h_lengths[i]);
+        for (uint32_t s = 0; s < h_value_lengths[i]; s++) {
+          h_values[i * max_value_length + s] = value;
+        }
       }
     }, tid);
   }
@@ -221,12 +241,14 @@ int main(int argc, char** argv) {
     value_threads[tid].join();
   }
   d_values = h_values;
+  d_value_lengths = h_value_lengths;
 
   // generate mix
   auto d_mix_types = thrust::device_vector<kernels::request_type>(half_num_keys);
   auto d_mix_keys      = thrust::device_vector<key_slice_type>(half_num_keys * max_key_length, 0);
   auto d_mix_lengths      = thrust::device_vector<size_type>(half_num_keys, 0);
-  auto d_mix_values    = thrust::device_vector<value_type>(half_num_keys, invalid_value);
+  auto d_mix_values    = thrust::device_vector<value_type>(half_num_keys * max_value_length, invalid_value);
+  auto d_mix_value_lengths = thrust::device_vector<size_type>(half_num_keys, 0);
   std::vector<uint32_t> mix_order(half_num_keys);
   std::vector<uint32_t> insert_mix_order(half_num_keys);
   std::vector<uint32_t> erase_mix_order(half_num_keys);
@@ -250,7 +272,8 @@ int main(int argc, char** argv) {
   std::vector<kernels::request_type> h_mix_types(half_num_keys);
   std::vector<key_slice_type> h_mix_keys(half_num_keys * max_key_length);
   std::vector<size_type> h_mix_lengths(half_num_keys);
-  std::vector<value_type> h_mix_values(half_num_keys);
+  std::vector<value_type> h_mix_values(half_num_keys * max_value_length, invalid_value);
+  std::vector<size_type> h_mix_value_lengths(half_num_keys, 0);
   for (uint32_t src_i = 0; src_i < half_num_keys; src_i++) {
     uint32_t dst_i = mix_order[src_i];
     if (src_i < mix_num_inserts) {
@@ -260,7 +283,10 @@ int main(int argc, char** argv) {
         h_mix_keys[dst_i * max_key_length + s] = h_keys[src_key_i * max_key_length + s];
       }
       h_mix_lengths[dst_i] = h_lengths[src_key_i];
-      h_mix_values[dst_i] = h_values[src_key_i];
+      for (uint32_t s = 0; s < max_value_length; s++) {
+        h_mix_values[dst_i * max_value_length + s] = h_values[src_key_i * max_value_length + s];
+      }
+      h_mix_value_lengths[dst_i] = h_value_lengths[src_key_i];
     }
     else if (src_i < mix_num_inserts + mix_num_erases) {
       h_mix_types[dst_i] = kernels::request_type_erase;
@@ -269,7 +295,7 @@ int main(int argc, char** argv) {
         h_mix_keys[dst_i * max_key_length + s] = h_keys[src_key_i * max_key_length + s];
       }
       h_mix_lengths[dst_i] = h_lengths[src_key_i];
-      h_mix_values[dst_i] = invalid_value;
+      h_mix_value_lengths[dst_i] = 0;
     }
     else {
       h_mix_types[dst_i] = kernels::request_type_find;
@@ -278,18 +304,21 @@ int main(int argc, char** argv) {
         h_mix_keys[dst_i * max_key_length + s] = h_keys[src_key_i * max_key_length + s];
       }
       h_mix_lengths[dst_i] = h_lengths[src_key_i];
-      h_mix_values[dst_i] = invalid_value;
+      h_mix_value_lengths[dst_i] = 0;
     }
   }
   d_mix_types = h_mix_types;
   d_mix_keys = h_mix_keys;
   d_mix_lengths = h_mix_lengths;
   d_mix_values = h_mix_values;
+  d_mix_value_lengths = h_mix_value_lengths;
 
   std::cout << "Benchmarking...\n";
   std::cout << "num_keys = " << num_keys << ", ";
   std::cout << "min_key_length = " << min_key_length << ", ";
   std::cout << "max_key_length = " << max_key_length << ", ";
+  std::cout << "min_value_length = " << min_value_length << ", ";
+  std::cout << "max_value_length = " << max_value_length << ", ";
   std::cout << "common_prefix_ratio = " << common_prefix_ratio << " ";
   std::cout << "with workload mix insert:erase:find = "
     << insert_ratio << ":"
@@ -302,15 +331,15 @@ int main(int argc, char** argv) {
 
   std::cout << "Benchmarking masstree_tile32_type" << std::endl;
   mix_bench_masstree<masstree_tile32_type>(
-    d_keys, d_lengths, d_values, half_num_keys,
-    d_mix_types, d_mix_keys, d_mix_lengths, d_mix_values, half_num_keys,
-    max_key_length, num_experiments, allocator_pool_ratio, verbose
+    d_keys, d_lengths, d_values, d_value_lengths, half_num_keys,
+    d_mix_types, d_mix_keys, d_mix_lengths, d_mix_values, d_mix_value_lengths, half_num_keys,
+    max_key_length, max_value_length, num_experiments, allocator_pool_ratio, verbose
   );
   std::cout << "Benchmarking masstree_tile16_type" << std::endl;
   mix_bench_masstree<masstree_tile16_type>(
-    d_keys, d_lengths, d_values, half_num_keys,
-    d_mix_types, d_mix_keys, d_mix_lengths, d_mix_values, half_num_keys,
-    max_key_length, num_experiments, allocator_pool_ratio, verbose
+    d_keys, d_lengths, d_values, d_value_lengths, half_num_keys,
+    d_mix_types, d_mix_keys, d_mix_lengths, d_mix_values, d_mix_value_lengths, half_num_keys,
+    max_key_length, max_value_length, num_experiments, allocator_pool_ratio, verbose
   );
   
 }
