@@ -945,7 +945,7 @@ struct masstree_node_warp {
   //    key14 is high key, used for B-link traversal
   //    ptr14 is keystate_bits; each key 13-0 has 2 bits (total 28 bits used)
   //      (MSB)[empty:4][ks13:2][ks12:2]...[ks1:2][ks0:2](LSB)
-  //      Each (key, value) pair has three options:
+  //      Each (key, value) pair has four options:
   //        (1) keystate=0b00 (key_suffix=0, key_more=0): value is the final value, key ends here
   //        (2) keystate=0b01 (key_suffix=0, key_more=1): value is link to the next layer root, key continues
   //        (3) keystate=0b11 (key_suffix=1, key_more=1): value is link to the suffix info, key continues (but suffix info contains the final value)

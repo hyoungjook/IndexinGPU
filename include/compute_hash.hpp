@@ -53,13 +53,14 @@ DEVICE_QUALIFIER uint32_t compute_hash(keyptr_or_keystore input, uint32_t length
   // 2. compute per-lane value
   const auto original_length = length;
   uint32_t hash = 0;
+  int input_offset = 0;
   while (true) {
     if (tile.thread_rank() < length) {
-      auto slice = input[tile.thread_rank()];
+      auto slice = input[input_offset + tile.thread_rank()];
       hash += exponent * slice;
     }
     if (length <= tile_size) { break; }
-    input += tile_size;
+    input_offset += tile_size;
     length -= tile_size;
     exponent *= prime0_mult;
   }
@@ -100,14 +101,15 @@ DEVICE_QUALIFIER uint2 compute_hashx2(keyptr_or_keystore input, uint32_t length,
   // 2. compute per-lane value
   const auto original_length = length;
   uint32_t hash = 0, hash1 = 0;
+  int input_offset = 0;
   while (true) {
     if (tile.thread_rank() < length) {
-      auto slice = input[tile.thread_rank()];
+      auto slice = input[input_offset + tile.thread_rank()];
       hash += exponent0 * slice;
       hash1 += exponent1 * slice;
     }
     if (length <= tile_size) { break; }
-    input += tile_size;
+    input_offset += tile_size;
     length -= tile_size;
     exponent0 *= prime0_mult;
     exponent1 *= prime1_mult;

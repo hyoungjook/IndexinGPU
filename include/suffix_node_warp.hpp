@@ -163,7 +163,7 @@ struct suffix_node_warp {
     // ignore first one element in head;
     //  also make exponent [p^30, 1, p, p^2, ..., p^29, x]
     {
-      auto shifted_exponent = tile_.shfl_down(exponent0, node_max_len_);
+      auto shifted_exponent = tile_.shfl_down(exponent0, node_max_len_ - 1);
       exponent0 = tile_.shfl_up(exponent0, 1);
       if (tile_.thread_rank() < 1) { exponent0 = shifted_exponent; }
     }
@@ -215,10 +215,10 @@ struct suffix_node_warp {
     // ignore first one element in head;
     //  also make exponent [p^30, 1, p, p^2, ..., p^29, x]
     {
-      auto shifted_exponent = tile_.shfl_down(exponent0, node_max_len_);
+      auto shifted_exponent = tile_.shfl_down(exponent0, node_max_len_ - 1);
       exponent0 = tile_.shfl_up(exponent0, 1);
       if (tile_.thread_rank() < 1) { exponent0 = shifted_exponent; }
-      shifted_exponent = tile_.shfl_down(exponent1, node_max_len_);
+      shifted_exponent = tile_.shfl_down(exponent1, node_max_len_ - 1);
       exponent1 = tile_.shfl_up(exponent1, 1);
       if (tile_.thread_rank() < 1) { exponent1 = shifted_exponent; }
     }

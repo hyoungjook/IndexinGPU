@@ -535,10 +535,10 @@ struct gpu_masstree {
             }
             else { // keystate = LONGVAL
               if (value_length == 1) {
-                current_node.update(key_slice, value[0], node_type::KEYSTATE_LONGVAL, node_type::KEYSTATE_VALUE);
                 auto suffix = suffix_type(found_value, tile, allocator);
                 suffix.load_head();
                 suffix.retire(reclaimer);
+                found_value = value[0];
               }
               else {
                 auto suffix = suffix_type(found_value, tile, allocator);
