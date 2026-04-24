@@ -20,7 +20,6 @@
 #include <macros.hpp>
 #include <utils.hpp>
 #include <suffix_node_warp.hpp>
-#include <varlen_key_store.hpp>
 
 template <typename tile_type, typename allocator_type>
 struct masstree_node_warp {

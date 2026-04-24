@@ -75,8 +75,8 @@ struct suffix_node_subwarp {
     if (get_key_length() != key_length) { return false; }
     // now key_length == this_key_length, compare head node
     // ignore first one element in head
-    uint32_t skip_elems = 1;
-    key -= skip_elems;
+    int skip_elems = 1;
+    int key_offset = -skip_elems;
     key_length += skip_elems;
     auto elem = lane_elem_;
     while (true) {
@@ -84,15 +84,15 @@ struct suffix_node_subwarp {
       bool mismatch_first = (skip_elems <= tile_.thread_rank()) &&
                             (tile_.thread_rank() < node_max_len_) &&
                             (tile_.thread_rank() < key_length) && 
-                            (elem.first != key[tile_.thread_rank()]);
+                            (elem.first != key[key_offset + tile_.thread_rank()]);
       bool mismatch_second = (node_width + tile_.thread_rank() < node_max_len_) &&
                              (node_width + tile_.thread_rank() < key_length) && 
-                             (elem.second != key[node_width + tile_.thread_rank()]);
+                             (elem.second != key[key_offset + node_width + tile_.thread_rank()]);
       uint32_t mismatch_ballot = tile_.ballot(mismatch_first || mismatch_second);
       if (mismatch_ballot != 0) { return false; }
       if (key_length <= node_max_len_) { return true; }
       key_length -= node_max_len_;
-      key += node_max_len_;
+      key_offset += node_max_len_;
       auto next_index = tile_.shfl(elem.second, next_lane_);
       auto* next_ptr = reinterpret_cast<elem_unsigned_type*>(allocator_.address(next_index));
       auto tmp_elem = utils::memory::load<elem_unsigned_type, false>(next_ptr + tile_.thread_rank());
@@ -112,8 +112,8 @@ struct suffix_node_subwarp {
     auto elem = lane_elem_;
     int total_num_matches = 0;
     // ignore first one element in head
-    uint32_t skip_elems = 1;
-    key -= skip_elems;
+    int skip_elems = 1;
+    int key_offset = -skip_elems;
     key_length += skip_elems;
     this_length += skip_elems;
     cmp_length += skip_elems;
@@ -123,7 +123,7 @@ struct suffix_node_subwarp {
       bool key_more = (tile_.thread_rank() < key_length - 1);
       bool valid_cmp = (skip_elems <= tile_.thread_rank()) &&
                        (tile_.thread_rank() < cmp_length);
-      slice_type other = valid_cmp ? (key[tile_.thread_rank()]) : 0;
+      slice_type other = valid_cmp ? (key[key_offset + tile_.thread_rank()]) : 0;
       bool match = valid_cmp &&
                    (elem.first == other) &&
                    (this_more == key_more);
@@ -144,12 +144,12 @@ struct suffix_node_subwarp {
       cmp_length -= node_width;
       this_length -= node_width;
       key_length -= node_width;
-      key += node_width;
+      key_offset += node_width;
       this_more = (tile_.thread_rank() < this_length - 1);
       key_more = (tile_.thread_rank() < key_length - 1);
       valid_cmp = (tile_.thread_rank() < (node_max_len_ - node_width)) &&
                   (tile_.thread_rank() < cmp_length);
-      other = valid_cmp ? (key[tile_.thread_rank()]) : 0;
+      other = valid_cmp ? (key[key_offset + tile_.thread_rank()]) : 0;
       match = valid_cmp &&
               (elem.second == other) &&
               (this_more == key_more);
@@ -169,7 +169,7 @@ struct suffix_node_subwarp {
       cmp_length -= (node_max_len_ - node_width);
       this_length -= (node_max_len_ - node_width);
       key_length -= (node_max_len_ - node_width);
-      key += (node_max_len_ - node_width);
+      key_offset += (node_max_len_ - node_width);
       auto next_index = tile_.shfl(elem.second, next_lane_);
       auto* next_ptr = reinterpret_cast<elem_unsigned_type*>(allocator_.address(next_index));
       auto tmp_elem = utils::memory::load<elem_unsigned_type, false>(next_ptr + tile_.thread_rank());
@@ -203,7 +203,7 @@ struct suffix_node_subwarp {
       exponent0 = tile_.shfl_up(exponent0, 1);
       if (tile_.thread_rank() < 1) { exponent0 = shifted_exponent; }
     }
-    uint32_t skip_elems = 1;
+    int skip_elems = 1;
     this_length += skip_elems;
     auto elem = lane_elem_;
     while (true) {
@@ -267,7 +267,7 @@ struct suffix_node_subwarp {
       exponent1 = tile_.shfl_up(exponent1, 1);
       if (tile_.thread_rank() < 1) { exponent1 = shifted_exponent; }
     }
-    uint32_t skip_elems = 1;
+    int skip_elems = 1;
     this_length += skip_elems;
     auto elem = lane_elem_;
     while (true) {
@@ -315,8 +315,8 @@ struct suffix_node_subwarp {
                    (value_length << value_length_offset_bits_);
     }
     // ignore first one element in head
-    uint32_t skip_elems = 1;
-    key -= skip_elems;
+    int skip_elems = 1;
+    int key_offset = -skip_elems;
     key_length += skip_elems;
     value -= key_length;
     value_length += key_length;
@@ -324,7 +324,7 @@ struct suffix_node_subwarp {
       // set elem.first
       if (skip_elems <= tile_.thread_rank()) {
         if (tile_.thread_rank() < key_length) {
-          elem.first = key[tile_.thread_rank()];
+          elem.first = key[key_offset + tile_.thread_rank()];
         }
         else if (tile_.thread_rank() < value_length) {
           elem.first = value[tile_.thread_rank()];
@@ -332,7 +332,7 @@ struct suffix_node_subwarp {
       }
       // set elem.second
       if (node_width + tile_.thread_rank() < min(key_length, node_max_len_)) {
-        elem.second = key[node_width + tile_.thread_rank()];
+        elem.second = key[key_offset + node_width + tile_.thread_rank()];
       }
       else if (node_width + tile_.thread_rank() < min(value_length, node_max_len_)) {
         elem.second = value[node_width + tile_.thread_rank()];
@@ -354,7 +354,7 @@ struct suffix_node_subwarp {
       if (value_length <= node_max_len_) { break; }
       curr_ptr = next_ptr;
       key_length = max(static_cast<int>(key_length - node_max_len_), 0);
-      key += node_max_len_;
+      key_offset += node_max_len_;
       value_length -= node_max_len_;
       value += node_max_len_;
       skip_elems = 0;
@@ -365,21 +365,21 @@ struct suffix_node_subwarp {
     auto this_length = get_key_length();
     auto elem = lane_elem_;
     // ignore first one element in head
-    uint32_t skip_elems = 1;
-    key_buffer -= skip_elems;
+    int skip_elems = 1;
+    int key_offset = -skip_elems;
     this_length += skip_elems;
     while (true) {
       auto count = min(this_length, node_max_len_);
       if (skip_elems <= tile_.thread_rank() &&
           tile_.thread_rank() < count) {
-        key_buffer[tile_.thread_rank()] = elem.first;
+        key_buffer[key_offset + tile_.thread_rank()] = elem.first;
       }
       if ((node_width + tile_.thread_rank()) < count) {
-        key_buffer[node_width + tile_.thread_rank()] = elem.second;
+        key_buffer[key_offset + node_width + tile_.thread_rank()] = elem.second;
       }
       this_length -= count;
       if (this_length == 0) { break; }
-      key_buffer += count;
+      key_offset += count;
       auto next_index = tile_.shfl(elem.second, next_lane_);
       auto* next_ptr = reinterpret_cast<elem_unsigned_type*>(allocator_.address(next_index));
       auto tmp_elem = utils::memory::load<elem_unsigned_type, false>(next_ptr + tile_.thread_rank());
@@ -411,7 +411,7 @@ struct suffix_node_subwarp {
                             (value_length << value_length_offset_bits_);
     }
     // ignore first one element in head, but also copy value
-    uint32_t skip_elems = 1;
+    int skip_elems = 1;
     new_length += (skip_elems + value_length);
     while (true) {
       // phase 1. copy src[offset:node_max_len) -> dst[0:node_max_len-offset)
@@ -518,20 +518,20 @@ struct suffix_node_subwarp {
     auto elem = lane_elem_;
     // ignore first (key_length + 1) element in head
     int skip_elems = get_key_length() + 1;
-    value_buffer -= skip_elems;
+    int value_offset = -skip_elems;
     value_length += skip_elems;
     while (true) {
       auto count = min(value_length, node_max_len_);
       if (skip_elems <= tile_.thread_rank() && tile_.thread_rank() < count) {
-        value_buffer[tile_.thread_rank()] = elem.first;
+        value_buffer[value_offset + tile_.thread_rank()] = elem.first;
       }
       if (skip_elems <= node_width + tile_.thread_rank() &&
           node_width + tile_.thread_rank() < count) {
-        value_buffer[node_width + tile_.thread_rank()] = elem.second;
+        value_buffer[value_offset + node_width + tile_.thread_rank()] = elem.second;
       }
       value_length -= count;
       if (value_length == 0) { break; }
-      value_buffer += count;
+      value_offset += count;
       auto next_index = tile_.shfl(elem.second, next_lane_);
       auto* next_ptr = reinterpret_cast<elem_unsigned_type*>(allocator_.address(next_index));
       auto tmp_elem = utils::memory::load<elem_unsigned_type, false>(next_ptr + tile_.thread_rank());
@@ -556,10 +556,10 @@ struct suffix_node_subwarp {
     // ignore first one element in head
     auto src_nodes_left = src.get_num_nodes() - 1;
     reclaimer.retire(src.get_node_index(), tile_);
-    uint32_t skip_elems = 1;
+    int skip_elems = 1;
     key_length += skip_elems;
     auto total_length = key_length + value_length;
-    value -= key_length;
+    int value_offset = -static_cast<int>(key_length);
     while (true) {
       // set elem.first
       if (skip_elems <= tile_.thread_rank()) {
@@ -567,7 +567,7 @@ struct suffix_node_subwarp {
           dst_lane_elem.first = src.lane_elem_.first;
         }
         else if (tile_.thread_rank() < total_length) {
-          dst_lane_elem.first = value[tile_.thread_rank()];
+          dst_lane_elem.first = value[value_offset + tile_.thread_rank()];
         }
       }
       // set elem.second
@@ -575,7 +575,7 @@ struct suffix_node_subwarp {
         dst_lane_elem.second = src.lane_elem_.second;
       }
       else if (node_width + tile_.thread_rank() < min(total_length, node_max_len_)) {
-        dst_lane_elem.second = value[node_width + tile_.thread_rank()];
+        dst_lane_elem.second = value[value_offset + node_width + tile_.thread_rank()];
       }
       total_length = max(static_cast<int>(total_length - node_max_len_), 0);
       if (total_length == 0) { break; }
@@ -597,7 +597,7 @@ struct suffix_node_subwarp {
         reclaimer.retire(src.node_index_, tile_);
         src_nodes_left--;
       }
-      value += node_max_len_;
+      value_offset += node_max_len_;
       key_length = max(static_cast<int>(key_length - node_max_len_), 0);
       skip_elems = 0;
     }
