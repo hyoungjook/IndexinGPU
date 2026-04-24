@@ -132,20 +132,23 @@ template <typename masstree, bool enable_suffix, bool reuse_root>
 struct insert_device_func {
   using key_slice_type = typename masstree::key_slice_type;
   using size_type = typename masstree::size_type;
-  using value_type = typename masstree::value_type;
+  using value_slice_type = typename masstree::value_slice_type;
   using elem_type = typename masstree::elem_type;
   static constexpr bool reclaim_required = true;
   // kernel args
   const key_slice_type* d_keys;
   size_type max_key_length;
   const size_type* d_key_lengths;
-  const value_type* d_values;
+  const value_slice_type* d_values;
+  size_type max_value_length;
+  const size_type* d_value_lengths;
   bool update_if_exists;
   // device-side registers
   struct dev_regs {
     const key_slice_type* key;
     size_type key_length;
-    value_type value;
+    const value_slice_type* value;
+    size_type value_length;
     elem_type root_lane_elem;
   };
   // device-side functions
@@ -160,19 +163,21 @@ struct insert_device_func {
     if (task_exists) {
       regs.key = &d_keys[max_key_length * thread_id];
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
-      regs.value = d_values[thread_id];
+      regs.value = &d_values[max_value_length * thread_id];
+      regs.value_length = d_value_lengths ? d_value_lengths[thread_id] : max_value_length;
     }
   }
   template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    auto cur_value = tile.shfl(regs.value, cur_rank);
+    auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
     auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
+    auto cur_value = tile.shfl(regs.value, cur_rank);
     if constexpr (reuse_root) {
-      tree.template cooperative_insert_from_root<enable_suffix>(regs.root_lane_elem, cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, update_if_exists);
+      tree.template cooperative_insert_from_root<enable_suffix>(regs.root_lane_elem, cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, update_if_exists);
     }
     else {
-      tree.template cooperative_insert<enable_suffix>(cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, update_if_exists);
+      tree.template cooperative_insert<enable_suffix>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, update_if_exists);
     }
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
@@ -182,19 +187,22 @@ template <typename masstree, bool concurrent, bool reuse_root>
 struct find_device_func {
   using key_slice_type = typename masstree::key_slice_type;
   using size_type = typename masstree::size_type;
-  using value_type = typename masstree::value_type;
+  using value_slice_type = typename masstree::value_slice_type;
   using elem_type = typename masstree::elem_type;
   static constexpr bool reclaim_required = false;
   // kernel args
   const key_slice_type* d_keys;
   size_type max_key_length;
   const size_type* d_key_lengths;
-  value_type* d_values;
+  value_slice_type* d_values;
+  size_type max_value_length;
+  size_type* d_value_lengths;
   // device-side registers
   struct dev_regs {
     const key_slice_type* key;
     size_type key_length;
-    value_type value;
+    value_slice_type* value;
+    size_type value_length;
     elem_type root_lane_elem;
   };
   // device-side functions
@@ -209,21 +217,23 @@ struct find_device_func {
     if (task_exists) {
       regs.key = &d_keys[max_key_length * thread_id];
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
+      regs.value = &d_values[max_value_length * thread_id];
     }
   }
   template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
-    auto cur_value = reuse_root ?
-      tree.template cooperative_find_from_root<concurrent>(regs.root_lane_elem, cur_key ,cur_key_length, tile, allocator) :
-      tree.template cooperative_find<concurrent>(cur_key, cur_key_length, tile, allocator);
+    auto cur_value = tile.shfl(regs.value, cur_rank);
+    auto cur_value_length = reuse_root ?
+      tree.template cooperative_find_from_root<concurrent>(regs.root_lane_elem, cur_key, cur_key_length, cur_value, max_value_length, tile, allocator) :
+      tree.template cooperative_find<concurrent>(cur_key, cur_key_length, cur_value, max_value_length, tile, allocator);
     if (tile.thread_rank() == cur_rank) {
-      regs.value = cur_value;
+      regs.value_length = cur_value_length;
     }
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const {
-    d_values[thread_id] = regs.value;
+    d_value_lengths[thread_id] = regs.value_length;
   }
 };
 
@@ -231,7 +241,7 @@ template <typename masstree, bool concurrent, bool do_merge, bool pessimistic_me
 struct erase_device_func {
   using key_slice_type = typename masstree::key_slice_type;
   using size_type = typename masstree::size_type;
-  using value_type = typename masstree::value_type;
+  using value_slice_type = typename masstree::value_slice_type;
   using elem_type = typename masstree::elem_type;
   static constexpr bool reclaim_required = true;
   // kernel args
@@ -276,7 +286,7 @@ template <typename masstree, bool use_upper_key, bool concurrent, bool reuse_roo
 struct scan_device_func {
   using key_slice_type = typename masstree::key_slice_type;
   using size_type = typename masstree::size_type;
-  using value_type = typename masstree::value_type;
+  using value_slice_type = typename masstree::value_slice_type;
   using elem_type = typename masstree::elem_type;
   static constexpr bool reclaim_required = false;
   // kernel args
@@ -287,7 +297,9 @@ struct scan_device_func {
   const key_slice_type* d_upper_keys;
   const size_type* d_upper_key_lengths;
   size_type* d_counts;
-  value_type* d_values;
+  value_slice_type* d_values;
+  size_type* d_value_lengths;
+  size_type max_value_length;
   key_slice_type* d_out_keys;
   size_type* d_out_key_lengths;
   // device-side registers
@@ -297,7 +309,8 @@ struct scan_device_func {
     const key_slice_type* upper_key;
     size_type upper_key_length;
     size_type count;
-    value_type* value;
+    value_slice_type* values;
+    size_type* value_lengths;
     key_slice_type* out_key;
     size_type* out_key_length;
     elem_type root_lane_elem;
@@ -316,7 +329,8 @@ struct scan_device_func {
       regs.lower_key_length = d_lower_key_lengths ? d_lower_key_lengths[thread_id] : max_key_length;
       regs.upper_key = d_upper_keys ? &d_upper_keys[max_key_length * thread_id] : nullptr;
       regs.upper_key_length = d_upper_key_lengths ? d_upper_key_lengths[thread_id] : max_key_length;
-      regs.value = d_values ? &d_values[max_count_per_query * thread_id] : nullptr;
+      regs.values = d_values ? &d_values[max_value_length * max_count_per_query * thread_id] : nullptr;
+      regs.value_lengths = d_value_lengths ? &d_value_lengths[max_count_per_query * thread_id] : nullptr;
       regs.out_key = d_out_keys ? &d_out_keys[max_count_per_query * max_key_length * thread_id] : nullptr;
       regs.out_key_length = d_out_key_lengths ? &d_out_key_lengths[max_count_per_query * thread_id] : nullptr;
     }
@@ -326,7 +340,8 @@ struct scan_device_func {
     auto cur_lower_key_length = tile.shfl(regs.lower_key_length, cur_rank);
     auto cur_upper_key = tile.shfl(regs.upper_key, cur_rank);
     auto cur_upper_key_length = tile.shfl(regs.upper_key_length, cur_rank);
-    auto cur_value = tile.shfl(regs.value, cur_rank);
+    auto cur_values = tile.shfl(regs.values, cur_rank);
+    auto cur_value_lengths = tile.shfl(regs.value_lengths, cur_rank);
     auto cur_out_key = tile.shfl(regs.out_key, cur_rank);
     auto cur_out_key_length = tile.shfl(regs.out_key_length, cur_rank);
     auto cur_lower_key = detail::make_key<use_shmem_key>(tile.shfl(regs.lower_key, cur_rank), cur_lower_key_length, key_shmem_buffer, tile);
@@ -334,10 +349,10 @@ struct scan_device_func {
       tree.template cooperative_scan_from_root<use_upper_key, concurrent>(
         regs.root_lane_elem,
         cur_lower_key, cur_lower_key_length, tile, allocator, cur_upper_key, cur_upper_key_length,
-        max_count_per_query, cur_value, cur_out_key, cur_out_key_length, max_key_length) :
+        max_count_per_query, cur_values, cur_value_lengths, max_value_length, cur_out_key, cur_out_key_length, max_key_length) :
       tree.template cooperative_scan<use_upper_key, concurrent>(
         cur_lower_key, cur_lower_key_length, tile, allocator, cur_upper_key, cur_upper_key_length,
-        max_count_per_query, cur_value, cur_out_key, cur_out_key_length, max_key_length);
+        max_count_per_query, cur_values, cur_value_lengths, max_value_length, cur_out_key, cur_out_key_length, max_key_length);
     if (tile.thread_rank() == cur_rank) {
       regs.count = cur_count;
     }
@@ -356,7 +371,7 @@ template <typename masstree,
 struct mixed_device_func {
   using key_slice_type = typename masstree::key_slice_type;
   using size_type = typename masstree::size_type;
-  using value_type = typename masstree::value_type;
+  using value_slice_type = typename masstree::value_slice_type;
   using elem_type = typename masstree::elem_type;
   static constexpr bool reclaim_required = true;
   // kernel args
@@ -364,7 +379,9 @@ struct mixed_device_func {
   const key_slice_type* d_keys;
   size_type max_key_length;
   const size_type* d_key_lengths;
-  value_type* d_values;
+  value_slice_type* d_values;
+  size_type max_value_length;
+  size_type* d_value_lengths;
   bool* d_results;
   bool insert_update_if_exists;
   // device-side registers
@@ -372,7 +389,8 @@ struct mixed_device_func {
     request_type type;
     const key_slice_type* key;
     size_type key_length;
-    value_type value;
+    value_slice_type* value;
+    size_type value_length;
     bool result;
     elem_type root_lane_elem;
   };
@@ -389,7 +407,8 @@ struct mixed_device_func {
       regs.type = d_types[thread_id];
       regs.key = &d_keys[max_key_length * thread_id];
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
-      regs.value = d_values[thread_id];
+      regs.value = &d_values[max_value_length * thread_id];
+      regs.value_length = d_value_lengths ? d_value_lengths[thread_id] : max_value_length;
     }
   }
   template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
@@ -397,18 +416,19 @@ struct mixed_device_func {
     auto cur_type = tile.shfl(regs.type, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_key = detail::make_key<use_shmem_key>(tile.shfl(regs.key, cur_rank), cur_key_length, key_shmem_buffer, tile);
+    auto cur_value = tile.shfl(regs.value, cur_rank);
     if (cur_type == request_type_insert) {
-      auto cur_value = tile.shfl(regs.value, cur_rank);
+      auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
       auto cur_result = reuse_root ?
-        tree.template cooperative_insert_from_root<enable_suffix>(regs.root_lane_elem, cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, insert_update_if_exists) :  
-        tree.template cooperative_insert<enable_suffix>(cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, insert_update_if_exists);
+        tree.template cooperative_insert_from_root<enable_suffix>(regs.root_lane_elem, cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, insert_update_if_exists) :  
+        tree.template cooperative_insert<enable_suffix>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, insert_update_if_exists);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else if (cur_type == request_type_find) {
-      auto cur_value = reuse_root ?
-        tree.template cooperative_find_from_root<true>(regs.root_lane_elem, cur_key, cur_key_length, tile, allocator) :
-        tree.template cooperative_find<true>(cur_key, cur_key_length, tile, allocator);
-      if (tile.thread_rank() == cur_rank) { regs.value = cur_value; }
+      auto cur_value_length = reuse_root ?
+        tree.template cooperative_find_from_root<true>(regs.root_lane_elem, cur_key, cur_key_length, cur_value, max_value_length, tile, allocator) :
+        tree.template cooperative_find<true>(cur_key, cur_key_length, cur_value, max_value_length, tile, allocator);
+      if (tile.thread_rank() == cur_rank) { regs.value_length = cur_value_length; }
     }
     else if (cur_type == request_type_erase) {
       auto cur_result = reuse_root ?
@@ -425,7 +445,7 @@ struct mixed_device_func {
       if (d_results) { d_results[thread_id] = regs.result; }
     }
     else {  // find or successor
-      d_values[thread_id] = regs.value;
+      d_value_lengths[thread_id] = regs.value_length;
     }
   }
 };

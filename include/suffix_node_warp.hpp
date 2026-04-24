@@ -51,36 +51,28 @@ struct suffix_node_warp {
     return tile_.shfl(lane_elem_, next_lane_);
   }
   DEVICE_QUALIFIER size_type get_key_length() const {
-    return tile_.shfl(lane_elem_, head_node_length_lane_);
+    auto lengths = tile_.shfl(lane_elem_, head_node_length_lane_);
+    return (lengths >> key_length_offset_bits_) & length_mask_;
   }
-  DEVICE_QUALIFIER void set_length(const size_type& key_length) {
-    if (tile_.thread_rank() == head_node_length_lane_) {
-      lane_elem_ = key_length;
-    }
-  }
-  DEVICE_QUALIFIER elem_type get_value() const {
-    return tile_.shfl(lane_elem_, head_node_value_lane_);
-  }
-  DEVICE_QUALIFIER void update_value(const elem_type& value) {
-    if (tile_.thread_rank() == head_node_value_lane_) {
-      lane_elem_ = value;
-    }
+  DEVICE_QUALIFIER size_type get_value_length() const {
+    auto lengths = tile_.shfl(lane_elem_, head_node_length_lane_);
+    return (lengths >> value_length_offset_bits_) & length_mask_;
   }
 
   DEVICE_QUALIFIER uint32_t get_num_nodes() const {
-    auto length = get_key_length();
-    // first two elements are length and value, so (length + 2)
-    return ((length + 2) + node_max_len_ - 1) / node_max_len_;
+    auto total_length = get_key_length() + get_value_length();
+    // first one element is length, so (total_length + 1)
+    return ((total_length + 1) + node_max_len_ - 1) / node_max_len_;
   }
 
   template <typename keyptr_or_keystore>
   DEVICE_QUALIFIER bool streq(keyptr_or_keystore key, uint32_t key_length) const {
     if (get_key_length() != key_length) { return false; }
     // now key_length == this_key_length, compare head node
-    // ignore first two elements in head
-    key -= 2;
-    key_length += 2;
-    uint32_t skip_elems = 2;
+    // ignore first one element in head
+    uint32_t skip_elems = 1;
+    key -= skip_elems;
+    key_length += skip_elems;
     auto elem = lane_elem_;
     while (true) {
       bool mismatch = (skip_elems <= tile_.thread_rank()) &&
@@ -101,7 +93,7 @@ struct suffix_node_warp {
   }
 
   template <typename keyptr_or_keystore>
-  DEVICE_QUALIFIER int strcmp(keyptr_or_keystore key, uint32_t key_length, elem_type* mismatch_value = nullptr) const {
+  DEVICE_QUALIFIER int strcmp(keyptr_or_keystore key, uint32_t key_length, elem_type* mismatch_keyslice = nullptr) const {
     // strcmp(this, key) -> 0 (match), +(this<key), -(this>key)
     // the absolute of return value: (1 + num_matches)
     // NOTE if one is prefix of the other, num_matches is (len(smaller) - 1)
@@ -109,12 +101,12 @@ struct suffix_node_warp {
     auto cmp_length = min(this_length, key_length);
     auto elem = lane_elem_;
     int total_num_matches = 0;
-    // ignore first two elements in head
-    key -= 2;
-    key_length += 2;
-    this_length += 2;
-    cmp_length += 2;
-    uint32_t skip_elems = 2;
+    // ignore first one element in head
+    uint32_t skip_elems = 1;
+    key -= skip_elems;
+    key_length += skip_elems;
+    this_length += skip_elems;
+    cmp_length += skip_elems;
     while (true) {
       // compare elements
       bool this_more = (tile_.thread_rank() < this_length - 1);
@@ -136,7 +128,7 @@ struct suffix_node_warp {
       if (num_matches < node_max_len_ && num_matches < cmp_length) {
         // num_matches'th lane has the first mismatch elems
         bool ge = tile_.shfl((elem < other) || (elem == other && this_more < key_more), num_matches);
-        if (mismatch_value) { *mismatch_value = tile_.shfl(elem, num_matches); }
+        if (mismatch_keyslice) { *mismatch_keyslice = tile_.shfl(elem, num_matches); }
         return (ge ? 1 : -1) * static_cast<int>(1 + total_num_matches);
       }
       // proceed to next node
@@ -168,15 +160,15 @@ struct suffix_node_warp {
     // 2. compute per-lane value
     auto this_length = get_key_length();
     uint32_t hash = 0;
-    // ignore first two elements in head;
-    //  also make exponent [p^29, p^30, 1, p, p^2, ..., p^28, x]
+    // ignore first one element in head;
+    //  also make exponent [p^30, 1, p, p^2, ..., p^29, x]
     {
-      auto shifted_exponent = tile_.shfl_down(exponent0, node_max_len_ -2);
-      exponent0 = tile_.shfl_up(exponent0, 2);
-      if (tile_.thread_rank() < 2) { exponent0 = shifted_exponent; }
+      auto shifted_exponent = tile_.shfl_down(exponent0, node_max_len_);
+      exponent0 = tile_.shfl_up(exponent0, 1);
+      if (tile_.thread_rank() < 1) { exponent0 = shifted_exponent; }
     }
-    this_length += 2;
-    uint32_t skip_elems = 2;
+    uint32_t skip_elems = 1;
+    this_length += skip_elems;
     auto elem = lane_elem_;
     while (true) {
       if (skip_elems <= tile_.thread_rank() &&
@@ -220,18 +212,18 @@ struct suffix_node_warp {
     // 2. compute per-lane value
     auto this_length = get_key_length();
     uint32_t hash = 0, hash1 = 0;
-    // ignore first two elements in head;
-    //  also make exponent [p^29, p^30, 1, p, p^2, ..., p^28, x]
+    // ignore first one element in head;
+    //  also make exponent [p^30, 1, p, p^2, ..., p^29, x]
     {
-      auto shifted_exponent = tile_.shfl_down(exponent0, node_max_len_ -2);
-      exponent0 = tile_.shfl_up(exponent0, 2);
-      if (tile_.thread_rank() < 2) { exponent0 = shifted_exponent; }
-      shifted_exponent = tile_.shfl_down(exponent1, node_max_len_ -2);
-      exponent1 = tile_.shfl_up(exponent1, 2);
-      if (tile_.thread_rank() < 2) { exponent1 = shifted_exponent; }
+      auto shifted_exponent = tile_.shfl_down(exponent0, node_max_len_);
+      exponent0 = tile_.shfl_up(exponent0, 1);
+      if (tile_.thread_rank() < 1) { exponent0 = shifted_exponent; }
+      shifted_exponent = tile_.shfl_down(exponent1, node_max_len_);
+      exponent1 = tile_.shfl_up(exponent1, 1);
+      if (tile_.thread_rank() < 1) { exponent1 = shifted_exponent; }
     }
-    this_length += 2;
-    uint32_t skip_elems = 2;
+    uint32_t skip_elems = 1;
+    this_length += skip_elems;
     auto elem = lane_elem_;
     while (true) {
       if (skip_elems <= tile_.thread_rank() &&
@@ -260,23 +252,32 @@ struct suffix_node_warp {
   }
 
   template <typename keyptr_or_keystore>
-  DEVICE_QUALIFIER void create_from(keyptr_or_keystore key, size_type key_length, elem_type value) {
+  DEVICE_QUALIFIER void create_from(keyptr_or_keystore key, size_type key_length, const elem_type* value, size_type value_length) {
     // head node metadata
     elem_type elem;
     elem_type* curr_ptr = nullptr;  // NULL if head, else appendix
-    if (tile_.thread_rank() == head_node_length_lane_) { elem = key_length; }
-    if (tile_.thread_rank() == head_node_value_lane_) { elem = value; }
-    // ignore first two elements in head
-    key -= 2;
-    key_length += 2;
-    uint32_t skip_elems = 2;
+    if (tile_.thread_rank() == head_node_length_lane_) {
+      elem = (key_length << key_length_offset_bits_) |
+             (value_length << value_length_offset_bits_);
+    }
+    // ignore first one element in head
+    uint32_t skip_elems = 1;
+    key -= skip_elems;
+    key_length += skip_elems;
+    value -= key_length;
+    value_length += key_length;
     while (true) {
       // set elem
-      if (tile_.thread_rank() < min(key_length, node_max_len_)) {
-        elem = (tile_.thread_rank() >= skip_elems) ? key[tile_.thread_rank()] : elem;
+      if (skip_elems <= tile_.thread_rank()) {
+        if (tile_.thread_rank() < min(key_length, node_max_len_)) {
+          elem = key[tile_.thread_rank()];
+        }
+        else if (tile_.thread_rank() < min(value_length, node_max_len_)) {
+          elem = value[tile_.thread_rank()];
+        }
       }
       elem_type* next_ptr;
-      if (key_length > node_max_len_) {
+      if (value_length > node_max_len_) {
         auto next_index = allocator_.allocate(tile_);
         if (tile_.thread_rank() == next_lane_) { elem = next_index; }
         next_ptr = reinterpret_cast<elem_type*>(allocator_.address(next_index));
@@ -289,10 +290,12 @@ struct suffix_node_warp {
         lane_elem_ = elem;
       }
       // proceed
-      if (key_length <= node_max_len_) { break; }
+      if (value_length <= node_max_len_) { break; }
       curr_ptr = next_ptr;
-      key_length -= node_max_len_;
+      key_length = max(static_cast<int>(key_length - node_max_len_), 0);
       key += node_max_len_;
+      value_length -= node_max_len_;
+      value += node_max_len_;
       skip_elems = 0;
     }
   }
@@ -300,10 +303,10 @@ struct suffix_node_warp {
   DEVICE_QUALIFIER void flush(elem_type* key_buffer) {
     auto this_length = get_key_length();
     auto elem = lane_elem_;
-    // ignore first two elements in head
-    key_buffer -= 2;
-    this_length += 2;
-    uint32_t skip_elems = 2;
+    // ignore first one element in head
+    uint32_t skip_elems = 1;
+    key_buffer -= skip_elems;
+    this_length += skip_elems;
     while (true) {
       auto count = min(this_length, node_max_len_);
       if (skip_elems <= tile_.thread_rank() && tile_.thread_rank() < count) {
@@ -325,7 +328,6 @@ struct suffix_node_warp {
                                   reclaimer_type& reclaimer) {
     // move elements from src[offset:] and retire all nodes in src
     auto new_length = src.get_key_length() - offset;
-    auto value = src.get_value();
     // skip src nodes until the first element
     reclaimer.retire(src.get_node_index(), tile_);
     while (offset >= node_max_len_) {
@@ -337,11 +339,14 @@ struct suffix_node_warp {
     // copy elements into this
     elem_type dst_lane_elem;
     elem_type* dst_ptr = nullptr; // NULL means it's head
-    if (tile_.thread_rank() == head_node_length_lane_) { dst_lane_elem = new_length; }
-    if (tile_.thread_rank() == head_node_value_lane_) { dst_lane_elem = value; }
-    // ignore first two elements in head
-    new_length += 2;
-    uint32_t skip_elems = 2;
+    auto value_length = src.get_value_length();
+    if (tile_.thread_rank() == head_node_length_lane_) {
+      dst_lane_elem = (new_length << key_length_offset_bits_) |
+                      (value_length << value_length_offset_bits_);
+    }
+    // ignore first one element in head, but also copy value
+    uint32_t skip_elems = 1;
+    new_length += (skip_elems + value_length);
     while (true) {
       // phase 1. copy src[offset:node_max_len) -> dst[0:node_max_len-offset)
       uint32_t copy_count = min(new_length, node_max_len_ - offset);
@@ -386,6 +391,112 @@ struct suffix_node_warp {
     }
   }
 
+  DEVICE_QUALIFIER elem_type get_value() const {
+    // return first value slice
+    auto elem = lane_elem_;
+    // ignore first (key_length + 1) element in head
+    int skip_elems = get_key_length() + 1;
+    while (true) {
+      if (skip_elems < node_max_len_) {
+        return tile_.shfl(elem, skip_elems);
+      }
+      auto next_index = tile_.shfl(elem, next_lane_);
+      auto* next_ptr = reinterpret_cast<elem_type*>(allocator_.address(next_index));
+      elem = utils::memory::load<elem_type, false>(next_ptr + tile_.thread_rank());
+      skip_elems = max(static_cast<int>(skip_elems - node_max_len_), 0);
+    }
+  }
+
+  DEVICE_QUALIFIER void get_value(elem_type* value_buffer, size_type max_value_length) const {
+    auto value_length = min(get_value_length(), max_value_length);
+    auto elem = lane_elem_;
+    // ignore first (key_length + 1) element in head
+    int skip_elems = get_key_length() + 1;
+    value_buffer -= skip_elems;
+    value_length += skip_elems;
+    while (true) {
+      auto count = min(value_length, node_max_len_);
+      if (skip_elems <= tile_.thread_rank() && tile_.thread_rank() < count) {
+        value_buffer[tile_.thread_rank()] = elem;
+      }
+      value_length -= count;
+      if (value_length == 0) { break; }
+      value_buffer += count;
+      auto next_index = tile_.shfl(elem, next_lane_);
+      auto* next_ptr = reinterpret_cast<elem_type*>(allocator_.address(next_index));
+      elem = utils::memory::load<elem_type, false>(next_ptr + tile_.thread_rank());
+      skip_elems = max(static_cast<int>(skip_elems - node_max_len_), 0);
+    }
+  }
+
+  template <typename reclaimer_type>
+  DEVICE_QUALIFIER void switch_value_from(suffix_node_warp<tile_type, allocator_type>& src,
+                                          const elem_type* value,
+                                          size_type value_length,
+                                          reclaimer_type& reclaimer) {
+    // move elements from src, but switch to new value
+    auto key_length = src.get_key_length();
+    elem_type dst_lane_elem;
+    elem_type* dst_ptr = nullptr; // NULL means it's head
+    if (tile_.thread_rank() == head_node_length_lane_) {
+      dst_lane_elem = (key_length << key_length_offset_bits_) |
+                      (value_length << value_length_offset_bits_);
+    }
+    // ignore first one element in head
+    auto src_nodes_left = src.get_num_nodes() - 1;
+    reclaimer.retire(src.get_node_index(), tile_);
+    uint32_t skip_elems = 1;
+    key_length += skip_elems;
+    auto total_length = key_length + value_length;
+    value -= key_length;
+    while (true) {
+      if (skip_elems <= tile_.thread_rank()) {
+        if (tile_.thread_rank() < min(key_length, node_max_len_)) {
+          dst_lane_elem = src.lane_elem_;
+        }
+        else if (tile_.thread_rank() < min(total_length, node_max_len_)) {
+          dst_lane_elem = value[tile_.thread_rank()];
+        }
+      }
+      total_length = max(static_cast<int>(total_length - node_max_len_), 0);
+      if (total_length == 0) { break; }
+      // store dst & allocate dst.next
+      auto dst_index = allocator_.allocate(tile_);
+      if (tile_.thread_rank() == next_lane_) {
+        dst_lane_elem = dst_index;
+      }
+      if (dst_ptr) {
+        utils::memory::store<elem_type, false>(dst_ptr + tile_.thread_rank(), dst_lane_elem);
+      }
+      else {
+        lane_elem_ = dst_lane_elem;
+      }
+      dst_ptr = reinterpret_cast<elem_type*>(allocator_.address(dst_index));
+      if (src_nodes_left > 0) {
+        src.node_index_ = src.get_next();
+        src.load_head();
+        reclaimer.retire(src.node_index_, tile_);
+        src_nodes_left--;
+      }
+      value += node_max_len_;
+      key_length = max(static_cast<int>(key_length - node_max_len_), 0);
+      skip_elems = 0;
+    }
+    // flush dst_lane_elem
+    if (dst_ptr) {
+      utils::memory::store<elem_type, false>(dst_ptr + tile_.thread_rank(), dst_lane_elem);
+    }
+    else {
+      lane_elem_ = dst_lane_elem;
+    }
+    while (src_nodes_left > 0) {
+      src.node_index_ = src.get_next();
+      src.load_head();
+      reclaimer.retire(src.node_index_, tile_);
+      src_nodes_left--;
+    }
+  }
+
   template <typename reclaimer_type>
   DEVICE_QUALIFIER void retire(reclaimer_type& reclaimer) {
     reclaimer.retire(node_index_, tile_);
@@ -404,16 +515,6 @@ struct suffix_node_warp {
     }
   }
 
-  static DEVICE_QUALIFIER elem_type fetch_value_only(size_type suffix_index, allocator_type& allocator) {
-    auto* ptr = reinterpret_cast<elem_type*>(allocator.address(suffix_index));
-    return utils::memory::load<elem_type, false>(ptr + head_node_value_lane_);
-  }
-
-  static DEVICE_QUALIFIER elem_type fetch_length_only(size_type suffix_index, allocator_type& allocator) {
-    auto* ptr = reinterpret_cast<elem_type*>(allocator.address(suffix_index));
-    return utils::memory::load<elem_type, false>(ptr + head_node_length_lane_);
-  }
-
   DEVICE_QUALIFIER suffix_node_warp<tile_type, allocator_type>& operator=(
       const suffix_node_warp<tile_type, allocator_type>& other) {
     node_index_ = other.node_index_;
@@ -424,36 +525,41 @@ struct suffix_node_warp {
   DEVICE_QUALIFIER void print() const {
     bool lead_lane = (tile_.thread_rank() == 0);
     auto length = get_key_length();
-    auto value = get_value();
-    if (lead_lane) printf("node[%u]: s{l=%u v=%u; ", node_index_, length, value);
-    length += 2;
-    for (uint32_t i = 2; i < min(length, node_max_len_); i++) {
+    auto value_length = get_value_length();
+    if (lead_lane) printf("node[%u]: s{kl=%u vl=%u; K= ", node_index_, length, value_length);
+    length += 1;
+    auto total_length = length + value_length;
+    for (uint32_t i = 1; i < min(total_length, node_max_len_); i++) {
+      if (i == length && lead_lane) printf("; V= ");
       elem_type key_slice = tile_.shfl(lane_elem_, i);
       if (lead_lane) printf("%u ", key_slice);
     }
-    if (length <= node_max_len_) {
+    if (total_length <= node_max_len_) {
       if (lead_lane) printf("}\n");
     }
     else {
       auto next = get_next();
       if (lead_lane) printf("(n=%u)}\n", next);
-      length -= node_max_len_;
+      total_length -= node_max_len_;
+      length -= min(node_max_len_, length);
       while (true) {
         if (lead_lane) printf("node[%u]: s.{", next);
         auto* next_ptr = reinterpret_cast<elem_type*>(allocator_.address(next));
         auto elem = next_ptr[tile_.thread_rank()];
-        for (uint32_t i = 0; i < min(length, node_max_len_); i++) {
+        for (uint32_t i = 0; i < min(total_length, node_max_len_); i++) {
           elem_type key_slice = tile_.shfl(elem, i);
+          if (i == length && lead_lane) printf("; V= ");
           if (lead_lane) printf("%u ", key_slice);
         }
-        if (length <= node_max_len_) {
+        if (total_length <= node_max_len_) {
           if (lead_lane) printf("}\n");
           break;
         }
         else {
           next = tile_.shfl(elem, next_lane_);
           if (lead_lane) printf("(n=%u)}\n", next);
-          length -= node_max_len_;
+          total_length -= node_max_len_;
+          length -= min(node_max_len_, length);
         }
       }
     }
@@ -466,12 +572,14 @@ struct suffix_node_warp {
   allocator_type& allocator_;
 
   // each node consists of 32 elements and stores up to 31 key slices
-  // [key0] [key1] ... [key28] [key29] [key30] [next]
-  // At the head node, key0 = key_length and key1 = value
+  // [slice0] [slice1] ... [slice28] [slice29] [slice30] [next]
+  // At the head node, slice0 = (value_length: 16 | key_length: 16), value comes after key
 
   static_assert(sizeof(elem_type) == sizeof(uint32_t));
   static constexpr uint32_t head_node_length_lane_ = 0;
-  static constexpr uint32_t head_node_value_lane_ = 1;
   static constexpr uint32_t next_lane_ = node_width - 1;
   static constexpr uint32_t node_max_len_ = node_width - 1;
+  static constexpr uint32_t length_mask_ = (1u << 16) - 1;
+  static constexpr uint32_t key_length_offset_bits_ = 0;
+  static constexpr uint32_t value_length_offset_bits_ = 16;
 };

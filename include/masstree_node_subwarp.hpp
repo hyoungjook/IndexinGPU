@@ -37,6 +37,7 @@ struct masstree_node_subwarp {
   static constexpr uint32_t KEYSTATE_VALUE = 0b00u;
   static constexpr uint32_t KEYSTATE_LINK = 0b01u;
   static constexpr uint32_t KEYSTATE_SUFFIX = 0b11u;
+  static constexpr uint32_t KEYSTATE_LONGVAL = 0b10u;
   static_assert(tile_type::size() == node_width);
   DEVICE_QUALIFIER masstree_node_subwarp(const tile_type& tile, allocator_type& allocator)
       : tile_(tile), allocator_(allocator) {}
@@ -147,6 +148,9 @@ struct masstree_node_subwarp {
   }
   static DEVICE_QUALIFIER bool keystate_has_more_key(const uint32_t keystate) {
     return (keystate & keystate_mask_more_key_) != 0;
+  }
+  static DEVICE_QUALIFIER bool keystate_has_suffix_ptr(const uint32_t keystate) {
+    return (keystate & keystate_mask_suffix_) != 0;
   }
   DEVICE_QUALIFIER bool is_valid_lane() const {
     return tile_.thread_rank() < num_keys();
@@ -320,7 +324,9 @@ struct masstree_node_subwarp {
                                  const bool ignore_upper_key,
                                  const size_type out_max_count,
                                  int& link_entry_location,
-                                 value_type* out_value,
+                                 value_type* out_values,
+                                 size_type* out_value_lengths,
+                                 const size_type& out_value_max_length,
                                  key_type* out_keys,
                                  size_type* out_key_lengths,
                                  const size_type& layer,
@@ -391,39 +397,45 @@ struct masstree_node_subwarp {
     // store results
     if (count > 0) {
       in_range = (first_location <= tile_.thread_rank() && tile_.thread_rank() < last_location);
-      // store values
-      if (out_value) {
-        if (in_range) {
-          out_value[tile_.thread_rank() - first_location] =
-            (lane_keystate != KEYSTATE_SUFFIX) ? lane_elem_.value :
-              suffix_type::fetch_value_only(lane_elem_.value, allocator_);
-        }
-      }
-      if (out_key_lengths) {
-        // store key lengths
-        if (in_range) {
-          out_key_lengths[tile_.thread_rank() - first_location] =
-            layer + 1 + ((lane_keystate != KEYSTATE_SUFFIX) ? 0 :
-              suffix_type::fetch_length_only(lane_elem_.value, allocator_));
-        }
-      }
-      if (out_keys) {
-        // store key slice of this layer
-        if (in_range) {
+      // store KEYSTATE_VALUE entries first
+      if (in_range) {
+        if (out_keys) { // out_keys should get first slice, even for keystate suffix || longval.
           out_keys[(tile_.thread_rank() - first_location) * out_key_max_length + layer] = lane_elem_.key;
         }
-        // for suffix entries, store key slice of later layers too
-        bool to_flush = in_range && lane_keystate == KEYSTATE_SUFFIX;
-        uint32_t flush_queue = tile_.ballot(to_flush);
-        while (flush_queue) {
-          auto cur_location = __ffs(flush_queue) - 1;
-          auto suffix_index = get_value_from_location(cur_location);
-          auto suffix = suffix_type(suffix_index, tile_, allocator_);
-          suffix.load_head();
-          suffix.flush(out_keys + ((cur_location - first_location) * out_key_max_length + layer + 1));
-          if (tile_.thread_rank() == cur_location) { to_flush = false; }
-          flush_queue = tile_.ballot(to_flush);
+      }
+      if (in_range && lane_keystate == KEYSTATE_VALUE) {
+        if (out_value_lengths) {
+          out_value_lengths[tile_.thread_rank() - first_location] = 1;
         }
+        if (out_key_lengths) {
+          out_key_lengths[tile_.thread_rank() - first_location] = layer + 1;
+        }
+        if (out_values) {
+          out_values[(tile_.thread_rank() - first_location) * out_value_max_length] = lane_elem_.value;
+        }
+        in_range = false;
+      }
+      // store KEYSTATE_LONGVAL and SUFFIX entries cooperatively
+      uint32_t flush_queue = tile_.ballot(in_range);
+      while (flush_queue) {
+        auto cur_location = __ffs(flush_queue) - 1;
+        auto suffix_index = get_value_from_location(cur_location);
+        auto suffix = suffix_type(suffix_index, tile_, allocator_);
+        suffix.load_head();
+        if (out_value_lengths) {
+          out_value_lengths[cur_location - first_location] = suffix.get_value_length();
+        }
+        if (out_key_lengths) {
+          out_key_lengths[cur_location - first_location] = layer + 1 + suffix.get_key_length();
+        }
+        if (out_values) {
+          suffix.get_value(out_values + ((cur_location - first_location) * out_value_max_length), out_value_max_length);
+        }
+        if (out_keys) {
+          suffix.flush(out_keys + ((cur_location - first_location) * out_key_max_length + layer + 1));
+        }
+        if (tile_.thread_rank() == cur_location) { in_range = false; }
+        flush_queue = tile_.ballot(in_range);
       }
     }
     return count;
@@ -442,7 +454,7 @@ struct masstree_node_subwarp {
     // normally, location is left_half_width_
     // but a value entry and a link entry with the same key should be in the same node
     // to avoid comparing keys, we just shift if last elem of the left half is value entry
-    bool shift_required = is_border() && (get_keystate_from_location(half_node_width_ - 1) == KEYSTATE_VALUE);
+    bool shift_required = is_border() && (!keystate_has_more_key(get_keystate_from_location(half_node_width_ - 1)));
     return shift_required ? (half_node_width_ - 1) : half_node_width_;
   }
 
@@ -453,7 +465,7 @@ struct masstree_node_subwarp {
     //assert(!(
     //  is_border() &&
     //  (get_key_from_location(left_width - 1) == get_key_from_location(left_width)) &&
-    //  (get_keystate_from_location(left_width - 1) == KEYSTATE_VALUE)
+    //  (!keystate_has_more_key(get_keystate_from_location(left_width - 1)))
     //));
     assert(is_full());
     // prepare the upper half in right sibling
@@ -579,9 +591,9 @@ struct masstree_node_subwarp {
     auto key_location = utils::bits::bfind(key_is_larger_bitmap) + 1;
     assert(key_location <= num_keys());
     // if key already exists, this is the location of it.
-    if (is_border() && (keystate != KEYSTATE_VALUE) &&
+    if (is_border() && keystate_has_more_key(keystate) &&
         (key_location < num_keys()) && (get_key_from_location(key_location) == key) &&
-        (get_keystate_from_location(key_location) == KEYSTATE_VALUE)) {
+        (!keystate_has_more_key(get_keystate_from_location(key_location)))) {
       // the (link or suffix) entry should go after the same-key value entry.
       key_location++;
     }
@@ -717,7 +729,7 @@ struct masstree_node_subwarp {
                                     masstree_node_subwarp& parent_node) {
     // compute num shift; adjust similar to get_split_left_width()
     uint32_t num_shift = (sibling_node.num_keys() - num_keys()) / 2;
-    if (is_border() && (sibling_node.get_keystate_from_location(sibling_node.num_keys() - num_shift - 1) == KEYSTATE_VALUE)) {
+    if (is_border() && (!keystate_has_more_key(sibling_node.get_keystate_from_location(sibling_node.num_keys() - num_shift - 1)))) {
       num_shift++;
     }
     // copy last num_shift entries of the sibling into current
@@ -757,7 +769,7 @@ struct masstree_node_subwarp {
     //assert(!(
     //  is_border() &&
     //  (sibling_node.get_key_from_location(sibling_node.num_keys_ - 1) == get_key_from_location(0)) &&
-    //  (sibling_node.get_keystate_from_location(sibling_node.num_keys_ - 1) == KEYSTATE_VALUE)
+    //  (!keystate_has_more_key(sibling_node.get_keystate_from_location(sibling_node.num_keys_ - 1)))
     //));
   }
 
@@ -768,7 +780,7 @@ struct masstree_node_subwarp {
     // compute num shift; adjust similar to get_split_left_width()
     auto this_num_keys = num_keys();
     uint32_t num_shift = (sibling_node.num_keys() - this_num_keys) / 2;
-    if (is_border() && (sibling_node.get_keystate_from_location(num_shift - 1) == KEYSTATE_VALUE)) {
+    if (is_border() && (!keystate_has_more_key(sibling_node.get_keystate_from_location(num_shift - 1)))) {
       num_shift--;
     }
     // copy first num_shift entries of the sibling into current
@@ -824,7 +836,7 @@ struct masstree_node_subwarp {
     //assert(!(
     //  is_border() &&
     //  (get_key_from_location(num_keys_ - 1) == new_sibling_node.get_key_from_location(0)) &&
-    //  (get_keystate_from_location(num_keys_ - 1) == KEYSTATE_VALUE)
+    //  (!keystate_has_more_key(get_keystate_from_location(num_keys_ - 1)))
     //));
   }
 
@@ -895,7 +907,14 @@ struct masstree_node_subwarp {
       auto key = get_key_from_location(i);
       auto value = get_value_from_location(i);
       auto keystate = get_keystate_from_location(i);
-      if (lead_lane) printf("(%u %u %s) ", key, value, keystate == KEYSTATE_VALUE ? "$" : (keystate == KEYSTATE_LINK ? ":" : "s"));
+      auto keystate_symbol = [](uint32_t keystate) -> const char* {
+        if (keystate == KEYSTATE_VALUE) { return "$"; }
+        if (keystate == KEYSTATE_LINK) { return ":"; }
+        if (keystate == KEYSTATE_SUFFIX) { return "s"; }
+        if (keystate == KEYSTATE_LONGVAL) { return "v"; }
+        return "?";
+      };
+      if (lead_lane) printf("(%u %u %s) ", key, value, keystate_symbol(keystate));
     }
     if (lead_lane) printf("%s %s ", is_locked() ? "locked" : "unlocked", is_border() ? "border" : "interior");
     key_type sibling_key = get_high_key();
@@ -909,7 +928,7 @@ struct masstree_node_subwarp {
     if (lead_lane) printf("}\n");
     for (size_type i = 0; i < num_keys(); ++i) {
       uint32_t keystate = get_keystate_from_location(i);
-      if (keystate == KEYSTATE_SUFFIX) {
+      if (keystate_has_suffix_ptr(keystate)) {
         size_type suffix_index = get_value_from_location(i);
         auto suffix = suffix_node_subwarp<tile_type, allocator_type>(suffix_index, tile_, allocator_);
         suffix.load_head();
@@ -940,6 +959,7 @@ struct masstree_node_subwarp {
   //        (1) keystate=0b00 (key_suffix=0, key_more=0): value is the final value, key ends here
   //        (2) keystate=0b01 (key_suffix=0, key_more=1): value is link to the next layer root, key continues
   //        (3) keystate=0b11 (key_suffix=1, key_more=1): value is link to the suffix info, key continues (but suffix info contains the final value)
+  //        (4) keystate=0b10 (key_suffix=1, key_more=0): value is link to the suffix info but key ends here (final value is long)
   //      We don't allow link after suffix (i.e. prefix compression) following the original Masstree.
 
   // metadata is 32bits.
