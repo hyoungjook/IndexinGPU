@@ -54,46 +54,43 @@ struct hashtable_node_subwarp {
     write_metadata_to_registers();
   }
 
-  template <bool atomic, bool acquire = true>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void load_from_array(key_type* table_ptr) {
     auto node_ptr = reinterpret_cast<elem_unsigned_type*>(table_ptr + (static_cast<std::size_t>(2 * node_width) * node_index_));
-    do_load<atomic, acquire>(node_ptr);
+    do_load<order>(node_ptr);
   }
-  template <bool atomic, bool acquire = true>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void load_from_allocator() {
     auto node_ptr = reinterpret_cast<elem_unsigned_type*>(allocator_.address(node_index_));
-    do_load<atomic, acquire>(node_ptr);
+    do_load<order>(node_ptr);
   }
-  template <bool atomic, bool acquire>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void do_load(elem_unsigned_type* node_ptr) {
-    if constexpr (atomic) { tile_.sync(); }
-    auto elem = utils::memory::load<elem_unsigned_type, atomic, acquire>(node_ptr + tile_.thread_rank());
+    auto elem = utils::memory::cacheline_atomic_load<elem_unsigned_type, order>(node_ptr, tile_);
     lane_elem_ = *reinterpret_cast<elem_type*>(&elem);
-    if constexpr (atomic) { tile_.sync(); }
     read_metadata_from_registers();
   }
-  template <bool atomic, bool release = true>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void store_to_array(key_type* table_ptr) {
     auto node_ptr = table_ptr + (static_cast<std::size_t>(2 * node_width) * node_index_);
-    do_store<atomic, release>(reinterpret_cast<elem_unsigned_type*>(node_ptr));
+    do_store<order>(reinterpret_cast<elem_unsigned_type*>(node_ptr));
   }
-  template <bool atomic, bool release = true>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void store_to_allocator() {
     auto node_ptr = reinterpret_cast<elem_unsigned_type*>(allocator_.address(node_index_));
-    do_store<atomic, release>(node_ptr);
+    do_store<order>(node_ptr);
   }
-  template <bool atomic, bool release = true>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void store_head_to_array_aux_to_allocator(key_type* table_ptr) {
     auto node_ptr = is_head() ?
         reinterpret_cast<elem_unsigned_type*>(table_ptr + (static_cast<std::size_t>(2 * node_width) * node_index_)) :
         reinterpret_cast<elem_unsigned_type*>(allocator_.address(node_index_));
-    do_store<atomic, release>(node_ptr);
+    do_store<order>(node_ptr);
   }
-  template <bool atomic, bool release>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void do_store(elem_unsigned_type* node_ptr) {
-    if constexpr (atomic) { tile_.sync(); }
-    utils::memory::store<elem_unsigned_type, atomic, release>(node_ptr + tile_.thread_rank(), *reinterpret_cast<elem_unsigned_type*>(&lane_elem_));
-    if constexpr (atomic) { tile_.sync(); }
+    utils::memory::cacheline_atomic_store<elem_unsigned_type, order>(
+      node_ptr, *reinterpret_cast<elem_unsigned_type*>(&lane_elem_), tile_);
   }
 
   DEVICE_QUALIFIER void read_metadata_from_registers() {

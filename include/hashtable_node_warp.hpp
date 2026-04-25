@@ -50,45 +50,41 @@ struct hashtable_node_warp {
     write_metadata_to_registers();
   }
 
-  template <bool atomic, bool acquire = true>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void load_from_array(elem_type* table_ptr) {
     auto node_ptr = table_ptr + (static_cast<std::size_t>(2 * node_width) * node_index_);
-    do_load<atomic, acquire>(node_ptr);
+    do_load<order>(node_ptr);
   }
-  template <bool atomic, bool acquire = true>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void load_from_allocator() {
     auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
-    do_load<atomic, acquire>(node_ptr);
+    do_load<order>(node_ptr);
   }
-  template <bool atomic, bool acquire>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void do_load(elem_type* node_ptr) {
-    if constexpr (atomic) { tile_.sync(); }
-    lane_elem_ = utils::memory::load<elem_type, atomic, acquire>(node_ptr + tile_.thread_rank());
-    if constexpr (atomic) { tile_.sync(); }
+    lane_elem_ = utils::memory::cacheline_atomic_load<elem_type, order>(node_ptr, tile_);
     read_metadata_from_registers();
   }
-  template <bool atomic, bool release = true>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void store_to_array(elem_type* table_ptr) {
     auto node_ptr = table_ptr + (static_cast<std::size_t>(2 * node_width) * node_index_);
-    do_store<atomic, release>(node_ptr);
+    do_store<order>(node_ptr);
   }
-  template <bool atomic, bool release = true>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void store_to_allocator() {
     auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
-    do_store<atomic, release>(node_ptr);
+    do_store<order>(node_ptr);
   }
-  template <bool atomic, bool release = true>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void store_head_to_array_aux_to_allocator(elem_type* table_ptr) {
     auto node_ptr = is_head() ?
         table_ptr + (static_cast<std::size_t>(2 * node_width) * node_index_) :
         reinterpret_cast<elem_type*>(allocator_.address(node_index_));
-    do_store<atomic, release>(node_ptr);
+    do_store<order>(node_ptr);
   }
-  template <bool atomic, bool release>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void do_store(elem_type* node_ptr) {
-    if constexpr (atomic) { tile_.sync(); }
-    utils::memory::store<elem_type, atomic, release>(node_ptr + tile_.thread_rank(), lane_elem_);
-    if constexpr (atomic) { tile_.sync(); }
+    utils::memory::cacheline_atomic_store<elem_type, order>(node_ptr, lane_elem_, tile_);
   }
 
   DEVICE_QUALIFIER void read_metadata_from_registers() {

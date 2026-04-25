@@ -60,47 +60,37 @@ struct masstree_node_warp {
     write_metadata_to_registers();
   }
 
-  template <bool atomic, bool acquire = true>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void load() {
-    auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
-    if constexpr (atomic) { tile_.sync(); }
-    lane_elem_ = utils::memory::load<elem_type, atomic, acquire>(node_ptr + tile_.thread_rank());
-    if constexpr (atomic) { tile_.sync(); }
+    load_fetchonly<order>();
     read_metadata_from_registers();
   }
-  template <bool atomic, bool acquire = true>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void load_fetchonly() {
     auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
-    if constexpr (atomic) { tile_.sync(); }
-    lane_elem_ = utils::memory::load<elem_type, atomic, acquire>(node_ptr + tile_.thread_rank());
-    if constexpr (atomic) { tile_.sync(); }
+    lane_elem_ = utils::memory::cacheline_atomic_load<elem_type, order>(node_ptr, tile_);
   }
-  template <bool atomic, bool acquire = true, typename warp_type>
+  template <utils::memory_order order, typename warp_type>
   DEVICE_QUALIFIER void load_warpwidesync(const warp_type& warp) {
     static_assert(warp_type::size() == tile_type::size());
     auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
-    if constexpr (atomic) { warp.sync(); }
-    lane_elem_ = utils::memory::load<elem_type, atomic, acquire>(node_ptr + tile_.thread_rank());
-    if constexpr (atomic) { warp.sync(); }
+    if constexpr (order != utils::memory_order::weak) { warp.sync(); }
+    lane_elem_ = utils::memory::load<elem_type, order>(node_ptr + tile_.thread_rank());
+    if constexpr (order != utils::memory_order::weak) { warp.sync(); }
   }
-  template <bool atomic, bool release = true>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void store() {
     auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
-    if constexpr (atomic) { tile_.sync(); }
-    utils::memory::store<elem_type, atomic, release>(node_ptr + tile_.thread_rank(), lane_elem_);
-    if constexpr (atomic) { tile_.sync(); }
+    utils::memory::cacheline_atomic_store<elem_type, order>(node_ptr, lane_elem_, tile_);
   }
-  template <bool atomic, bool release = true>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void store_unlock() {
     assert(is_locked());
     metadata_ &= ~lock_bit_mask_;
     if (tile_.thread_rank() == metadata_lane_) {
       lane_elem_ &= ~lock_bit_mask_;
     }
-    auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
-    if constexpr (atomic) { tile_.sync(); }
-    utils::memory::store<elem_type, atomic, release>(node_ptr + tile_.thread_rank(), lane_elem_);
-    if constexpr (atomic) { tile_.sync(); }
+    store<order>();
   }
 
   DEVICE_QUALIFIER void read_metadata_from_registers() {
@@ -200,9 +190,7 @@ struct masstree_node_warp {
     // if previously not locked, now it's locked
     bool is_locked = (tile_.shfl(lane_elem_, metadata_lane_) & lock_bit_mask_) == 0;
     if (is_locked) {
-      tile_.sync();
-      lane_elem_ = utils::memory::load<elem_type, true, true>(node_ptr + tile_.thread_rank());
-      tile_.sync();
+      lane_elem_ = utils::memory::cacheline_atomic_load<elem_type, utils::memory_order::acq_rel>(node_ptr, tile_);
       read_metadata_from_registers();
     }
     return is_locked;

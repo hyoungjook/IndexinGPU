@@ -36,11 +36,17 @@ struct suffix_node_warp {
   //  - suffix stores are protected by tree/bucket node's locks, which includes threadfence with memory_order_release
   DEVICE_QUALIFIER void load_head() {
     auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
-    lane_elem_ = utils::memory::load<elem_type, false>(node_ptr + tile_.thread_rank());
+    lane_elem_ = do_load_node(node_ptr);
+  }
+  DEVICE_QUALIFIER elem_type do_load_node(const elem_type* ptr) const {
+    return utils::memory::cacheline_atomic_load<elem_type, utils::memory_order::weak>(ptr, tile_);
   }
   DEVICE_QUALIFIER void store_head() {
     auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
-    utils::memory::store<elem_type, false>(node_ptr + tile_.thread_rank(), lane_elem_);
+    do_store_node(node_ptr, lane_elem_);
+  }
+  DEVICE_QUALIFIER void do_store_node(elem_type* ptr, elem_type elem) const {
+    utils::memory::cacheline_atomic_store<elem_type, utils::memory_order::weak>(ptr, elem, tile_);
   }
 
   DEVICE_QUALIFIER size_type get_node_index() const {
@@ -86,7 +92,7 @@ struct suffix_node_warp {
       key_length -= node_max_len_;
       auto next_index = tile_.shfl(elem, next_lane_);
       auto* next_ptr = reinterpret_cast<elem_type*>(allocator_.address(next_index));
-      elem = utils::memory::load<elem_type, false>(next_ptr + tile_.thread_rank());
+      elem = do_load_node(next_ptr);
       skip_elems = 0;
     }
     assert(false);
@@ -138,7 +144,7 @@ struct suffix_node_warp {
       key_offset += node_max_len_;
       auto next_index = tile_.shfl(elem, next_lane_);
       auto* next_ptr = reinterpret_cast<elem_type*>(allocator_.address(next_index));
-      elem = utils::memory::load<elem_type, false>(next_ptr + tile_.thread_rank());
+      elem = do_load_node(next_ptr);
       skip_elems = 0;
     }
     assert(false);
@@ -180,7 +186,7 @@ struct suffix_node_warp {
       this_length -= node_max_len_;
       auto next_index = tile_.shfl(elem, next_lane_);
       auto* next_ptr = reinterpret_cast<elem_type*>(allocator_.address(next_index));
-      elem = utils::memory::load<elem_type, false>(next_ptr + tile_.thread_rank());
+      elem = do_load_node(next_ptr);
       if (skip_elems <= tile_.thread_rank()) {
         exponent0 *= prime0_multiplier;
       }
@@ -236,7 +242,7 @@ struct suffix_node_warp {
       this_length -= node_max_len_;
       auto next_index = tile_.shfl(elem, next_lane_);
       auto* next_ptr = reinterpret_cast<elem_type*>(allocator_.address(next_index));
-      elem = utils::memory::load<elem_type, false>(next_ptr + tile_.thread_rank());
+      elem = do_load_node(next_ptr);
       if (skip_elems <= tile_.thread_rank()) {
         exponent0 *= prime0_multiplier;
         exponent1 *= prime1_multiplier;
@@ -284,7 +290,7 @@ struct suffix_node_warp {
       }
       // store
       if (curr_ptr) { // !is_head
-        utils::memory::store<elem_type, false>(curr_ptr + tile_.thread_rank(), elem);
+        do_store_node(curr_ptr, elem);
       }
       else {  // is_head
         lane_elem_ = elem;
@@ -317,7 +323,7 @@ struct suffix_node_warp {
       key_offset += count;
       auto next_index = tile_.shfl(elem, next_lane_);
       auto* next_ptr = reinterpret_cast<elem_type*>(allocator_.address(next_index));
-      elem = utils::memory::load<elem_type, false>(next_ptr + tile_.thread_rank());
+      elem = do_load_node(next_ptr);
       skip_elems = 0;
     }
   }
@@ -375,7 +381,7 @@ struct suffix_node_warp {
         dst_lane_elem = dst_index;
       }
       if (dst_ptr) {
-        utils::memory::store<elem_type, false>(dst_ptr + tile_.thread_rank(), dst_lane_elem);
+        do_store_node(dst_ptr, dst_lane_elem);
       }
       else {
         lane_elem_ = dst_lane_elem;
@@ -384,7 +390,7 @@ struct suffix_node_warp {
     }
     // flush dst_lane_elem
     if (dst_ptr) {
-      utils::memory::store<elem_type, false>(dst_ptr + tile_.thread_rank(), dst_lane_elem);
+      do_store_node(dst_ptr, dst_lane_elem);
     }
     else {
       lane_elem_ = dst_lane_elem;
@@ -402,7 +408,7 @@ struct suffix_node_warp {
       }
       auto next_index = tile_.shfl(elem, next_lane_);
       auto* next_ptr = reinterpret_cast<elem_type*>(allocator_.address(next_index));
-      elem = utils::memory::load<elem_type, false>(next_ptr + tile_.thread_rank());
+      elem = do_load_node(next_ptr);
       skip_elems = max(static_cast<int>(skip_elems - node_max_len_), 0);
     }
   }
@@ -424,7 +430,7 @@ struct suffix_node_warp {
       value_offset += count;
       auto next_index = tile_.shfl(elem, next_lane_);
       auto* next_ptr = reinterpret_cast<elem_type*>(allocator_.address(next_index));
-      elem = utils::memory::load<elem_type, false>(next_ptr + tile_.thread_rank());
+      elem = do_load_node(next_ptr);
       skip_elems = max(static_cast<int>(skip_elems - node_max_len_), 0);
     }
   }
@@ -466,7 +472,7 @@ struct suffix_node_warp {
         dst_lane_elem = dst_index;
       }
       if (dst_ptr) {
-        utils::memory::store<elem_type, false>(dst_ptr + tile_.thread_rank(), dst_lane_elem);
+        do_store_node(dst_ptr, dst_lane_elem);
       }
       else {
         lane_elem_ = dst_lane_elem;
@@ -484,7 +490,7 @@ struct suffix_node_warp {
     }
     // flush dst_lane_elem
     if (dst_ptr) {
-      utils::memory::store<elem_type, false>(dst_ptr + tile_.thread_rank(), dst_lane_elem);
+      do_store_node(dst_ptr, dst_lane_elem);
     }
     else {
       lane_elem_ = dst_lane_elem;
@@ -506,7 +512,7 @@ struct suffix_node_warp {
       auto* suffix_ptr = reinterpret_cast<elem_type*>(allocator_.address(suffix_index));
       elem_type next_index;
       if (tile_.thread_rank() == 0) {
-        next_index = utils::memory::load<elem_type, false>(suffix_ptr + next_lane_);
+        next_index = utils::memory::load<elem_type, utils::memory_order::weak>(suffix_ptr + next_lane_);
       }
       next_index = tile_.shfl(next_index, 0);
       reclaimer.retire(suffix_index, tile_);

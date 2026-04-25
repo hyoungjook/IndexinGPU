@@ -184,8 +184,10 @@ struct gpu_chainhashtable {
     bucket_index %= num_buckets_;
     suffix_type suffix_if_found(tile, allocator);
     auto node = node_type(bucket_index, tile, allocator);
-    node.template load_from_array<concurrent>(d_table_);
-    int location_if_found = coop_traverse_until_found<concurrent, use_hash_tag>(
+    node.template load_from_array<concurrent ? utils::memory_order::acq_rel :
+                                               utils::memory_order::weak>(d_table_);
+    int location_if_found = coop_traverse_until_found<
+      concurrent ? utils::memory_order::acq_rel : utils::memory_order::weak, use_hash_tag>(
         node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator);
     if (location_if_found >= 0) { // found
       if (node_type::keystate_has_suffix_ptr(node.get_keystate_from_location(location_if_found))) {
@@ -228,8 +230,8 @@ struct gpu_chainhashtable {
     node_type::lock(d_table_, bucket_index, tile);
     suffix_type suffix_if_found(tile, allocator);
     auto node = node_type(bucket_index, tile, allocator);
-    node.template load_from_array<true>(d_table_);
-    int location_if_found = coop_traverse_until_found<false, use_hash_tag>( // use weak load here b/c the first load did memory_order_acquire
+    node.template load_from_array<utils::memory_order::acq_rel>(d_table_);
+    int location_if_found = coop_traverse_until_found<utils::memory_order::weak_tilesync, use_hash_tag>( // use weak load here b/c the first load did memory_order_acquire
         node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator);
     if (location_if_found >= 0) { // already exists
       if (update_if_exists) {
@@ -263,7 +265,7 @@ struct gpu_chainhashtable {
           }
         }
         node.update(location_if_found, update_value, keystate);
-        node.template store_head_to_array_aux_to_allocator<false>(d_table_);
+        node.template store_head_to_array_aux_to_allocator<utils::memory_order::weak_tilesync>(d_table_);
       }
       node_type::unlock(d_table_, bucket_index, tile);
       return update_if_exists;
@@ -286,14 +288,14 @@ struct gpu_chainhashtable {
       new_node.initialize_empty(false);
       new_node.insert(first_slice, to_insert, more_key ? node_type::KEYSTATE_SUFFIX : (value_length == 1 ? node_type::KEYSTATE_VALUE : node_type::KEYSTATE_LONGVAL));
       // write order: new_node -> node
-      new_node.template store_to_allocator<false>();
+      new_node.template store_to_allocator<utils::memory_order::weak_tilesync>();
       node.set_next_index(next_index);
       node.set_has_next();
     }
     else { // !node.is_full()
       node.insert(first_slice, to_insert, more_key ? node_type::KEYSTATE_SUFFIX : (value_length == 1 ? node_type::KEYSTATE_VALUE : node_type::KEYSTATE_LONGVAL));
     }
-    node.template store_head_to_array_aux_to_allocator<true>(d_table_);
+    node.template store_head_to_array_aux_to_allocator<utils::memory_order::acq_rel>(d_table_);
     node_type::unlock(d_table_, bucket_index, tile);
     return true;
   }
@@ -323,13 +325,13 @@ struct gpu_chainhashtable {
     int location_if_found;
     suffix_type suffix_if_found(tile, allocator);
     auto node = node_type(bucket_index, tile, allocator);
-    node.template load_from_array<true>(d_table_);
+    node.template load_from_array<utils::memory_order::acq_rel>(d_table_);
     if constexpr (do_merge) {
       location_if_found = coop_traverse_until_found_merge<use_hash_tag>(
         node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator, reclaimer);
     }
     else {
-      location_if_found = coop_traverse_until_found<false, use_hash_tag>( // use weak load here b/c the first load did memory_order_acquire
+      location_if_found = coop_traverse_until_found<utils::memory_order::weak_tilesync, use_hash_tag>( // use weak load here b/c the first load did memory_order_acquire
         node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator);
     }
     if (location_if_found >= 0) { // exists
@@ -337,7 +339,7 @@ struct gpu_chainhashtable {
         suffix_if_found.retire(reclaimer);
       }
       node.erase(location_if_found);
-      node.template store_head_to_array_aux_to_allocator<false>(d_table_);
+      node.template store_head_to_array_aux_to_allocator<utils::memory_order::weak_tilesync>(d_table_);
       node_type::unlock(d_table_, bucket_index, tile);
       return true;
     }
@@ -348,7 +350,7 @@ struct gpu_chainhashtable {
 
  private:
   // device-side helper functions
-  template <bool concurrent, bool use_hash_tag, typename tile_type, typename keyptr_or_keystore>
+  template <utils::memory_order order, bool use_hash_tag, typename tile_type, typename keyptr_or_keystore>
   DEVICE_QUALIFIER int coop_traverse_until_found(hashtable_node<tile_type, device_allocator_context_type>& node,
                                                  const key_slice_type& first_slice,
                                                  bool more_key,
@@ -393,7 +395,7 @@ struct gpu_chainhashtable {
       if (!node.has_next()) { break; }
       auto next_index = node.get_next_index();
       node = node_type(next_index, tile, allocator);
-      node.template load_from_allocator<concurrent>();
+      node.template load_from_allocator<order>();
     }
     // not found until the end
     return -1;
@@ -445,10 +447,12 @@ struct gpu_chainhashtable {
       if (!node.has_next()) { break; }
       auto next_index = node.get_next_index();
       auto next_node = node_type(next_index, tile, allocator);
-      next_node.template load_from_allocator<false>();  // first load after lock did memory_order_acquire
+      // weak_tilesync b/c first load after lock did memory_order_acquire
+      next_node.template load_from_allocator<utils::memory_order::weak_tilesync>();
       if (node.is_mergeable(next_node)) {
         node.merge(next_node);
-        node.template store_head_to_array_aux_to_allocator<false>(d_table_);  // future unlock will do memory_order_release
+        // weak_tilesync b/c future unlock will do memory_order_release
+        node.template store_head_to_array_aux_to_allocator<utils::memory_order::weak_tilesync>(d_table_);
         reclaimer.retire(next_index, tile);
       }
       else {
@@ -469,12 +473,12 @@ struct gpu_chainhashtable {
     device_allocator_context_type allocator{allocator_, tile};
     for (size_type bucket_index = 0; bucket_index < num_buckets_; bucket_index++) {
       auto node = node_type(bucket_index, tile, allocator);
-      node.template load_from_array<false>(d_table_);
+      node.template load_from_array<utils::memory_order::weak>(d_table_);
       task.exec(node, bucket_index, tile, allocator);
       while (node.has_next()) {
         auto next_index = node.get_next_index();
         node = node_type(next_index, tile, allocator);
-        node.template load_from_allocator<false>();
+        node.template load_from_allocator<utils::memory_order::weak>();
         task.exec(node, -1, tile, allocator);
       }
     }
@@ -573,7 +577,7 @@ struct gpu_chainhashtable {
     using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     auto node = node_type(bucket_index, tile, allocator);
     node.initialize_empty(true);
-    node.template store_to_array<false>(d_table_);
+    node.template store_to_array<utils::memory_order::weak>(d_table_);
   }
 
   void allocate() {

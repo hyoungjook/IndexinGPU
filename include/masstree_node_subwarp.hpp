@@ -64,31 +64,25 @@ struct masstree_node_subwarp {
     write_metadata_to_registers();
   }
 
-  template <bool atomic, bool acquire = true>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void load() {
-    auto node_ptr = reinterpret_cast<elem_unsigned_type*>(allocator_.address(node_index_));
-    if constexpr (atomic) { tile_.sync(); }
-    auto elem = utils::memory::load<elem_unsigned_type, atomic, acquire>(node_ptr + tile_.thread_rank());
-    if constexpr (atomic) { tile_.sync(); }
-    lane_elem_ = *reinterpret_cast<elem_type*>(&elem);
+    load_fetchonly<order>();
     read_metadata_from_registers();
   }
-  template <bool atomic, bool acquire = true>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void load_fetchonly() {
     auto node_ptr = reinterpret_cast<elem_unsigned_type*>(allocator_.address(node_index_));
-    if constexpr (atomic) { tile_.sync(); }
-    auto elem = utils::memory::load<elem_unsigned_type, atomic, acquire>(node_ptr + tile_.thread_rank());
-    if constexpr (atomic) { tile_.sync(); }
+    auto elem = utils::memory::cacheline_atomic_load<elem_unsigned_type, order>(node_ptr, tile_);
     lane_elem_ = *reinterpret_cast<elem_type*>(&elem);
   }
-  template <bool atomic, bool acquire = true, typename warp_type>
+  template <utils::memory_order order, typename warp_type>
   DEVICE_QUALIFIER void load_warpwidesync(const warp_type& warp) {
     auto node_ptr = reinterpret_cast<key_type*>(allocator_.address(node_index_));
     // 1. fetch once: thread0-15 fetches tile.rank()*2, thread16-31 fetches tile.rank()*2+1
     int fetch_idx = (tile_.thread_rank() * 2) + (warp.thread_rank() < 16 ? 0 : 1);
-    if constexpr (atomic) { warp.sync(); }
-    auto tmp_elem = utils::memory::load<key_type, atomic, acquire>(node_ptr + fetch_idx);
-    if constexpr (atomic) { warp.sync(); }
+    if constexpr (order != utils::memory_order::weak) { warp.sync(); }
+    auto tmp_elem = utils::memory::load<key_type, order>(node_ptr + fetch_idx);
+    if constexpr (order != utils::memory_order::weak) { warp.sync(); }
     // 2. re-distribute tmp_elem
     lane_elem_.key = tmp_elem;
     lane_elem_.value = tmp_elem;
@@ -97,24 +91,20 @@ struct masstree_node_subwarp {
     auto down_elem = warp.shfl_down(tmp_elem, 16);
     if (warp.thread_rank() < 16) { lane_elem_.value = down_elem; }
   }
-  template <bool atomic, bool release = true>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void store() {
     auto node_ptr = reinterpret_cast<elem_unsigned_type*>(allocator_.address(node_index_));
-    if constexpr (atomic) { tile_.sync(); }
-    utils::memory::store<elem_unsigned_type, atomic, release>(node_ptr + tile_.thread_rank(), *reinterpret_cast<elem_unsigned_type*>(&lane_elem_));
-    if constexpr (atomic) { tile_.sync(); }
+    utils::memory::cacheline_atomic_store<elem_unsigned_type, order>(
+      node_ptr, *reinterpret_cast<elem_unsigned_type*>(&lane_elem_), tile_);
   }
-  template <bool atomic, bool release = true>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void store_unlock() {
     assert(is_locked());
     metadata_ &= ~lock_bit_mask_;
     if (tile_.thread_rank() == metadata_lane_) {
       lane_elem_.key &= ~lock_bit_mask_;
     }
-    auto node_ptr = reinterpret_cast<elem_unsigned_type*>(allocator_.address(node_index_));
-    if constexpr (atomic) { tile_.sync(); }
-    utils::memory::store<elem_unsigned_type, atomic, release>(node_ptr + tile_.thread_rank(), *reinterpret_cast<elem_unsigned_type*>(&lane_elem_));
-    if constexpr (atomic) { tile_.sync(); }
+    store<order>();
   }
 
   DEVICE_QUALIFIER void read_metadata_from_registers() {
@@ -204,10 +194,9 @@ struct masstree_node_subwarp {
     // if previously not locked, now it's locked
     bool is_locked = (tile_.shfl(lane_elem_.key, metadata_lane_) & lock_bit_mask_) == 0;
     if (is_locked) {
-      tile_.sync();
-      auto elem = utils::memory::load<elem_unsigned_type, true, true>(reinterpret_cast<elem_unsigned_type*>(node_ptr) + tile_.thread_rank());
+      auto elem = utils::memory::cacheline_atomic_load<elem_unsigned_type, utils::memory_order::acq_rel>(
+        reinterpret_cast<elem_unsigned_type*>(node_ptr), tile_);
       lane_elem_ = *reinterpret_cast<elem_type*>(&elem);
-      tile_.sync();
       read_metadata_from_registers();
     }
     return is_locked;

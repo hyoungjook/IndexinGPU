@@ -287,7 +287,7 @@ private:
       bool is_quiescent = true;
       bool is_epoch_up_to_date = true;
       if (i < num_active_blocks_) {
-        auto epoch = utils::memory::load<size_type, true>(reclaimer_.announce_ + i);
+        auto epoch = utils::memory::load<size_type, utils::memory_order::relaxed>(reclaimer_.announce_ + i);
         is_quiescent = (epoch & critical_bit_mask_) == 0;
         is_epoch_up_to_date = ((epoch & ~critical_bit_mask_) == cur_epoch);
       }
