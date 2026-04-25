@@ -201,11 +201,11 @@ struct gpu_masstree {
     return root_node.get_lane_elem();
   }
 
-  template <bool concurrent, typename tile_type, typename keyptr_or_keystore>
+  template <bool concurrent, typename tile_type, typename keyptr_or_keystore, typename valptr_or_valstore>
   DEVICE_QUALIFIER size_type cooperative_find_from_root(elem_type root_lane_elem,
                                                         keyptr_or_keystore& key,
                                                         size_type key_length,
-                                                        value_slice_type* value,
+                                                        valptr_or_valstore& value,
                                                         size_type max_value_length,
                                                         const tile_type& tile,
                                                         device_allocator_context_type& allocator) {
@@ -258,10 +258,10 @@ struct gpu_masstree {
     return 0;
   }
 
-  template <bool concurrent, typename tile_type, typename keyptr_or_keystore>
+  template <bool concurrent, typename tile_type, typename keyptr_or_keystore, typename valptr_or_valstore>
   DEVICE_QUALIFIER size_type cooperative_find(keyptr_or_keystore& key,
                                               size_type key_length,
-                                              value_slice_type* value,
+                                              valptr_or_valstore& value,
                                               size_type max_value_length,
                                               const tile_type& tile,
                                               device_allocator_context_type& allocator) {
@@ -443,11 +443,11 @@ struct gpu_masstree {
       out_keys, out_key_lengths, out_key_max_length);
   }
 
-  template <bool enable_suffix, typename tile_type, typename keyptr_or_keystore>
+  template <bool enable_suffix, typename tile_type, typename keyptr_or_keystore, typename valptr_or_valstore>
   DEVICE_QUALIFIER bool cooperative_insert_from_root(elem_type root_lane_elem,
                                                      keyptr_or_keystore& key,
                                                      const size_type key_length,
-                                                     const value_slice_type* value,
+                                                     valptr_or_valstore& value,
                                                      const size_type value_length,
                                                      const tile_type& tile,
                                                      device_allocator_context_type& allocator,
@@ -673,10 +673,10 @@ struct gpu_masstree {
     return false;
   }
 
-  template <bool enable_suffix, typename tile_type, typename keyptr_or_keystore>
+  template <bool enable_suffix, typename tile_type, typename keyptr_or_keystore, typename valptr_or_valstore>
   DEVICE_QUALIFIER bool cooperative_insert(keyptr_or_keystore& key,
                                            const size_type key_length,
-                                           const value_slice_type* value,
+                                           valptr_or_valstore& value,
                                            const size_type value_length,
                                            const tile_type& tile,
                                            device_allocator_context_type& allocator,

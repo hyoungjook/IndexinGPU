@@ -160,10 +160,10 @@ struct gpu_chainhashtable {
   }
 
   // device-side APIs
-  template <bool concurrent, bool use_hash_tag, typename tile_type, typename keyptr_or_keystore>
+  template <bool concurrent, bool use_hash_tag, typename tile_type, typename keyptr_or_keystore, typename valptr_or_valstore>
   DEVICE_QUALIFIER size_type cooperative_find(keyptr_or_keystore& key,
                                               size_type key_length,
-                                              value_slice_type* value,
+                                              valptr_or_valstore& value,
                                               size_type max_value_length,
                                               const tile_type& tile,
                                               device_allocator_context_type& allocator) {
@@ -203,10 +203,10 @@ struct gpu_chainhashtable {
     return 0;
   }
 
-  template <bool use_hash_tag, typename tile_type, typename keyptr_or_keystore>
+  template <bool use_hash_tag, typename tile_type, typename keyptr_or_keystore, typename valptr_or_valstore>
   DEVICE_QUALIFIER bool cooperative_insert(keyptr_or_keystore& key,
                                            const size_type key_length,
-                                           const value_slice_type* value,
+                                           valptr_or_valstore& value,
                                            const size_type value_length,
                                            const tile_type& tile,
                                            device_allocator_context_type& allocator,

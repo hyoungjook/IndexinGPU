@@ -195,11 +195,11 @@ struct gpu_extendhashtable {
     return directory_size;
   }
 
-  template <bool concurrent, bool use_hash_tag, bool tag_use_same_hash, typename tile_type, typename keyptr_or_keystore>
+  template <bool concurrent, bool use_hash_tag, bool tag_use_same_hash, typename tile_type, typename keyptr_or_keystore, typename valptr_or_valstore>
   DEVICE_QUALIFIER size_type cooperative_find_from_dirsize(size_type& directory_size,
                                                            keyptr_or_keystore& key,
                                                            size_type key_length,
-                                                           value_slice_type* value,
+                                                           valptr_or_valstore& value,
                                                            size_type max_value_length,
                                                            const tile_type& tile,
                                                            device_allocator_context_type& allocator) {
@@ -241,10 +241,10 @@ struct gpu_extendhashtable {
     return 0;
   }
 
-  template <bool concurrent, bool use_hash_tag, bool tag_use_same_hash, typename tile_type, typename keyptr_or_keystore>
+  template <bool concurrent, bool use_hash_tag, bool tag_use_same_hash, typename tile_type, typename keyptr_or_keystore, typename valptr_or_valstore>
   DEVICE_QUALIFIER size_type cooperative_find(keyptr_or_keystore& key,
                                               size_type key_length,
-                                              value_slice_type* value,
+                                              valptr_or_valstore& value,
                                               size_type max_value_length,
                                               const tile_type& tile,
                                               device_allocator_context_type& allocator) {
@@ -253,11 +253,11 @@ struct gpu_extendhashtable {
         directory_size, key, key_length, value, max_value_length, tile, allocator);
   }
 
-  template <bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains, typename tile_type, typename keyptr_or_keystore>
+  template <bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains, typename tile_type, typename keyptr_or_keystore, typename valptr_or_valstore>
   DEVICE_QUALIFIER bool cooperative_insert_from_dirsize(size_type& directory_size,
                                                         keyptr_or_keystore& key,
                                                         const size_type key_length,
-                                                        const value_slice_type* value,
+                                                        valptr_or_valstore& value,
                                                         const size_type value_length,
                                                         const tile_type& tile,
                                                         device_allocator_context_type& allocator,
@@ -509,10 +509,10 @@ struct gpu_extendhashtable {
     assert(false);
   }
 
-  template <bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains, typename tile_type, typename keyptr_or_keystore>
+  template <bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains, typename tile_type, typename keyptr_or_keystore, typename valptr_or_valstore>
   DEVICE_QUALIFIER bool cooperative_insert(keyptr_or_keystore& key,
                                            const size_type key_length,
-                                           const value_slice_type* value,
+                                           valptr_or_valstore& value,
                                            const size_type value_length,
                                            const tile_type& tile,
                                            device_allocator_context_type& allocator,

@@ -54,7 +54,7 @@ __global__ void batch_kernel(index_type index,
   if constexpr (use_shmem_key) {
     key_shmem_buffer = reclaimer_shmem_buffer +
       (do_reclaim ? reclaimer_type::required_shmem_size() : 0) +
-      utils::varlenkv::shmem_buffer_size * (threadIdx.x / tile_size);
+      utils::varlenkv::shmem_buffer_size * device_func::num_shmem_buffers * (threadIdx.x / tile_size);
   }
   for (uint32_t thread_id = threadIdx.x + blockIdx.x * blockDim.x;
        thread_id < (num_request_blocks * block_size);
@@ -74,7 +74,7 @@ __global__ void batch_kernel(index_type index,
       work_queue = tile.ballot(task_exists);
     }
     if constexpr (do_reclaim) { reclaimer.end_critical_section(block_wide_tile); }
-    if (thread_id < num_requests) { func.store(regs, thread_id); }
+    if (thread_id < num_requests) { func.template store<use_shmem_key>(regs, thread_id); }
   }
   if constexpr (do_reclaim) { reclaimer.drain_all(block_wide_tile, warp_wide_tile, allocator); }
 }
@@ -86,7 +86,7 @@ void launch_batch_kernel(index_type& index, const device_func& func, uint32_t nu
   std::size_t shmem_size = do_reclaim ? sizeof(uint32_t) * index_type::device_reclaimer_context_type::required_shmem_size() : 0;
   if (use_shmem_key) {
     shmem_size += sizeof(typename index_type::key_slice_type) *
-                  utils::varlenkv::shmem_buffer_size *
+                  utils::varlenkv::shmem_buffer_size * device_func::num_shmem_buffers *
                   (block_size / index_type::tile_size_);
   }
   int num_blocks_per_sm;
@@ -102,22 +102,6 @@ void launch_batch_kernel(index_type& index, const device_func& func, uint32_t nu
   kernels::batch_kernel<do_reclaim, index_type::tile_size_, use_shmem_key><<<num_blocks, block_size, shmem_size, stream>>>(
       index, func, num_requests);
 }
-
-namespace detail {
-
-template <bool use_shmem_key, typename key_slice_type, typename size_type, typename tile_type>
-DEVICE_QUALIFIER auto make_key(const key_slice_type* key_ptr, size_type& key_length, key_slice_type* shmem_buffer, const tile_type& tile) {
-  // TODO remove this and also modify hashtable device functions
-  if constexpr (use_shmem_key) {
-    return key_ptr;
-    //return utils::varlen_key_store(shmem_buffer, key_ptr, key_length, tile);
-  }
-  else {
-    return key_ptr;
-  }
-}
-
-} // namespace detail
 
 namespace GpuMasstree {
 
@@ -137,6 +121,7 @@ struct insert_device_func {
   using value_slice_type = typename masstree::value_slice_type;
   using elem_type = typename masstree::elem_type;
   static constexpr bool reclaim_required = true;
+  static constexpr uint32_t num_shmem_buffers = 2;
   // kernel args
   const key_slice_type* d_keys;
   size_type max_key_length;
@@ -147,9 +132,9 @@ struct insert_device_func {
   bool update_if_exists;
   // device-side registers
   struct dev_regs {
-    utils::varlenkv::reg_const_type key;
+    utils::varlenkv::reg_input_type key;
     size_type key_length;
-    const value_slice_type* value;
+    utils::varlenkv::reg_input_type value;
     size_type value_length;
     elem_type root_lane_elem;
   };
@@ -163,9 +148,9 @@ struct insert_device_func {
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
-      regs.key = utils::varlenkv::init_reg_const(d_keys, thread_id, max_key_length);
+      regs.key = utils::varlenkv::init_reg_input(d_keys, thread_id, max_key_length);
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
-      regs.value = &d_values[max_value_length * thread_id];
+      regs.value = utils::varlenkv::init_reg_input(d_values, thread_id, max_value_length);
       regs.value_length = d_value_lengths ? d_value_lengths[thread_id] : max_value_length;
     }
   }
@@ -173,8 +158,8 @@ struct insert_device_func {
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
-    auto cur_key = utils::varlenkv::wrapper_const<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
-    auto cur_value = tile.shfl(regs.value, cur_rank);
+    auto cur_key = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
+    auto cur_value = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value, cur_rank, tile), cur_value_length, max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size, tile);
     if constexpr (reuse_root) {
       tree.template cooperative_insert_from_root<enable_suffix>(regs.root_lane_elem, cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, update_if_exists);
     }
@@ -182,6 +167,7 @@ struct insert_device_func {
       tree.template cooperative_insert<enable_suffix>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, update_if_exists);
     }
   }
+  template <bool use_shmem_key>
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
 
@@ -192,6 +178,7 @@ struct find_device_func {
   using value_slice_type = typename masstree::value_slice_type;
   using elem_type = typename masstree::elem_type;
   static constexpr bool reclaim_required = false;
+  static constexpr uint32_t num_shmem_buffers = 2;
   // kernel args
   const key_slice_type* d_keys;
   size_type max_key_length;
@@ -201,9 +188,9 @@ struct find_device_func {
   size_type* d_value_lengths;
   // device-side registers
   struct dev_regs {
-    utils::varlenkv::reg_const_type key;
+    utils::varlenkv::reg_input_type key;
     size_type key_length;
-    value_slice_type* value;
+    utils::varlenkv::reg_output_type value;
     size_type value_length;
     elem_type root_lane_elem;
   };
@@ -217,24 +204,27 @@ struct find_device_func {
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
-      regs.key = utils::varlenkv::init_reg_const(d_keys, thread_id, max_key_length);
+      regs.key = utils::varlenkv::init_reg_input(d_keys, thread_id, max_key_length);
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
-      regs.value = &d_values[max_value_length * thread_id];
+      regs.value.ptr = &d_values[max_value_length * thread_id];
     }
   }
   template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    auto cur_key = utils::varlenkv::wrapper_const<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
-    auto cur_value = tile.shfl(regs.value, cur_rank);
+    auto cur_key = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
+    auto cur_value = utils::varlenkv::wrapper_output<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value, cur_rank, tile), max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size);
     auto cur_value_length = reuse_root ?
       tree.template cooperative_find_from_root<concurrent>(regs.root_lane_elem, cur_key, cur_key_length, cur_value, max_value_length, tile, allocator) :
       tree.template cooperative_find<concurrent>(cur_key, cur_key_length, cur_value, max_value_length, tile, allocator);
+    cur_value.flush(cur_value_length, tile, regs.value, cur_rank);
     if (tile.thread_rank() == cur_rank) {
       regs.value_length = cur_value_length;
     }
   }
+  template <bool use_shmem_key>
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const {
+    utils::varlenkv::fini_reg_output<use_shmem_key>(regs.value, d_values, thread_id, max_value_length);
     d_value_lengths[thread_id] = regs.value_length;
   }
 };
@@ -246,13 +236,14 @@ struct erase_device_func {
   using value_slice_type = typename masstree::value_slice_type;
   using elem_type = typename masstree::elem_type;
   static constexpr bool reclaim_required = true;
+  static constexpr uint32_t num_shmem_buffers = 1;
   // kernel args
   const key_slice_type* d_keys;
   size_type max_key_length;
   const size_type* d_key_lengths;
   // device-side registers
   struct dev_regs {
-    utils::varlenkv::reg_const_type key;
+    utils::varlenkv::reg_input_type key;
     size_type key_length;
     elem_type root_lane_elem;
   };
@@ -266,14 +257,14 @@ struct erase_device_func {
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
-      regs.key = utils::varlenkv::init_reg_const(d_keys, thread_id, max_key_length);
+      regs.key = utils::varlenkv::init_reg_input(d_keys, thread_id, max_key_length);
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
     }
   }
   template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    auto cur_key = utils::varlenkv::wrapper_const<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
+    auto cur_key = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
     if constexpr (reuse_root) {
       tree.template cooperative_erase_from_root<concurrent, do_merge, pessimistic_merge, do_remove_empty_root>(regs.root_lane_elem, cur_key, cur_key_length, tile, allocator, reclaimer);
     }
@@ -281,6 +272,7 @@ struct erase_device_func {
       tree.template cooperative_erase<concurrent, do_merge, pessimistic_merge, do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, reclaimer);
     }
   }
+  template <bool use_shmem_key>
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
 
@@ -291,6 +283,7 @@ struct scan_device_func {
   using value_slice_type = typename masstree::value_slice_type;
   using elem_type = typename masstree::elem_type;
   static constexpr bool reclaim_required = false;
+  static constexpr uint32_t num_shmem_buffers = 1;
   // kernel args
   const key_slice_type* d_lower_keys;
   const size_type* d_lower_key_lengths;
@@ -306,7 +299,7 @@ struct scan_device_func {
   size_type* d_out_key_lengths;
   // device-side registers
   struct dev_regs {
-    utils::varlenkv::reg_const_type lower_key;
+    utils::varlenkv::reg_input_type lower_key;
     size_type lower_key_length;
     const key_slice_type* upper_key;
     size_type upper_key_length;
@@ -327,7 +320,7 @@ struct scan_device_func {
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
-      regs.lower_key = utils::varlenkv::init_reg_const(d_lower_keys, thread_id, max_key_length);
+      regs.lower_key = utils::varlenkv::init_reg_input(d_lower_keys, thread_id, max_key_length);
       regs.lower_key_length = d_lower_key_lengths ? d_lower_key_lengths[thread_id] : max_key_length;
       regs.upper_key = d_upper_keys ? &d_upper_keys[max_key_length * thread_id] : nullptr;
       regs.upper_key_length = d_upper_key_lengths ? d_upper_key_lengths[thread_id] : max_key_length;
@@ -340,7 +333,7 @@ struct scan_device_func {
   template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_lower_key_length = tile.shfl(regs.lower_key_length, cur_rank);
-    auto cur_lower_key = utils::varlenkv::wrapper_const<use_shmem_key>(utils::varlenkv::shfl_reg(regs.lower_key, cur_rank, tile), cur_lower_key_length, max_key_length, key_shmem_buffer, tile);
+    auto cur_lower_key = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.lower_key, cur_rank, tile), cur_lower_key_length, max_key_length, key_shmem_buffer, tile);
     auto cur_upper_key = tile.shfl(regs.upper_key, cur_rank);
     auto cur_upper_key_length = tile.shfl(regs.upper_key_length, cur_rank);
     auto cur_values = tile.shfl(regs.values, cur_rank);
@@ -359,6 +352,7 @@ struct scan_device_func {
       regs.count = cur_count;
     }
   }
+  template <bool use_shmem_key>
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const {
     if (d_counts) { d_counts[thread_id] = regs.count; }
   }
@@ -376,6 +370,7 @@ struct mixed_device_func {
   using value_slice_type = typename masstree::value_slice_type;
   using elem_type = typename masstree::elem_type;
   static constexpr bool reclaim_required = true;
+  static constexpr uint32_t num_shmem_buffers = 2;
   // kernel args
   const request_type* d_types;
   const key_slice_type* d_keys;
@@ -389,9 +384,9 @@ struct mixed_device_func {
   // device-side registers
   struct dev_regs {
     request_type type;
-    utils::varlenkv::reg_const_type key;
+    utils::varlenkv::reg_input_type key;
     size_type key_length;
-    value_slice_type* value;
+    utils::varlenkv::reg_input_or_output_type value;
     size_type value_length;
     bool result;
     elem_type root_lane_elem;
@@ -407,29 +402,36 @@ struct mixed_device_func {
   DEVICE_QUALIFIER void load(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
       regs.type = d_types[thread_id];
-      regs.key = utils::varlenkv::init_reg_const(d_keys, thread_id, max_key_length);
+      regs.key = utils::varlenkv::init_reg_input(d_keys, thread_id, max_key_length);
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
-      regs.value = &d_values[max_value_length * thread_id];
-      regs.value_length = d_value_lengths ? d_value_lengths[thread_id] : max_value_length;
+      if (regs.type == request_type_insert) {
+        regs.value.input = utils::varlenkv::init_reg_input(d_values, thread_id, max_value_length);
+        regs.value_length = d_value_lengths ? d_value_lengths[thread_id] : max_value_length;
+      }
+      else if (regs.type == request_type_find) {
+        regs.value.output.ptr = &d_values[max_value_length * thread_id];
+      }
     }
   }
   template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_type = tile.shfl(regs.type, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    auto cur_key = utils::varlenkv::wrapper_const<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
-    auto cur_value = tile.shfl(regs.value, cur_rank);
+    auto cur_key = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
     if (cur_type == request_type_insert) {
       auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
+      auto cur_value = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value.input, cur_rank, tile), cur_value_length, max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size, tile);
       auto cur_result = reuse_root ?
         tree.template cooperative_insert_from_root<enable_suffix>(regs.root_lane_elem, cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, insert_update_if_exists) :  
         tree.template cooperative_insert<enable_suffix>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, insert_update_if_exists);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else if (cur_type == request_type_find) {
+      auto cur_value = utils::varlenkv::wrapper_output<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value.output, cur_rank, tile), max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size);
       auto cur_value_length = reuse_root ?
         tree.template cooperative_find_from_root<true>(regs.root_lane_elem, cur_key, cur_key_length, cur_value, max_value_length, tile, allocator) :
         tree.template cooperative_find<true>(cur_key, cur_key_length, cur_value, max_value_length, tile, allocator);
+      cur_value.flush(cur_value_length, tile, regs.value.output, cur_rank);
       if (tile.thread_rank() == cur_rank) { regs.value_length = cur_value_length; }
     }
     else if (cur_type == request_type_erase) {
@@ -442,11 +444,13 @@ struct mixed_device_func {
       assert(false); // TODO
     }
   }
+  template <bool use_shmem_key>
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const {
-    if (regs.type <= request_type_erase) {  // insert of erase
+    if (regs.type <= request_type_erase) {  // insert or erase
       if (d_results) { d_results[thread_id] = regs.result; }
     }
     else {  // find or successor
+      utils::varlenkv::fini_reg_output<use_shmem_key>(regs.value.output, d_values, thread_id, max_value_length);
       d_value_lengths[thread_id] = regs.value_length;
     }
   }
@@ -484,6 +488,7 @@ struct insert_device_func {
   using size_type = typename hashtable::size_type;
   using value_slice_type = typename hashtable::value_slice_type;
   static constexpr bool reclaim_required = true;
+  static constexpr uint32_t num_shmem_buffers = 2;
   // kernel args
   const key_slice_type* d_keys;
   size_type max_key_length;
@@ -494,9 +499,9 @@ struct insert_device_func {
   bool update_if_exists;
   // device-side registers
   struct dev_regs {
-    utils::varlenkv::reg_const_type key;
+    utils::varlenkv::reg_input_type key;
     size_type key_length;
-    const value_slice_type* value;
+    utils::varlenkv::reg_input_type value;
     size_type value_length;
   };
   // device-side functions
@@ -505,9 +510,9 @@ struct insert_device_func {
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
-      regs.key = utils::varlenkv::init_reg_const(d_keys, thread_id, max_key_length);
+      regs.key = utils::varlenkv::init_reg_input(d_keys, thread_id, max_key_length);
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
-      regs.value = &d_values[max_value_length * thread_id];
+      regs.value = utils::varlenkv::init_reg_input(d_values, thread_id, max_value_length);
       regs.value_length = d_value_lengths ? d_value_lengths[thread_id] : max_value_length;
     }
   }
@@ -515,10 +520,11 @@ struct insert_device_func {
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
-    auto cur_key = utils::varlenkv::wrapper_const<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
-    auto cur_value = tile.shfl(regs.value, cur_rank);
+    auto cur_key = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
+    auto cur_value = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value, cur_rank, tile), cur_value_length, max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size, tile);
     table.template cooperative_insert<use_hash_tag>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, update_if_exists);
   }
+  template <bool use_shmem_key>
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
 
@@ -528,6 +534,7 @@ struct find_device_func {
   using size_type = typename hashtable::size_type;
   using value_slice_type = typename hashtable::value_slice_type;
   static constexpr bool reclaim_required = false;
+  static constexpr uint32_t num_shmem_buffers = 2;
   // kernel args
   const key_slice_type* d_keys;
   size_type max_key_length;
@@ -537,9 +544,9 @@ struct find_device_func {
   size_type* d_value_lengths;
   // device-side registers
   struct dev_regs {
-    utils::varlenkv::reg_const_type key;
+    utils::varlenkv::reg_input_type key;
     size_type key_length;
-    value_slice_type* value;
+    utils::varlenkv::reg_output_type value;
     size_type value_length;
   };
   // device-side functions
@@ -548,22 +555,25 @@ struct find_device_func {
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
-      regs.key = utils::varlenkv::init_reg_const(d_keys, thread_id, max_key_length);
+      regs.key = utils::varlenkv::init_reg_input(d_keys, thread_id, max_key_length);
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
-      regs.value = &d_values[max_value_length * thread_id];
+      regs.value.ptr = &d_values[max_value_length * thread_id];
     }
   }
   template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    auto cur_key = utils::varlenkv::wrapper_const<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
-    auto cur_value = tile.shfl(regs.value, cur_rank);
+    auto cur_key = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
+    auto cur_value = utils::varlenkv::wrapper_output<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value, cur_rank, tile), max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size);
     auto cur_value_length = table.template cooperative_find<concurrent, use_hash_tag>(cur_key, cur_key_length, cur_value, max_value_length, tile, allocator);
+    cur_value.flush(cur_value_length, tile, regs.value, cur_rank);
     if (tile.thread_rank() == cur_rank) {
       regs.value_length = cur_value_length;
     }
   }
+  template <bool use_shmem_key>
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const {
+    utils::varlenkv::fini_reg_output<use_shmem_key>(regs.value, d_values, thread_id, max_value_length);
     d_value_lengths[thread_id] = regs.value_length;
   }
 };
@@ -574,13 +584,14 @@ struct erase_device_func {
   using size_type = typename hashtable::size_type;
   using value_slice_type = typename hashtable::value_slice_type;
   static constexpr bool reclaim_required = true;
+  static constexpr uint32_t num_shmem_buffers = 1;
   // kernel args
   const key_slice_type* d_keys;
   size_type max_key_length;
   const size_type* d_key_lengths;
   // device-side registers
   struct dev_regs {
-    utils::varlenkv::reg_const_type key;
+    utils::varlenkv::reg_input_type key;
     size_type key_length;
   };
   // device-side functions
@@ -589,16 +600,17 @@ struct erase_device_func {
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
-      regs.key = utils::varlenkv::init_reg_const(d_keys, thread_id, max_key_length);
+      regs.key = utils::varlenkv::init_reg_input(d_keys, thread_id, max_key_length);
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
     }
   }
   template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    auto cur_key = utils::varlenkv::wrapper_const<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
+    auto cur_key = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
     table.template cooperative_erase<use_hash_tag, do_merge>(cur_key, cur_key_length, tile, allocator, reclaimer);
   }
+  template <bool use_shmem_key>
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
 
@@ -610,6 +622,7 @@ struct mixed_device_func {
   using size_type = typename hashtable::size_type;
   using value_slice_type = typename hashtable::value_slice_type;
   static constexpr bool reclaim_required = true;
+  static constexpr uint32_t num_shmem_buffers = 2;
   // kernel args
   const request_type* d_types;
   const key_slice_type* d_keys;
@@ -623,9 +636,9 @@ struct mixed_device_func {
   // device-side registers
   struct dev_regs {
     request_type type;
-    utils::varlenkv::reg_const_type key;
+    utils::varlenkv::reg_input_type key;
     size_type key_length;
-    value_slice_type* value;
+    utils::varlenkv::reg_input_or_output_type value;
     size_type value_length;
     bool result;
   };
@@ -636,25 +649,32 @@ struct mixed_device_func {
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
       regs.type = d_types[thread_id];
-      regs.key = utils::varlenkv::init_reg_const(d_keys, thread_id, max_key_length);
+      regs.key = utils::varlenkv::init_reg_input(d_keys, thread_id, max_key_length);
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
-      regs.value = &d_values[max_value_length * thread_id];
-      regs.value_length = d_value_lengths ? d_value_lengths[thread_id] : max_value_length;
+      if (regs.type == request_type_insert) {
+        regs.value.input = utils::varlenkv::init_reg_input(d_values, thread_id, max_value_length);
+        regs.value_length = d_value_lengths ? d_value_lengths[thread_id] : max_value_length;
+      }
+      else if (regs.type == request_type_find) {
+        regs.value.output.ptr = &d_values[max_value_length * thread_id];
+      }
     }
   }
   template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_type = tile.shfl(regs.type, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    auto cur_key = utils::varlenkv::wrapper_const<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
-    auto cur_value = tile.shfl(regs.value, cur_rank);
+    auto cur_key = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
     if (cur_type == request_type_insert) {
       auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
+      auto cur_value = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value.input, cur_rank, tile), cur_value_length, max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size, tile);
       auto cur_result = table.template cooperative_insert<use_hash_tag>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, insert_update_if_exists);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else if (cur_type == request_type_find) {
+      auto cur_value = utils::varlenkv::wrapper_output<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value.output, cur_rank, tile), max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size);
       auto cur_value_length = table.template cooperative_find<true, use_hash_tag>(cur_key, cur_key_length, cur_value, max_value_length, tile, allocator);
+      cur_value.flush(cur_value_length, tile, regs.value.output, cur_rank);
       if (tile.thread_rank() == cur_rank) { regs.value_length = cur_value_length; }
     }
     else if (cur_type == request_type_erase) {
@@ -665,11 +685,13 @@ struct mixed_device_func {
       assert(false); // TODO
     }
   }
+  template <bool use_shmem_key>
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const {
-    if (regs.type <= request_type_erase) {  // insert of erase
+    if (regs.type <= request_type_erase) {  // insert or erase
       if (d_results) { d_results[thread_id] = regs.result; }
     }
     else {  // find or successor
+      utils::varlenkv::fini_reg_output<use_shmem_key>(regs.value.output, d_values, thread_id, max_value_length);
       d_value_lengths[thread_id] = regs.value_length;
     }
   }
@@ -707,6 +729,7 @@ struct insert_device_func {
   using size_type = typename hashtable::size_type;
   using value_slice_type = typename hashtable::value_slice_type;
   static constexpr bool reclaim_required = true;
+  static constexpr uint32_t num_shmem_buffers = 2;
   // kernel args
   const key_slice_type* d_keys;
   size_type max_key_length;
@@ -717,9 +740,9 @@ struct insert_device_func {
   bool update_if_exists;
   // device-side registers
   struct dev_regs {
-    utils::varlenkv::reg_const_type key;
+    utils::varlenkv::reg_input_type key;
     size_type key_length;
-    const value_slice_type* value;
+    utils::varlenkv::reg_input_type value;
     size_type value_length;
     size_type directory_size;
   };
@@ -733,9 +756,9 @@ struct insert_device_func {
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
-      regs.key = utils::varlenkv::init_reg_const(d_keys, thread_id, max_key_length);
+      regs.key = utils::varlenkv::init_reg_input(d_keys, thread_id, max_key_length);
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
-      regs.value = &d_values[max_value_length * thread_id];
+      regs.value = utils::varlenkv::init_reg_input(d_values, thread_id, max_value_length);
       regs.value_length = d_value_lengths ? d_value_lengths[thread_id] : max_value_length;
     }
   }
@@ -743,8 +766,8 @@ struct insert_device_func {
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
-    auto cur_key = utils::varlenkv::wrapper_const<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
-    auto cur_value = tile.shfl(regs.value, cur_rank);
+    auto cur_key = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
+    auto cur_value = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value, cur_rank, tile), cur_value_length, max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size, tile);
     if constexpr (reuse_dirsize) {
       table.template cooperative_insert_from_dirsize<use_hash_tag, tag_use_same_hash, do_merge_chains>(regs.directory_size, cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, update_if_exists);
     }
@@ -752,6 +775,7 @@ struct insert_device_func {
       table.template cooperative_insert<use_hash_tag, tag_use_same_hash, do_merge_chains>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, update_if_exists);
     }
   }
+  template <bool use_shmem_key>
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
 
@@ -761,6 +785,7 @@ struct find_device_func {
   using size_type = typename hashtable::size_type;
   using value_slice_type = typename hashtable::value_slice_type;
   static constexpr bool reclaim_required = false;
+  static constexpr uint32_t num_shmem_buffers = 2;
   // kernel args
   const key_slice_type* d_keys;
   size_type max_key_length;
@@ -770,9 +795,9 @@ struct find_device_func {
   size_type* d_value_lengths;
   // device-side registers
   struct dev_regs {
-    utils::varlenkv::reg_const_type key;
+    utils::varlenkv::reg_input_type key;
     size_type key_length;
-    value_slice_type* value;
+    utils::varlenkv::reg_output_type value;
     size_type value_length;
     size_type directory_size;
   };
@@ -786,24 +811,27 @@ struct find_device_func {
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
-      regs.key = utils::varlenkv::init_reg_const(d_keys, thread_id, max_key_length);
+      regs.key = utils::varlenkv::init_reg_input(d_keys, thread_id, max_key_length);
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
-      regs.value = &d_values[max_value_length * thread_id];
+      regs.value.ptr = &d_values[max_value_length * thread_id];
     }
   }
   template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    auto cur_key = utils::varlenkv::wrapper_const<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
-    auto cur_value = tile.shfl(regs.value, cur_rank);
+    auto cur_key = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
+    auto cur_value = utils::varlenkv::wrapper_output<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value, cur_rank, tile), max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size);
     auto cur_value_length = reuse_dirsize ?
       table.template cooperative_find_from_dirsize<concurrent, use_hash_tag, tag_use_same_hash>(regs.directory_size, cur_key, cur_key_length, cur_value, max_value_length, tile, allocator) :
       table.template cooperative_find<concurrent, use_hash_tag, tag_use_same_hash>(cur_key, cur_key_length, cur_value, max_value_length, tile, allocator);
+    cur_value.flush(cur_value_length, tile, regs.value, cur_rank);
     if (tile.thread_rank() == cur_rank) {
       regs.value_length = cur_value_length;
     }
   }
+  template <bool use_shmem_key>
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const {
+    utils::varlenkv::fini_reg_output<use_shmem_key>(regs.value, d_values, thread_id, max_value_length);
     d_value_lengths[thread_id] = regs.value_length;
   }
 };
@@ -814,13 +842,14 @@ struct erase_device_func {
   using size_type = typename hashtable::size_type;
   using value_slice_type = typename hashtable::value_slice_type;
   static constexpr bool reclaim_required = true;
+  static constexpr uint32_t num_shmem_buffers = 1;
   // kernel args
   const key_slice_type* d_keys;
   size_type max_key_length;
   const size_type* d_key_lengths;
   // device-side registers
   struct dev_regs {
-    utils::varlenkv::reg_const_type key;
+    utils::varlenkv::reg_input_type key;
     size_type key_length;
     size_type directory_size;
   };
@@ -834,14 +863,14 @@ struct erase_device_func {
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
-      regs.key = utils::varlenkv::init_reg_const(d_keys, thread_id, max_key_length);
+      regs.key = utils::varlenkv::init_reg_input(d_keys, thread_id, max_key_length);
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
     }
   }
   template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    auto cur_key = utils::varlenkv::wrapper_const<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
+    auto cur_key = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
     if constexpr (reuse_dirsize) {
       table.template cooperative_erase_from_dirsize<use_hash_tag, tag_use_same_hash, do_merge_chains, do_merge_buckets>(regs.directory_size, cur_key, cur_key_length, tile, allocator, reclaimer);
     }
@@ -849,6 +878,7 @@ struct erase_device_func {
       table.template cooperative_erase<use_hash_tag, tag_use_same_hash, do_merge_chains, do_merge_buckets>(cur_key, cur_key_length, tile, allocator, reclaimer);
     }
   }
+  template <bool use_shmem_key>
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
 
@@ -863,6 +893,7 @@ struct mixed_device_func {
   using size_type = typename hashtable::size_type;
   using value_slice_type = typename hashtable::value_slice_type;
   static constexpr bool reclaim_required = true;
+  static constexpr uint32_t num_shmem_buffers = 2;
   // kernel args
   const request_type* d_types;
   const key_slice_type* d_keys;
@@ -876,9 +907,9 @@ struct mixed_device_func {
   // device-side registers
   struct dev_regs {
     request_type type;
-    utils::varlenkv::reg_const_type key;
+    utils::varlenkv::reg_input_type key;
     size_type key_length;
-    value_slice_type* value;
+    utils::varlenkv::reg_input_or_output_type value;
     size_type value_length;
     bool result;
     size_type directory_size;
@@ -894,29 +925,36 @@ struct mixed_device_func {
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
       regs.type = d_types[thread_id];
-      regs.key = utils::varlenkv::init_reg_const(d_keys, thread_id, max_key_length);
+      regs.key = utils::varlenkv::init_reg_input(d_keys, thread_id, max_key_length);
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
-      regs.value = &d_values[max_value_length * thread_id];
-      regs.value_length = d_value_lengths ? d_value_lengths[thread_id] : max_value_length;
+      if (regs.type == request_type_insert) {
+        regs.value.input = utils::varlenkv::init_reg_input(d_values, thread_id, max_value_length);
+        regs.value_length = d_value_lengths ? d_value_lengths[thread_id] : max_value_length;
+      }
+      else if (regs.type == request_type_find) {
+        regs.value.output.ptr = &d_values[max_value_length * thread_id];
+      }
     }
   }
   template <bool use_shmem_key, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_type = tile.shfl(regs.type, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    auto cur_key = utils::varlenkv::wrapper_const<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
-    auto cur_value = tile.shfl(regs.value, cur_rank);
+    auto cur_key = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
     if (cur_type == request_type_insert) {
       auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
+      auto cur_value = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value.input, cur_rank, tile), cur_value_length, max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size, tile);
       auto cur_result = reuse_dirsize ?
         table.template cooperative_insert_from_dirsize<use_hash_tag, tag_use_same_hash, do_merge_chains>(regs.directory_size, cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, insert_update_if_exists) :
         table.template cooperative_insert<use_hash_tag, tag_use_same_hash, do_merge_chains>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, insert_update_if_exists);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else if (cur_type == request_type_find) {
+      auto cur_value = utils::varlenkv::wrapper_output<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value.output, cur_rank, tile), max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size);
       auto cur_value_length = reuse_dirsize ?
         table.template cooperative_find_from_dirsize<true, use_hash_tag, tag_use_same_hash>(regs.directory_size, cur_key, cur_key_length, cur_value, max_value_length, tile, allocator) :
         table.template cooperative_find<true, use_hash_tag, tag_use_same_hash>(cur_key, cur_key_length, cur_value, max_value_length, tile, allocator);
+      cur_value.flush(cur_value_length, tile, regs.value.output, cur_rank);
       if (tile.thread_rank() == cur_rank) { regs.value_length = cur_value_length; }
     }
     else if (cur_type == request_type_erase) {
@@ -929,11 +967,13 @@ struct mixed_device_func {
       assert(false); // TODO
     }
   }
+  template <bool use_shmem_key>
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const {
-    if (regs.type <= request_type_erase) {  // insert of erase
+    if (regs.type <= request_type_erase) {  // insert or erase
       if (d_results) { d_results[thread_id] = regs.result; }
     }
     else {  // find or successor
+      utils::varlenkv::fini_reg_output<use_shmem_key>(regs.value.output, d_values, thread_id, max_value_length);
       d_value_lengths[thread_id] = regs.value_length;
     }
   }

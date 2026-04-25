@@ -79,7 +79,7 @@ struct suffix_node_subwarp {
   }
 
   template <typename keyptr_or_keystore>
-  DEVICE_QUALIFIER bool streq(keyptr_or_keystore key, uint32_t key_length) const {
+  DEVICE_QUALIFIER bool streq(const keyptr_or_keystore key, uint32_t key_length) const {
     if (get_key_length() != key_length) { return false; }
     // now key_length == this_key_length, compare head node
     // ignore first one element in head
@@ -110,7 +110,7 @@ struct suffix_node_subwarp {
   }
 
   template <typename keyptr_or_keystore>
-  DEVICE_QUALIFIER int strcmp(keyptr_or_keystore key, uint32_t key_length, slice_type* mismatch_keyslice = nullptr) const {
+  DEVICE_QUALIFIER int strcmp(const keyptr_or_keystore key, uint32_t key_length, slice_type* mismatch_keyslice = nullptr) const {
     // strcmp(this, key) -> 0 (match), +(this<key), -(this>key)
     // the absolute of return value: (1 + num_matches)
     // NOTE if one is prefix of the other, num_matches is (len(smaller) - 1)
@@ -309,8 +309,8 @@ struct suffix_node_subwarp {
     return make_uint2(tile_.shfl(hash, 0), tile_.shfl(hash1, 0));
   }
 
-  template <typename keyptr_or_keystore>
-  DEVICE_QUALIFIER void create_from(keyptr_or_keystore key, size_type key_length, const slice_type* value, size_type value_length) {
+  template <typename keyptr_or_keystore, typename valptr_or_valstore>
+  DEVICE_QUALIFIER void create_from(const keyptr_or_keystore key, size_type key_length, const valptr_or_valstore value, size_type value_length) {
     // head node metadata
     elem_type elem;
     elem_type* curr_ptr = nullptr;  // NULL if head, else appendix
@@ -322,7 +322,7 @@ struct suffix_node_subwarp {
     int skip_elems = 1;
     int key_offset = -skip_elems;
     key_length += skip_elems;
-    value -= key_length;
+    int value_offset = -static_cast<int>(key_length);
     value_length += key_length;
     while (true) {
       // set elem.first
@@ -331,7 +331,7 @@ struct suffix_node_subwarp {
           elem.first = key[key_offset + tile_.thread_rank()];
         }
         else if (tile_.thread_rank() < value_length) {
-          elem.first = value[tile_.thread_rank()];
+          elem.first = value[value_offset + tile_.thread_rank()];
         }
       }
       // set elem.second
@@ -339,7 +339,7 @@ struct suffix_node_subwarp {
         elem.second = key[key_offset + node_width + tile_.thread_rank()];
       }
       else if (node_width + tile_.thread_rank() < min(value_length, node_max_len_)) {
-        elem.second = value[node_width + tile_.thread_rank()];
+        elem.second = value[value_offset + node_width + tile_.thread_rank()];
       }
       elem_type* next_ptr;
       if (value_length > node_max_len_) {
@@ -360,7 +360,7 @@ struct suffix_node_subwarp {
       key_length = max(static_cast<int>(key_length - node_max_len_), 0);
       key_offset += node_max_len_;
       value_length -= node_max_len_;
-      value += node_max_len_;
+      value_offset += node_max_len_;
       skip_elems = 0;
     }
   }
@@ -516,7 +516,8 @@ struct suffix_node_subwarp {
     }
   }
 
-  DEVICE_QUALIFIER void get_value(slice_type* value_buffer, size_type max_value_length) const {
+  template <typename valptr_or_valstore>
+  DEVICE_QUALIFIER void get_value(valptr_or_valstore value_buffer, size_type max_value_length) const {
     auto value_length = min(get_value_length(), max_value_length);
     auto elem = lane_elem_;
     // ignore first (key_length + 1) element in head
@@ -542,9 +543,9 @@ struct suffix_node_subwarp {
     }
   }
 
-  template <typename reclaimer_type>
+  template <typename valptr_or_valstore, typename reclaimer_type>
   DEVICE_QUALIFIER void switch_value_from(suffix_node_subwarp<tile_type, allocator_type>& src,
-                                          const slice_type* value,
+                                          valptr_or_valstore value,
                                           size_type value_length,
                                           reclaimer_type& reclaimer) {
     // move elements from src, but switch to new value
