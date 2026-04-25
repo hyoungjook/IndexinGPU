@@ -28,7 +28,7 @@ struct gpu_chainhashtable_adapter {
   static constexpr bool is_ordered = false;
   static constexpr bool support_mixed = true;
   using key_slice_type = uint32_t;
-  using value_type = uint32_t;
+  using value_slice_type = uint32_t;
   using size_type = uint32_t;
   using allocator_type = simple_slab_allocator<128>;
   using reclaimer_type = simple_debra_reclaimer<>;
@@ -64,12 +64,14 @@ struct gpu_chainhashtable_adapter {
   void insert(const key_slice_type* keys,
               uint32_t keylen_max,
               const size_type* key_lengths,
-              const value_type* values,
+              const value_slice_type* values,
+              uint32_t valuelen_max,
+              const size_type* value_lengths,
               std::size_t num_keys) {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_bool(configs_.use_hash_tag, [&](auto t2, auto h2) {
         adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t3, auto h3, auto k3) {
-          do_insert<t3.value, h3.value, k3.value>(keys, keylen_max, key_lengths, values, num_keys);
+          do_insert<t3.value, h3.value, k3.value>(keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, num_keys);
         }, t2, h2);
       }, t1);
     });
@@ -91,13 +93,15 @@ struct gpu_chainhashtable_adapter {
   void find(const key_slice_type* keys,
             uint32_t keylen_max,
             const size_type* key_lengths,
-            value_type* results,
+            value_slice_type* results,
+            uint32_t valuelen_max,
+            size_type* result_lengths,
             std::size_t num_keys) {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_bool(configs_.lookup_concurrent, [&](auto t2, auto c2) {
         adapter_util::dispatch_bool(configs_.use_hash_tag, [&](auto t3, auto c3, auto h3) {
           adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t4, auto c4, auto h4, auto k4) {
-            do_find<t4.value, c4.value, h4.value, k4.value>(keys, keylen_max, key_lengths, results, num_keys);
+            do_find<t4.value, c4.value, h4.value, k4.value>(keys, keylen_max, key_lengths, results, valuelen_max, result_lengths, num_keys);
           }, t3, c3, h3);
         }, t2, c2);
       }, t1);
@@ -107,13 +111,15 @@ struct gpu_chainhashtable_adapter {
                    const key_slice_type* keys,
                    uint32_t keylen_max,
                    const size_type* key_lengths,
-                   value_type* values,
+                   value_slice_type* values,
+                   uint32_t valuelen_max,
+                   size_type* value_lengths,
                    std::size_t num_keys) {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_bool(configs_.use_hash_tag, [&](auto t2, auto h2) {
         adapter_util::dispatch_bool(configs_.merge_chains, [&](auto t3, auto h3, auto m3) {
           adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t4, auto h4, auto m4, auto k4) {
-            do_mixed<t4.value, h4.value, m4.value, k4.value>(types, keys, keylen_max, key_lengths, values, nullptr, num_keys);
+            do_mixed<t4.value, h4.value, m4.value, k4.value>(types, keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, nullptr, num_keys);
           }, t3, h3, m3);
         }, t2, h2);
       }, t1);

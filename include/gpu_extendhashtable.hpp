@@ -566,7 +566,7 @@ struct gpu_extendhashtable {
           node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator, reclaimer, dummy);
       }
       else {
-        location_if_found = coop_traverse_until_found<false, use_hash_tag, false>(  // use weak load here b/c the first load did memory_order_acquire
+        location_if_found = coop_traverse_until_found<utils::memory_order::weak_tilesync, use_hash_tag, false>(  // use weak load here b/c the first load did memory_order_acquire
           node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator, dummy);
       }
       if (location_if_found >= 0) { // exists

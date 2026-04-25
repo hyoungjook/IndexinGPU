@@ -43,11 +43,14 @@ template <typename hashtable_type,
 void bench_hashtable(thrust::device_vector<key_slice_type>& d_keys,
                      thrust::device_vector<size_type>& d_lengths,
                      thrust::device_vector<value_type>& d_values,
+                     thrust::device_vector<size_type>& d_value_lengths,
                      thrust::device_vector<key_slice_type>& d_query_keys,
                      thrust::device_vector<size_type>& d_query_lengths,
                      thrust::device_vector<value_type>& d_query_results,
+                     thrust::device_vector<size_type>& d_query_result_lengths,
                      uint32_t num_keys,
                      uint32_t max_key_length,
+                     uint32_t max_value_length,
                      std::size_t num_experiments,
                      float erase_ratio,
                      float fill_factor,
@@ -73,7 +76,8 @@ void bench_hashtable(thrust::device_vector<key_slice_type>& d_keys,
     gpu_timer insert_timer;
     insert_timer.start_timer();
     table.template insert<use_hash_tag>(
-      d_keys.data().get(), max_key_length, d_lengths.data().get(), d_values.data().get(), num_keys);
+      d_keys.data().get(), max_key_length, d_lengths.data().get(),
+      d_values.data().get(), max_value_length, d_value_lengths.data().get(), num_keys);
     insert_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
     float insert_elapsed = insert_timer.get_elapsed_s();
@@ -87,7 +91,8 @@ void bench_hashtable(thrust::device_vector<key_slice_type>& d_keys,
     gpu_timer find_timer1;
     find_timer1.start_timer();
     table.template find<false, use_hash_tag>(
-      d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), d_query_results.data().get(), num_keys);
+      d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(),
+      d_query_results.data().get(), max_value_length, d_query_result_lengths.data().get(), num_keys);
     find_timer1.stop_timer();
     cuda_try(cudaDeviceSynchronize());
     float find_elapsed1 = find_timer1.get_elapsed_s();
@@ -96,7 +101,8 @@ void bench_hashtable(thrust::device_vector<key_slice_type>& d_keys,
     gpu_timer find_timer2;
     find_timer2.start_timer();
     table.template find<true, use_hash_tag>(
-      d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), d_query_results.data().get(), num_keys);
+      d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(),
+      d_query_results.data().get(), max_value_length, d_query_result_lengths.data().get(), num_keys);
     find_timer2.stop_timer();
     cuda_try(cudaDeviceSynchronize());
     float find_elapsed2 = find_timer2.get_elapsed_s();
@@ -124,14 +130,19 @@ void bench_hashtable(thrust::device_vector<key_slice_type>& d_keys,
                 << erase_elapsed << std::endl;
     }
     if (validate_result) {
-      thrust::device_vector<bool> cmp_result(num_keys);
-      thrust::transform(d_values.begin(), d_values.end(), d_query_results.begin(), cmp_result.begin(), thrust::equal_to<value_type>());
-      uint32_t matching_count = (uint32_t)thrust::count(cmp_result.begin(), cmp_result.end(), true);
-      if (matching_count == num_keys) {
+      thrust::device_vector<bool> cmp_values(d_values.size());
+      thrust::device_vector<bool> cmp_value_lengths(num_keys);
+      thrust::transform(d_values.begin(), d_values.end(), d_query_results.begin(), cmp_values.begin(), thrust::equal_to<value_type>());
+      thrust::transform(d_value_lengths.begin(), d_value_lengths.end(), d_query_result_lengths.begin(), cmp_value_lengths.begin(), thrust::equal_to<size_type>());
+      uint32_t matching_value_count = (uint32_t)thrust::count(cmp_values.begin(), cmp_values.end(), true);
+      uint32_t matching_value_length_count = (uint32_t)thrust::count(cmp_value_lengths.begin(), cmp_value_lengths.end(), true);
+      if (matching_value_count == d_values.size() && matching_value_length_count == num_keys) {
         valid_count++;
       }
       else {
-        std::cout << "validation failed: " << matching_count << "/" << num_keys << " matches" << std::endl;
+        std::cout << "validation failed: "
+                  << matching_value_count << "/" << d_values.size() << " value slices, "
+                  << matching_value_length_count << "/" << num_keys << " value lengths match" << std::endl;
       }
     }
   }
@@ -166,6 +177,8 @@ int main(int argc, char** argv) {
   float cuckoo_fill_factor = get_arg_value<float>(arguments, "cuckoo-fill-factor").value_or(0.8f);
   uint32_t min_key_length = get_arg_value<uint32_t>(arguments, "min-key-length").value_or(1u);
   uint32_t max_key_length = get_arg_value<uint32_t>(arguments, "max-key-length").value_or(1u);
+  uint32_t min_value_length = get_arg_value<uint32_t>(arguments, "min-value-length").value_or(1u);
+  uint32_t max_value_length = get_arg_value<uint32_t>(arguments, "max-value-length").value_or(1u);
   float common_prefix_ratio = get_arg_value<float>(arguments, "common-prefix-ratio").value_or(0.1f);
   float erase_ratio = get_arg_value<float>(arguments, "erase-ratio").value_or(0.1f);
   float allocator_pool_ratio = get_arg_value<float>(arguments, "chain-allocator-pool-ratio").value_or(0.5f);
@@ -177,6 +190,10 @@ int main(int argc, char** argv) {
       get_arg_value<std::size_t>(arguments, "num-experiments").value_or(1llu);
   if (min_key_length > max_key_length) {
     std::cerr << "min_key_lenght is larger than max_key_length" << std::endl;
+    exit(1);
+  }
+  if (min_value_length > max_value_length) {
+    std::cerr << "min_value_length is larger than max_value_length" << std::endl;
     exit(1);
   }
 
@@ -221,21 +238,23 @@ int main(int argc, char** argv) {
   // device vectors
   auto d_keys      = thrust::device_vector<key_slice_type>(num_keys * max_key_length, 0);
   auto d_lengths      = thrust::device_vector<size_type>(num_keys, 0);
-  auto d_values    = thrust::device_vector<value_type>(num_keys, invalid_value);
+  auto d_values    = thrust::device_vector<value_type>(num_keys * max_value_length, invalid_value);
+  auto d_value_lengths = thrust::device_vector<size_type>(num_keys, 0);
   auto d_find_keys = thrust::device_vector<key_slice_type>(num_keys * max_key_length, 0);
   auto d_find_lengths = thrust::device_vector<size_type>(num_keys, 0);
-  auto d_results   = thrust::device_vector<value_type>(num_keys, invalid_value);
+  auto d_results   = thrust::device_vector<value_type>(num_keys * max_value_length, invalid_value);
+  auto d_result_lengths = thrust::device_vector<size_type>(num_keys, 0);
 
   // host vectors
+  std::random_device rd;
+  //std::mt19937 rng(0);
+  std::mt19937 rng(rd());
   std::vector<key_slice_type> h_keys;
   std::vector<size_type> h_lengths;
   if (dataset_file != "") {
     rkg::generate_varlen_keys_from_dataset(dataset, h_keys, h_lengths, num_keys, max_key_length);
   }
   else {
-    std::random_device rd;
-    //std::mt19937 rng(0);
-    std::mt19937 rng(rd());
     rkg::generate_varlen_keys<key_slice_type, size_type>(
       h_keys, h_lengths, num_keys, min_key_length, max_key_length, rng, rkg::distribution_type::unique_random,
       common_prefix_ratio);
@@ -258,13 +277,21 @@ int main(int argc, char** argv) {
     }
     return hash;
   };
-  std::vector<value_type> h_values(num_keys, invalid_value);
+  std::vector<value_type> h_values(num_keys * max_value_length, invalid_value);
+  std::vector<size_type> h_value_lengths(num_keys, 0);
+  std::uniform_int_distribution<uint32_t> value_length_dist(min_value_length, max_value_length);
+  for (uint32_t i = 0; i < num_keys; i++) {
+    h_value_lengths[i] = value_length_dist(rng);
+  }
   std::vector<std::thread> value_threads;
   const uint32_t num_threads = std::thread::hardware_concurrency();
   for (uint32_t tid = 0; tid < num_threads; tid++) {
     value_threads.emplace_back([&](uint32_t tid) {
       for (uint32_t i = tid; i < num_keys; i += num_threads) {
-        h_values[i] = to_value(&h_keys[i * max_key_length], h_lengths[i]);
+        value_type value = to_value(&h_keys[i * max_key_length], h_lengths[i]);
+        for (uint32_t s = 0; s < h_value_lengths[i]; s++) {
+          h_values[i * max_value_length + s] = value;
+        }
       }
     }, tid);
   }
@@ -272,6 +299,7 @@ int main(int argc, char** argv) {
     value_threads[tid].join();
   }
   d_values = h_values;
+  d_value_lengths = h_value_lengths;
 
   std::cout << "Benchmarking...\n";
   std::cout << "num_keys = " << num_keys << ", ";
@@ -279,6 +307,8 @@ int main(int argc, char** argv) {
   std::cout << "cuckoo_fill_factor = " << cuckoo_fill_factor << ", ";
   std::cout << "min_key_length = " << min_key_length << ", ";
   std::cout << "max_key_length = " << max_key_length << ", ";
+  std::cout << "min_value_length = " << min_value_length << ", ";
+  std::cout << "max_value_length = " << max_value_length << ", ";
   std::cout << "common_prefix_ratio = " << common_prefix_ratio << ", ";
   std::cout << "erase-ratio = " << erase_ratio << std::endl;
   using simple_slab_alloc_type = simple_slab_allocator<128>;
@@ -290,26 +320,26 @@ int main(int argc, char** argv) {
 
   std::cout << "Benchmarking chainhashtable_tile32_type" << std::endl;
   bench_hashtable<chainhashtable_tile32_type>(
-    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-    num_keys, max_key_length, num_experiments, erase_ratio, chain_array_factor,
+    d_keys, d_lengths, d_values, d_value_lengths, d_find_keys, d_find_lengths, d_results, d_result_lengths,
+    num_keys, max_key_length, max_value_length, num_experiments, erase_ratio, chain_array_factor,
     allocator_pool_ratio, validate_result, validate_index, verbose
   );
   std::cout << "Benchmarking chainhashtable_tile16_type" << std::endl;
   bench_hashtable<chainhashtable_tile16_type>(
-    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-    num_keys, max_key_length, num_experiments, erase_ratio, chain_array_factor,
+    d_keys, d_lengths, d_values, d_value_lengths, d_find_keys, d_find_lengths, d_results, d_result_lengths,
+    num_keys, max_key_length, max_value_length, num_experiments, erase_ratio, chain_array_factor,
     allocator_pool_ratio, validate_result, validate_index, verbose
   );
   std::cout << "Benchmarking cuckoohashtable_tile32_type" << std::endl;
   bench_hashtable<cuckoohashtable_tile32_type>(
-    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-    num_keys, max_key_length, num_experiments, erase_ratio, cuckoo_fill_factor,
+    d_keys, d_lengths, d_values, d_value_lengths, d_find_keys, d_find_lengths, d_results, d_result_lengths,
+    num_keys, max_key_length, max_value_length, num_experiments, erase_ratio, cuckoo_fill_factor,
     allocator_pool_ratio, validate_result, validate_index, verbose
   );
   std::cout << "Benchmarking cuckoohashtable_tile16_type" << std::endl;
   bench_hashtable<cuckoohashtable_tile16_type>(
-    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-    num_keys, max_key_length, num_experiments, erase_ratio, cuckoo_fill_factor,
+    d_keys, d_lengths, d_values, d_value_lengths, d_find_keys, d_find_lengths, d_results, d_result_lengths,
+    num_keys, max_key_length, max_value_length, num_experiments, erase_ratio, cuckoo_fill_factor,
     allocator_pool_ratio, validate_result, validate_index, verbose
   );
   

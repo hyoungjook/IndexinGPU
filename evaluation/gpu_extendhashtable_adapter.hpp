@@ -27,7 +27,7 @@ struct gpu_extendhashtable_adapter {
   static constexpr bool is_ordered = false;
   static constexpr bool support_mixed = true;
   using key_slice_type = uint32_t;
-  using value_type = uint32_t;
+  using value_slice_type = uint32_t;
   using size_type = uint32_t;
   using allocator_type = simple_slab_linear_allocator<128>;
   using reclaimer_type = simple_debra_reclaimer<>;
@@ -65,14 +65,16 @@ struct gpu_extendhashtable_adapter {
   void insert(const key_slice_type* keys,
               uint32_t keylen_max,
               const size_type* key_lengths,
-              const value_type* values,
+              const value_slice_type* values,
+              uint32_t valuelen_max,
+              const size_type* value_lengths,
               std::size_t num_keys) {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_uint32<0, 1, 2>(configs_.hash_tag_level, [&](auto t2, auto h2) {
         adapter_util::dispatch_uint32<0, 1, 2>(configs_.merge_level, [&](auto t3, auto h3, auto m3) {
           adapter_util::dispatch_bool(configs_.reuse_dirsize, [&](auto t4, auto h4, auto m4, auto r4) {
             adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t5, auto h5, auto m5, auto r5, auto k5) {
-              do_insert<t5.value, h5.value, m5.value, r5.value, k5.value>(keys, keylen_max, key_lengths, values, num_keys);
+              do_insert<t5.value, h5.value, m5.value, r5.value, k5.value>(keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, num_keys);
             }, t4, h4, m4, r4);
           }, t3, h3, m3);
         }, t2, h2);
@@ -98,14 +100,16 @@ struct gpu_extendhashtable_adapter {
   void find(const key_slice_type* keys,
             uint32_t keylen_max,
             const size_type* key_lengths,
-            value_type* results,
+            value_slice_type* results,
+            uint32_t valuelen_max,
+            size_type* result_lengths,
             std::size_t num_keys) {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_bool(configs_.lookup_concurrent, [&](auto t2, auto c2) {
         adapter_util::dispatch_uint32<0, 1, 2>(configs_.hash_tag_level, [&](auto t3, auto c3, auto h3) {
           adapter_util::dispatch_bool(configs_.reuse_dirsize, [&](auto t4, auto c4, auto h4, auto r4) {
             adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t5, auto c5, auto h5, auto r5, auto k5) {
-              do_find<t5.value, c5.value, h5.value, r5.value, k5.value>(keys, keylen_max, key_lengths, results, num_keys);
+              do_find<t5.value, c5.value, h5.value, r5.value, k5.value>(keys, keylen_max, key_lengths, results, valuelen_max, result_lengths, num_keys);
             }, t4, c4, h4, r4);
           }, t3, c3, h3);
         }, t2, c2);
@@ -116,14 +120,16 @@ struct gpu_extendhashtable_adapter {
                    const key_slice_type* keys,
                    uint32_t keylen_max,
                    const size_type* key_lengths,
-                   value_type* values,
+                   value_slice_type* values,
+                   uint32_t valuelen_max,
+                   size_type* value_lengths,
                    std::size_t num_keys) {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_uint32<0, 1, 2>(configs_.hash_tag_level, [&](auto t2, auto h2) {
         adapter_util::dispatch_uint32<0, 1, 2>(configs_.merge_level, [&](auto t3, auto h3, auto m3) {
           adapter_util::dispatch_bool(configs_.reuse_dirsize, [&](auto t4, auto h4, auto m4, auto r4) {
             adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t5, auto h5, auto m5, auto r5, auto k5) {
-              do_mixed<t5.value, h5.value, m5.value, r5.value, k5.value>(types, keys, keylen_max, key_lengths, values, nullptr, num_keys);
+              do_mixed<t5.value, h5.value, m5.value, r5.value, k5.value>(types, keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, nullptr, num_keys);
             }, t4, h4, m4, r4);
           }, t3, h3, m3);
         }, t2, h2);

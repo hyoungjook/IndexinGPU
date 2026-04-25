@@ -64,9 +64,13 @@ struct gpu_blink_tree_adapter {
               uint32_t keylen_max,
               const size_type* key_lengths,
               const value_type* values,
+              uint32_t valuelen_max,
+              const size_type* value_lengths,
               std::size_t num_keys) {
     (void)keylen_max;
     (void)key_lengths;
+    (void)valuelen_max;
+    (void)value_lengths;
     index_->insert(keys, values, num_keys);
   }
 
@@ -83,9 +87,13 @@ struct gpu_blink_tree_adapter {
             uint32_t keylen_max,
             const size_type* key_lengths,
             value_type* results,
+            uint32_t valuelen_max,
+            size_type* result_lengths,
             std::size_t num_keys) {
     (void)keylen_max;
     (void)key_lengths;
+    (void)valuelen_max;
+    (void)result_lengths;
     index_->find(keys, results, num_keys, 0, configs_.lookup_concurrent);
   }
 
@@ -94,10 +102,14 @@ struct gpu_blink_tree_adapter {
             const size_type* key_lengths,
             uint32_t count,
             value_type* results,
+            uint32_t valuelen_max,
+            size_type* result_lengths,
             std::size_t num_keys,
             const key_slice_type* upper_keys) {
     (void)keylen_max;
     (void)key_lengths;
+    (void)valuelen_max;
+    (void)result_lengths;
     index_->range_query(keys, upper_keys,
       reinterpret_cast<pair_type<key_slice_type, value_type>*>(results), nullptr,
       count, num_keys, 0, configs_.lookup_concurrent);
@@ -107,9 +119,13 @@ struct gpu_blink_tree_adapter {
                    uint32_t keylen_max,
                    const size_type* key_lengths,
                    value_type* values,
+                   uint32_t valuelen_max,
+                   size_type* value_lengths,
                    std::size_t num_keys) {
     (void)keylen_max;
     (void)key_lengths;
+    (void)valuelen_max;
+    (void)value_lengths;
     index_->mixed_batch(types, keys, values, num_keys);
   }
   void print_stats() {}
@@ -133,6 +149,7 @@ struct gpu_blink_tree_adapter {
       FORALL_ARGUMENTS(PARSE_DEFAULT_ARGUMENTS)
       #undef PARSE_DEFAULT_ARGUMENTS
       check_argument(keylen_max == 1);
+      check_argument(valuelen_max == 1);
     }
     void print() const {
       #define PRINT_ARGUMENTS(arg, type, default_value) \

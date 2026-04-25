@@ -66,9 +66,13 @@ struct gpu_dycuckoo_adapter {
               uint32_t keylen_max,
               const size_type* key_lengths,
               const value_type* values,
+              uint32_t valuelen_max,
+              const size_type* value_lengths,
               std::size_t num_keys) {
     (void)keylen_max;
     (void)key_lengths;
+    (void)valuelen_max;
+    (void)value_lengths;
     if (configs_.use_lock) {
       gpu_dycuckoo_dynamic_lock_insert(index_, keys, values, num_keys);
     }
@@ -93,9 +97,13 @@ struct gpu_dycuckoo_adapter {
             uint32_t keylen_max,
             const size_type* key_lengths,
             value_type* results,
+            uint32_t valuelen_max,
+            size_type* result_lengths,
             std::size_t num_keys) {
     (void)keylen_max;
     (void)key_lengths;
+    (void)valuelen_max;
+    (void)result_lengths;
     if (configs_.use_lock) {
       gpu_dycuckoo_dynamic_lock_find(index_, keys, results, num_keys);
     }
@@ -132,6 +140,7 @@ struct gpu_dycuckoo_adapter {
       #undef PARSE_DEFAULT_ARGUMENTS
       check_argument(tmp_keylen_min == tmp_keylen_max);
       check_argument(tmp_keylen_max == 1 || tmp_keylen_max == 2 || tmp_keylen_max == 4 || tmp_keylen_max == 8 || tmp_keylen_max == 16);
+      check_argument(tmp_valuelen_max == 1);
       keylen_max = tmp_keylen_max;
       if (keylen_max > 1) {
         use_lock = true;

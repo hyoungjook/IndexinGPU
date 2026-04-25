@@ -27,7 +27,7 @@ struct gpu_masstree_adapter {
   static constexpr bool is_ordered = true;
   static constexpr bool support_mixed = true;
   using key_slice_type = uint32_t;
-  using value_type = uint32_t;
+  using value_slice_type = uint32_t;
   using size_type = uint32_t;
   using allocator_type = simple_slab_allocator<128>;
   using reclaimer_type = simple_debra_reclaimer<>;
@@ -63,13 +63,15 @@ struct gpu_masstree_adapter {
   void insert(const key_slice_type* keys,
               uint32_t keylen_max,
               const size_type* key_lengths,
-              const value_type* values,
+              const value_slice_type* values,
+              uint32_t valuelen_max,
+              const size_type* value_lengths,
               std::size_t num_keys) {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_bool(configs_.enable_suffix, [&](auto t2, auto s2) {
         adapter_util::dispatch_bool(configs_.reuse_root, [&](auto t3, auto s3, auto r3) {
           adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t4, auto s4, auto r4, auto k4) {
-            do_insert<t4.value, s4.value, r4.value, k4.value>(keys, keylen_max, key_lengths, values, num_keys);
+            do_insert<t4.value, s4.value, r4.value, k4.value>(keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, num_keys);
           }, t3, s3, r3);
         }, t2, s2);
       }, t1);
@@ -92,13 +94,15 @@ struct gpu_masstree_adapter {
   void find(const key_slice_type* keys,
             uint32_t keylen_max,
             const size_type* key_lengths,
-            value_type* results,
+            value_slice_type* results,
+            uint32_t valuelen_max,
+            size_type* result_lengths,
             std::size_t num_keys) {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_bool(configs_.lookup_concurrent, [&](auto t2, auto c2) {
         adapter_util::dispatch_bool(configs_.reuse_root, [&](auto t3, auto c3, auto r3) {
           adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t4, auto c4, auto r4, auto k4) {
-            do_find<t4.value, c4.value, r4.value, k4.value>(keys, keylen_max, key_lengths, results, num_keys);
+            do_find<t4.value, c4.value, r4.value, k4.value>(keys, keylen_max, key_lengths, results, valuelen_max, result_lengths, num_keys);
           }, t3, c3, r3);
         }, t2, c2);
       }, t1);
@@ -108,7 +112,9 @@ struct gpu_masstree_adapter {
             uint32_t keylen_max,
             const size_type* key_lengths,
             uint32_t count,
-            value_type* results,
+            value_slice_type* results,
+            uint32_t valuelen_max,
+            size_type* result_lengths,
             std::size_t num_keys,
             const key_slice_type* upper_keys_for_btree) {
     (void)upper_keys_for_btree;
@@ -117,7 +123,7 @@ struct gpu_masstree_adapter {
         adapter_util::dispatch_bool(configs_.reuse_root, [&](auto t3, auto c3, auto r3) {
           adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t4, auto c4, auto r4, auto k4) {
             do_scan<t4.value, c4.value, r4.value, k4.value>(keys, key_lengths, keylen_max, count, num_keys,
-                                                            nullptr, nullptr, nullptr, results, nullptr, nullptr);
+                                                            nullptr, nullptr, nullptr, results, valuelen_max, result_lengths, nullptr, nullptr);
           }, t3, c3, r3);
         }, t2, c2);
       }, t1);
@@ -127,14 +133,16 @@ struct gpu_masstree_adapter {
                    const key_slice_type* keys,
                    uint32_t keylen_max,
                    const size_type* key_lengths,
-                   value_type* values,
+                   value_slice_type* values,
+                   uint32_t valuelen_max,
+                   size_type* value_lengths,
                    std::size_t num_keys) {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_bool(configs_.enable_suffix, [&](auto t2, auto s2) {
         adapter_util::dispatch_uint32<0, 1, 2, 3, 4>(configs_.merge_level, [&](auto t3, auto s3, auto m3) {
           adapter_util::dispatch_bool(configs_.reuse_root, [&](auto t4, auto s4, auto m4, auto r4) {
             adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t5, auto s5, auto m5, auto r5, auto k5) {
-              do_mixed<t5.value, s5.value, m5.value, r5.value, k5.value>(types, keys, keylen_max, key_lengths, values, nullptr, num_keys);
+              do_mixed<t5.value, s5.value, m5.value, r5.value, k5.value>(types, keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, nullptr, num_keys);
             }, t4, s4, m4, r4);
           }, t3, s3, m3);
         }, t2, s2);
