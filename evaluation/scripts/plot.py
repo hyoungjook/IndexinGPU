@@ -170,6 +170,8 @@ def key_length_plots(configs_and_results, plot_file_prefix):
                     ConfigType.keylen_prefix: 0,
                     ConfigType.keylen_min: key_length,
                     ConfigType.keylen_max: key_length,
+                    ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH_OVERVIEW,
+                    ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH_OVERVIEW,
                 }
                 if result_type == ResultType.lookup:
                     desired_config[ConfigType.num_lookups] = DEFAULT_BATCH_SIZE
@@ -319,6 +321,8 @@ def key_length_cpu_plots(configs_and_results, plot_file_prefix):
                     ConfigType.keylen_prefix: 0,
                     ConfigType.keylen_min: key_length,
                     ConfigType.keylen_max: key_length,
+                    ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH_OVERVIEW,
+                    ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH_OVERVIEW,
                 }
                 if index_type in INDEX_TYPES_ROBUST + INDEX_TYPES_GPU_BASELINE:
                     desired_config[ConfigType.use_pinned_host_memory] = 1
@@ -482,6 +486,8 @@ def suffix_plots(configs_and_results, plot_file_prefix):
             ConfigType.max_keys: max_key,
             ConfigType.keylen_min: DEFAULT_KEY_LENGTH,
             ConfigType.keylen_max: DEFAULT_KEY_LENGTH,
+            ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH,
+            ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH,
         }
         if result_type == ResultType.lookup:
             desired_config[ConfigType.num_lookups] = DEFAULT_BATCH_SIZE
@@ -552,6 +558,8 @@ def tile_plots(configs_and_results, plot_file_prefix):
                     ConfigType.keylen_prefix: 0,
                     ConfigType.keylen_min: DEFAULT_KEY_LENGTH,
                     ConfigType.keylen_max: DEFAULT_KEY_LENGTH,
+                    ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH,
+                    ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH,
                     ConfigType.num_mixed: DEFAULT_BATCH_SIZE,
                     ConfigType.mix_read_ratio: mix_read_ratio,
                 }
@@ -633,6 +641,8 @@ def merge_plots(configs_and_results, plot_file_prefix):
                     ConfigType.keylen_prefix: prefix_length,
                     ConfigType.keylen_min: key_length,
                     ConfigType.keylen_max: key_length,
+                    ConfigType.valuelen_min: 1,
+                    ConfigType.valuelen_max: 1,
                     ConfigType.num_space: DEFAULT_BATCH_SIZE,
                     OptionalConfigType.merge_level: merge_level,
                 }
@@ -657,6 +667,8 @@ def merge_plots(configs_and_results, plot_file_prefix):
                 ConfigType.keylen_prefix: DEFAULT_KEY_LENGTH - 1,
                 ConfigType.keylen_min: DEFAULT_KEY_LENGTH,
                 ConfigType.keylen_max: DEFAULT_KEY_LENGTH,
+                ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH,
+                ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH,
                 ConfigType.num_insdel: DEFAULT_BATCH_SIZE,
                 OptionalConfigType.merge_level: merge_level,
             }
@@ -799,6 +811,8 @@ def intro_plots(configs_and_results, plot_file_prefix):
                         ConfigType.keylen_prefix: 0,
                         ConfigType.keylen_min: intro_plot_key_length,
                         ConfigType.keylen_max: intro_plot_key_length,
+                        ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH_OVERVIEW,
+                        ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH_OVERVIEW,
                     }
                     if result_type == ResultType.lookup:
                         desired_config[ConfigType.num_lookups] = DEFAULT_BATCH_SIZE
