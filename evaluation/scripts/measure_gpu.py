@@ -36,7 +36,7 @@ def generate_configs():
             if index_type in INDEX_TYPES_ROBUST:
                 cpu_input_configs[OptionalConfigType.use_shmem_key] = 1
             configs.append({**common_config, **cpu_input_configs})
-    # MT suffix / reuse_root
+    # MT suffix
     for index_type in [IndexType.gpu_masstree]:
         common_config = {
             ConfigType.index_type: index_type,

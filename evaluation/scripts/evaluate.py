@@ -54,7 +54,6 @@ class OptionalConfigType(Enum):
     lookup_concurrent = auto()
     enable_suffix = auto()
     merge_level = auto()
-    reuse_root = auto()
     initial_array_fill_factor = auto()
     use_hash_tag = auto()
     merge_chains = auto()
@@ -62,7 +61,6 @@ class OptionalConfigType(Enum):
     resize_policy = auto()
     load_factor_threshold = auto()
     hash_tag_level = auto()
-    reuse_dirsize = auto()
     erase_concurrent = auto()
     use_lock = auto()
     initial_capacity = auto()
@@ -110,7 +108,6 @@ INDEX_INFO = {
         OptionalConfigType.lookup_concurrent,
         OptionalConfigType.enable_suffix,
         OptionalConfigType.merge_level,
-        OptionalConfigType.reuse_root,
         OptionalConfigType.use_shmem_key,
     ],
     IndexType.gpu_chainhashtable: [
@@ -139,7 +136,6 @@ INDEX_INFO = {
         OptionalConfigType.load_factor_threshold,
         OptionalConfigType.hash_tag_level,
         OptionalConfigType.merge_level,
-        OptionalConfigType.reuse_dirsize,
         OptionalConfigType.use_shmem_key,
     ],
     IndexType.gpu_blink_tree: [

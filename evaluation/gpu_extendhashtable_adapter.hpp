@@ -72,10 +72,8 @@ struct gpu_extendhashtable_adapter {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_uint32<0, 1, 2>(configs_.hash_tag_level, [&](auto t2, auto h2) {
         adapter_util::dispatch_uint32<0, 1, 2>(configs_.merge_level, [&](auto t3, auto h3, auto m3) {
-          adapter_util::dispatch_bool(configs_.reuse_dirsize, [&](auto t4, auto h4, auto m4, auto r4) {
-            adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t5, auto h5, auto m5, auto r5, auto k5) {
-              do_insert<t5.value, h5.value, m5.value, r5.value, k5.value>(keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, num_keys);
-            }, t4, h4, m4, r4);
+          adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t4, auto h4, auto m4, auto k4) {
+            do_insert<t4.value, h4.value, m4.value, k4.value>(keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, num_keys);
           }, t3, h3, m3);
         }, t2, h2);
       }, t1);
@@ -88,10 +86,8 @@ struct gpu_extendhashtable_adapter {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_uint32<0, 1, 2>(configs_.hash_tag_level, [&](auto t2, auto h2) {
         adapter_util::dispatch_uint32<0, 1, 2>(configs_.merge_level, [&](auto t3, auto h3, auto m3) {
-          adapter_util::dispatch_bool(configs_.reuse_dirsize, [&](auto t4, auto h4, auto m4, auto r4) {
-            adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t5, auto h5, auto m5, auto r5, auto k5) {
-              do_erase<t5.value, h5.value, m5.value, r5.value, k5.value>(keys, keylen_max, key_lengths, num_keys);
-            }, t4, h4, m4, r4);
+          adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t4, auto h4, auto m4, auto k4) {
+            do_erase<t4.value, h4.value, m4.value, k4.value>(keys, keylen_max, key_lengths, num_keys);
           }, t3, h3, m3);
         }, t2, h2);
       }, t1);
@@ -107,10 +103,8 @@ struct gpu_extendhashtable_adapter {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_bool(configs_.lookup_concurrent, [&](auto t2, auto c2) {
         adapter_util::dispatch_uint32<0, 1, 2>(configs_.hash_tag_level, [&](auto t3, auto c3, auto h3) {
-          adapter_util::dispatch_bool(configs_.reuse_dirsize, [&](auto t4, auto c4, auto h4, auto r4) {
-            adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t5, auto c5, auto h5, auto r5, auto k5) {
-              do_find<t5.value, c5.value, h5.value, r5.value, k5.value>(keys, keylen_max, key_lengths, results, valuelen_max, result_lengths, num_keys);
-            }, t4, c4, h4, r4);
+          adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t4, auto c4, auto h4, auto k4) {
+            do_find<t4.value, c4.value, h4.value, k4.value>(keys, keylen_max, key_lengths, results, valuelen_max, result_lengths, num_keys);
           }, t3, c3, h3);
         }, t2, c2);
       }, t1);
@@ -127,10 +121,8 @@ struct gpu_extendhashtable_adapter {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_uint32<0, 1, 2>(configs_.hash_tag_level, [&](auto t2, auto h2) {
         adapter_util::dispatch_uint32<0, 1, 2>(configs_.merge_level, [&](auto t3, auto h3, auto m3) {
-          adapter_util::dispatch_bool(configs_.reuse_dirsize, [&](auto t4, auto h4, auto m4, auto r4) {
-            adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t5, auto h5, auto m5, auto r5, auto k5) {
-              do_mixed<t5.value, h5.value, m5.value, r5.value, k5.value>(types, keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, nullptr, num_keys);
-            }, t4, h4, m4, r4);
+          adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t4, auto h4, auto m4, auto k4) {
+            do_mixed<t4.value, h4.value, m4.value, k4.value>(types, keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, nullptr, num_keys);
           }, t3, h3, m3);
         }, t2, h2);
       }, t1);
@@ -158,7 +150,6 @@ struct gpu_extendhashtable_adapter {
     x(hash_tag_level, uint32_t, 2) \
     /* merge_level: 0(naive), 1(merge_chains), 2(merge_buckets) */ \
     x(merge_level, uint32_t, 2) \
-    x(reuse_dirsize, bool, true) \
     x(use_shmem_key, bool ,false)
   struct configs {
     #define DECLARE_ARGUMENTS(arg, type, default_value) type arg;
@@ -184,28 +175,28 @@ struct gpu_extendhashtable_adapter {
   };
   #undef FORALL_ARGUMENTS_GPU_EXTENDHASHTABLE
 
-  template <uint32_t tile_size, uint32_t hash_tag_level, uint32_t merge_level, bool reuse_dirsize, bool use_shmem_key, typename... arg_types>
+  template <uint32_t tile_size, uint32_t hash_tag_level, uint32_t merge_level, bool use_shmem_key, typename... arg_types>
   void do_insert(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template insert<hash_tag_level >= 1, hash_tag_level >= 2, merge_level >= 1, reuse_dirsize, use_shmem_key>(args...);
+      ->template insert<hash_tag_level >= 1, hash_tag_level >= 2, merge_level >= 1, true, use_shmem_key>(args...);
   }
 
-  template <uint32_t tile_size, uint32_t hash_tag_level, uint32_t merge_level, bool reuse_dirsize, bool use_shmem_key, typename... arg_types>
+  template <uint32_t tile_size, uint32_t hash_tag_level, uint32_t merge_level, bool use_shmem_key, typename... arg_types>
   void do_erase(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template erase<hash_tag_level >= 1, hash_tag_level >= 2, merge_level >= 2, merge_level >= 1, reuse_dirsize, use_shmem_key>(args...);
+      ->template erase<hash_tag_level >= 1, hash_tag_level >= 2, merge_level >= 2, merge_level >= 1, true, use_shmem_key>(args...);
   }
 
-  template <uint32_t tile_size, bool lookup_concurrent, uint32_t hash_tag_level, bool reuse_dirsize, bool use_shmem_key, typename... arg_types>
+  template <uint32_t tile_size, bool lookup_concurrent, uint32_t hash_tag_level, bool use_shmem_key, typename... arg_types>
   void do_find(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template find<lookup_concurrent, hash_tag_level >= 1, hash_tag_level >= 2, reuse_dirsize, use_shmem_key>(args...);
+      ->template find<lookup_concurrent, hash_tag_level >= 1, hash_tag_level >= 2, true, use_shmem_key>(args...);
   }
 
-  template <uint32_t tile_size, uint32_t hash_tag_level, uint32_t merge_level, bool reuse_dirsize, bool use_shmem_key, typename... arg_types>
+  template <uint32_t tile_size, uint32_t hash_tag_level, uint32_t merge_level, bool use_shmem_key, typename... arg_types>
   void do_mixed(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template mixed_batch<hash_tag_level >= 1, hash_tag_level >= 2, merge_level >= 1, merge_level >= 2, reuse_dirsize, use_shmem_key>(args...);
+      ->template mixed_batch<hash_tag_level >= 1, hash_tag_level >= 2, merge_level >= 1, merge_level >= 2, true, use_shmem_key>(args...);
   }
 
   configs configs_;
