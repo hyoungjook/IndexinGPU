@@ -385,6 +385,8 @@ struct masstree_node_subwarp {
     // store results
     if (count > 0) {
       in_range = (first_location <= tile_.thread_rank() && tile_.thread_rank() < last_location);
+      size_type reg_out_value_lengths, reg_out_key_lengths;
+      value_type reg_out_value_slice;
       // store KEYSTATE_VALUE entries first
       if (in_range) {
         if (out_keys) { // out_keys should get first slice, even for keystate suffix || longval.
@@ -392,38 +394,57 @@ struct masstree_node_subwarp {
         }
       }
       if (in_range && lane_keystate == KEYSTATE_VALUE) {
-        if (out_value_lengths) {
-          out_value_lengths[tile_.thread_rank() - first_location] = 1;
+        reg_out_value_lengths = 1;
+        reg_out_key_lengths = layer + 1;
+        if (out_value_max_length == 1) {
+          reg_out_value_slice = lane_elem_.value;
         }
-        if (out_key_lengths) {
-          out_key_lengths[tile_.thread_rank() - first_location] = layer + 1;
-        }
-        if (out_values) {
+        else if (out_values) {
           out_values[(tile_.thread_rank() - first_location) * out_value_max_length] = lane_elem_.value;
         }
-        in_range = false;
       }
       // store KEYSTATE_LONGVAL and SUFFIX entries cooperatively
-      uint32_t flush_queue = tile_.ballot(in_range);
+      bool is_suffix_entry = in_range && (lane_keystate != KEYSTATE_VALUE); // LONGVAL || SUFFIX
+      uint32_t flush_queue = tile_.ballot(is_suffix_entry);
       while (flush_queue) {
         auto cur_location = __ffs(flush_queue) - 1;
         auto suffix_index = get_value_from_location(cur_location);
         auto suffix = suffix_type(suffix_index, tile_, allocator_);
         suffix.load_head();
-        if (out_value_lengths) {
-          out_value_lengths[cur_location - first_location] = suffix.get_value_length();
+        auto value_length = suffix.get_value_length();
+        if (tile_.thread_rank() == cur_location) {
+          reg_out_value_lengths = value_length;
         }
-        if (out_key_lengths) {
-          out_key_lengths[cur_location - first_location] = layer + 1 + suffix.get_key_length();
+        auto key_length = layer + 1 + suffix.get_key_length();
+        if (tile_.thread_rank() == cur_location) {
+          reg_out_key_lengths = key_length;
         }
-        if (out_values) {
+        if (out_value_max_length == 1) {
+          auto value_slice = suffix.get_value();
+          if (tile_.thread_rank() == cur_location) {
+            reg_out_value_slice = value_slice;
+          }
+        }
+        else if (out_values) {
           suffix.get_value(out_values + ((cur_location - first_location) * out_value_max_length), out_value_max_length);
         }
         if (out_keys) {
           suffix.flush(out_keys + ((cur_location - first_location) * out_key_max_length + layer + 1));
         }
-        if (tile_.thread_rank() == cur_location) { in_range = false; }
-        flush_queue = tile_.ballot(in_range);
+        if (tile_.thread_rank() == cur_location) { is_suffix_entry = false; }
+        flush_queue = tile_.ballot(is_suffix_entry);
+      }
+      // coalesced store to global memory
+      if (in_range) {
+        if (out_value_lengths) {
+          out_value_lengths[tile_.thread_rank() - first_location] = reg_out_value_lengths;
+        }
+        if (out_key_lengths) {
+          out_key_lengths[tile_.thread_rank() - first_location] = reg_out_key_lengths;
+        }
+        if (out_value_max_length == 1 && out_values) {
+          out_values[tile_.thread_rank() - first_location] = reg_out_value_slice;
+        }
       }
     }
     return count;
