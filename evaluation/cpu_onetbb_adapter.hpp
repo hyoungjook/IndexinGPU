@@ -70,8 +70,7 @@ struct cpu_onetbb_adapter {
     }
   };
 
-  using allocator_type = std::allocator<std::pair<const key_type, value_type>>;
-  using index_type = tbb::concurrent_hash_map<key_type, value_type, key_compare, allocator_type>;
+  using index_type = tbb::concurrent_hash_map<key_type, value_type, key_compare>;
 
   void parse(std::vector<std::string>& arguments) {
     configs_ = configs(arguments);
