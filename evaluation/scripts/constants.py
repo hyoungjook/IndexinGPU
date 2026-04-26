@@ -58,6 +58,10 @@ EXP_KEY_LENGTHS = [
     1, 2, 4, 8, 16
 ]
 
+EXP_VALUE_LENGTHS = [
+    1, 2, 4, 8, 16
+]
+
 EXP_GPU_MASSTREE_OPTS = [
     {
         ConfigType.keylen_prefix: DEFAULT_KEY_LENGTH - 1,

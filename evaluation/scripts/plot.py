@@ -22,6 +22,7 @@ INDEX_LABELS = {
     IndexType.cpu_art: "ART",
     IndexType.cpu_masstree: "Masstree",
     IndexType.cpu_libcuckoo: "Libcuckoo",
+    IndexType.cpu_onetbb: "OneTBB",
 }
 INDEX_STYLES = {
     IndexType.gpu_masstree: {"color": "#0B6E4F", "marker": "o", "linestyle": "-"},
@@ -33,6 +34,7 @@ INDEX_STYLES = {
     IndexType.cpu_art: {"color": "#5C4D7D", "marker": "P", "linestyle": "--"},
     IndexType.cpu_masstree: {"color": "#6C9A8B", "marker": "X", "linestyle": "--"},
     IndexType.cpu_libcuckoo: {"color": "#8F2D56", "marker": "v", "linestyle": "--"},
+    IndexType.cpu_onetbb: {"color": "#2A9D8F", "marker": "8", "linestyle": "--"},
 }
 HATCH_STYLES = {
     IndexType.gpu_masstree: 'o',
@@ -40,7 +42,7 @@ HATCH_STYLES = {
     IndexType.cpu_art: '///',
     IndexType.cpu_masstree: '\\\\\\',
     IndexType.cpu_libcuckoo: '|||',
-    IndexType.gpu_dycuckoo: '---',
+    IndexType.cpu_onetbb: '---',
 }
 EXTRA_COLORS = [
     "#3B60E4", "#00798C", "#8F2D56", "#0B6E4F", "#EDAE49", "#D1495B",
@@ -467,6 +469,80 @@ def average_slowdown_cpu(configs_and_results):
     avg_slowdown = sum(slowdowns) / len(slowdowns)
     print(f'average slowdown for cpu inputs: {avg_slowdown}')
 
+def value_length_plots(configs_and_results, plot_file_prefix):
+    tputs = {}
+    for index_type in INDEX_TYPES_ROBUST:
+        tputs[index_type] = {}
+        result_types = [ResultType.lookup]
+        if index_type in IS_INDEX_TYPE_ORDERED:
+            result_types.append(ResultType.scan)
+        for result_type in result_types:
+            tputs[index_type][result_type] = {
+                'avg': [], 'min': [], 'max': []
+            }
+            for value_length in EXP_VALUE_LENGTHS:
+                desired_config = {
+                    ConfigType.index_type: index_type,
+                    ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+                    ConfigType.keylen_prefix: 0,
+                    ConfigType.keylen_min: 1,
+                    ConfigType.keylen_max: 1,
+                    ConfigType.valuelen_min: value_length,
+                    ConfigType.valuelen_max: value_length,
+                }
+                if result_type == ResultType.lookup:
+                    desired_config[ConfigType.num_lookups] = DEFAULT_BATCH_SIZE
+                elif result_type == ResultType.scan:
+                    desired_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
+                    desired_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
+                result = filter(configs_and_results, desired_config, result_type)
+                processed_result = _compute_avg_min_max_from_raw(result[result_type.name]['raw'])
+                for metric_type in ['avg', 'min', 'max']:
+                    tputs[index_type][result_type][metric_type].append(processed_result[metric_type])
+    # plot
+    value_lengths_bytes = [4 * l for l in EXP_VALUE_LENGTHS]
+    tree_indexes = [i for i in INDEX_TYPES_ROBUST if i in IS_INDEX_TYPE_ORDERED]
+    hashtable_indexes = [i for i in INDEX_TYPES_ROBUST if i not in IS_INDEX_TYPE_ORDERED]
+    plot_spec = [
+        (tree_indexes, ResultType.lookup),
+        (tree_indexes, ResultType.scan),
+        (hashtable_indexes, ResultType.lookup),
+    ]
+    plot_names = [
+        'tree-lookup', 'tree-scan', 'ht-lookup'
+    ]
+    for idx, (index_types, result_type) in enumerate(plot_spec):
+        fig, ax = _make_fixed_plot_area_figure(1.3, 1.1,
+            include_xlabel=True,
+            include_ylabel=(idx == 0),
+        )
+        for index_type in index_types:
+            avg_values = _convert_mops_to_bops(tputs[index_type][result_type]['avg'], index_type)
+            min_values = _convert_mops_to_bops(tputs[index_type][result_type]['min'], index_type)
+            max_values = _convert_mops_to_bops(tputs[index_type][result_type]['max'], index_type)
+            ax.plot(
+                value_lengths_bytes, avg_values,
+                label=INDEX_LABELS[index_type],
+                linewidth=2, markersize=6,
+                **INDEX_STYLES[index_type]
+            )
+            _add_throughput_error_bars(
+                ax,
+                value_lengths_bytes,
+                avg_values,
+                min_values,
+                max_values,
+                color=INDEX_STYLES[index_type]['color']
+            )
+        ax.set_ylim(bottom=0)
+        ax.set_xlim(left=0)
+        ax.grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
+        ax.set_xlabel('Value Length (B)')
+        if idx == 0:
+            ax.set_ylabel(r'Throughput ($10^9$/s)')
+        fig.savefig(f'{plot_file_prefix}-{plot_names[idx]}.pdf', bbox_inches='tight')
+        plt.close(fig)
+
 def suffix_plots(configs_and_results, plot_file_prefix):
     tputs = {}
     plot_specs = [
@@ -776,7 +852,7 @@ def merge_plots(configs_and_results, plot_file_prefix):
 def intro_plots(configs_and_results, plot_file_prefix):
     tputs = {}
     tree_indexes = [IndexType.cpu_art, IndexType.cpu_masstree, IndexType.gpu_masstree,]
-    hashtable_indexes = [IndexType.cpu_libcuckoo, IndexType.gpu_dycuckoo, IndexType.gpu_extendhashtable,]
+    hashtable_indexes = [IndexType.cpu_libcuckoo, IndexType.cpu_onetbb, IndexType.gpu_extendhashtable,]
     plot_spec = [
         (0, tree_indexes, [ResultType.lookup, ResultType.scan, ResultType.mixed]),
         (1, hashtable_indexes, [ResultType.lookup, ResultType.mixed]),
@@ -800,35 +876,30 @@ def intro_plots(configs_and_results, plot_file_prefix):
     for _, index_types, result_types in plot_spec:
         for result_type in result_types:
             for index_type in index_types:
-                if index_type == IndexType.gpu_dycuckoo and result_type == ResultType.mixed:
-                    tputs[(index_type, result_type)] = {
-                        'avg': [0], 'min': [0], 'max': [0],
-                    }
+                desired_config = {
+                    ConfigType.index_type: index_type,
+                    ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+                    ConfigType.keylen_prefix: 0,
+                    ConfigType.keylen_min: intro_plot_key_length,
+                    ConfigType.keylen_max: intro_plot_key_length,
+                    ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH_OVERVIEW,
+                    ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH_OVERVIEW,
+                }
+                if result_type == ResultType.lookup:
+                    desired_config[ConfigType.num_lookups] = DEFAULT_BATCH_SIZE
+                elif result_type == ResultType.scan:
+                    desired_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
+                    desired_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
                 else:
-                    desired_config = {
-                        ConfigType.index_type: index_type,
-                        ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
-                        ConfigType.keylen_prefix: 0,
-                        ConfigType.keylen_min: intro_plot_key_length,
-                        ConfigType.keylen_max: intro_plot_key_length,
-                        ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH_OVERVIEW,
-                        ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH_OVERVIEW,
-                    }
-                    if result_type == ResultType.lookup:
-                        desired_config[ConfigType.num_lookups] = DEFAULT_BATCH_SIZE
-                    elif result_type == ResultType.scan:
-                        desired_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
-                        desired_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
-                    else:
-                        desired_config[ConfigType.num_mixed] = DEFAULT_BATCH_SIZE
-                        desired_config[ConfigType.mix_read_ratio] = DEFAULT_MIX_READ_RATIO
-                    result = filter(configs_and_results, desired_config, result_type)
-                    processed_result = _compute_avg_min_max_from_raw(result[result_type.name]['raw'])
-                    tputs[(index_type, result_type)] = {
-                        'avg': [processed_result['avg']],
-                        'min': [processed_result['min']],
-                        'max': [processed_result['max']],
-                    }
+                    desired_config[ConfigType.num_mixed] = DEFAULT_BATCH_SIZE
+                    desired_config[ConfigType.mix_read_ratio] = DEFAULT_MIX_READ_RATIO
+                result = filter(configs_and_results, desired_config, result_type)
+                processed_result = _compute_avg_min_max_from_raw(result[result_type.name]['raw'])
+                tputs[(index_type, result_type)] = {
+                    'avg': [processed_result['avg']],
+                    'min': [processed_result['min']],
+                    'max': [processed_result['max']],
+                }
     # plot
     for idx, index_types, result_types in plot_spec:
         fig, ax = _make_fixed_plot_area_figure(0.8 * len(result_types), 1.5,
@@ -857,25 +928,22 @@ def intro_plots(configs_and_results, plot_file_prefix):
                     our_x = xdata[0]
                 else:
                     baseline_ymax = max(baseline_ymax, ydata[0])
-                if ydata[0] == 0:
-                    ax.text(xdata[0], ydata[0], "X", fontsize=10, color='red', fontweight='bold', ha='center', va='bottom')
-                else:
-                    ax.bar(xdata, ydata,
-                        width=bar_width,
-                        fill=False,
-                        edgecolor=INDEX_STYLES[index_type]['color'],
-                        hatch=HATCH_STYLES[index_type],
-                        linewidth=(2 if index_type in INDEX_TYPES_ROBUST else 1)
-                    )
-                    _add_throughput_error_bars(
-                        ax,
-                        xdata,
-                        avg_values,
-                        min_values,
-                        max_values,
-                        color=INDEX_STYLES[index_type]['color'],
-                        for_barplot=True
-                    )
+                ax.bar(xdata, ydata,
+                    width=bar_width,
+                    fill=False,
+                    edgecolor=INDEX_STYLES[index_type]['color'],
+                    hatch=HATCH_STYLES[index_type],
+                    linewidth=(2 if index_type in INDEX_TYPES_ROBUST else 1)
+                )
+                _add_throughput_error_bars(
+                    ax,
+                    xdata,
+                    avg_values,
+                    min_values,
+                    max_values,
+                    color=INDEX_STYLES[index_type]['color'],
+                    for_barplot=True
+                )
             ax.text(our_x, our_ymax, f'{our_ymax / baseline_ymax:.1f}x', fontsize=12, ha='center', va='bottom')
         ax.set_ylim(bottom=0, top=plot_top * 1.15)
         xmargin = bar_spacing * len(index_types)
@@ -898,6 +966,7 @@ def generate_plots(args, configs_and_results):
     key_length_plots(configs_and_results, Path(args.result_dir) / 'plot_keylength')
     key_length_cpu_plots(configs_and_results, Path(args.result_dir) / 'plot_keylength_cpu')
     average_slowdown_cpu(configs_and_results)
+    value_length_plots(configs_and_results, Path(args.result_dir) / 'plot_valuelength')
     suffix_plots(configs_and_results, Path(args.result_dir) / 'plot_suffix')
     tile_plots(configs_and_results, Path(args.result_dir) / 'plot_tile')
     merge_plots(configs_and_results, Path(args.result_dir) / 'plot_merge')

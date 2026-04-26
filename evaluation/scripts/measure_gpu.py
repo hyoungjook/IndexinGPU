@@ -38,6 +38,28 @@ def generate_configs():
             if index_type in INDEX_TYPES_ROBUST:
                 cpu_input_configs[OptionalConfigType.use_shmem_key] = 1
             configs.append({**common_config, **cpu_input_configs})
+    # value length
+    for value_length in EXP_VALUE_LENGTHS:
+        if value_length == DEFAULT_VALUE_LENGTH_OVERVIEW:
+            continue # already measured above
+        for index_type in INDEX_TYPES_ROBUST:
+            common_config = {
+                ConfigType.index_type: index_type,
+                ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+                ConfigType.keylen_prefix: 0,
+                ConfigType.keylen_min: 1,
+                ConfigType.keylen_max: 1,
+                ConfigType.valuelen_min: value_length,
+                ConfigType.valuelen_max: value_length,
+                ConfigType.num_lookups: DEFAULT_BATCH_SIZE,
+                ConfigType.rep_lookup: NUM_REPEATS,
+                OptionalConfigType.allocator_pool_ratio: ROBUST_INDEX_ALLOC_POOL_RATIO(index_type),
+            }
+            if index_type in IS_INDEX_TYPE_ORDERED:
+                common_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
+                common_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
+                common_config[ConfigType.rep_scan] = NUM_REPEATS
+            configs.append(common_config)
     # MT suffix
     for index_type in [IndexType.gpu_masstree]:
         common_config = {
