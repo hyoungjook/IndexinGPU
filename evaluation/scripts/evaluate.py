@@ -21,6 +21,7 @@ class IndexType(Enum):
     gpu_blink_tree = auto()
     gpu_dycuckoo = auto()
     cpu_libcuckoo = auto()
+    cpu_onetbb = auto()
     cpu_masstree = auto()
     cpu_art = auto()
 
@@ -98,6 +99,7 @@ EXECUTABLE_INFO = {
         'path': 'bin/universal_bench_with_cpu_baseline',
         'indexes': [
             IndexType.cpu_libcuckoo,
+            IndexType.cpu_onetbb,
             IndexType.cpu_masstree,
             IndexType.cpu_art,
         ]
@@ -150,6 +152,9 @@ INDEX_INFO = {
         OptionalConfigType.initial_capacity
     ],
     IndexType.cpu_libcuckoo: [
+        OptionalConfigType.initial_capacity
+    ],
+    IndexType.cpu_onetbb: [
         OptionalConfigType.initial_capacity
     ],
     IndexType.cpu_masstree: [],

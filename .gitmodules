@@ -13,3 +13,6 @@
 [submodule "baselines/ARTSynchronized"]
 	path = baselines/ARTSynchronized
 	url = https://github.com/flode/ARTSynchronized.git
+[submodule "baselines/oneTBB"]
+	path = baselines/oneTBB
+	url = https://github.com/uxlfoundation/oneTBB.git

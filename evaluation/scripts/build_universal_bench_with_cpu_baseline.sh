@@ -50,6 +50,7 @@ fi
   -I"${ROOT_DIR}/evaluation" \
   -I"${ROOT_DIR}/include" \
   -I"${ROOT_DIR}/baselines/libcuckoo" \
+  -I"${ROOT_DIR}/baselines/oneTBB/include" \
   -I"${MASSTREE_DIR}" \
   -I"${ARTSYNC_DIR}" \
   -DUNIVERSAL_BENCH_WITH_CPU_BASELINE \
