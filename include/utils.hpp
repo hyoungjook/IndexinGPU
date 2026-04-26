@@ -43,18 +43,18 @@ struct device_memory_usage_results {
   std::size_t used_bytes;
   std::size_t total_bytes;
 };
-device_memory_usage_results compute_device_memory_usage() {
+inline device_memory_usage_results compute_device_memory_usage() {
   std::size_t total_bytes;
   std::size_t free_bytes;
   cuda_try(cudaMemGetInfo(&free_bytes, &total_bytes));
   std::size_t used_bytes = total_bytes - free_bytes;
   return {used_bytes, free_bytes};
 }
-void set_cuda_buffer_size(const std::size_t new_size, const cudaLimit limit) {
+inline void set_cuda_buffer_size(const std::size_t new_size, const cudaLimit limit) {
   cuda_try(cudaDeviceSetLimit(limit, new_size));
 }
 
-std::size_t get_cuda_buffer_size(const cudaLimit limit) {
+inline std::size_t get_cuda_buffer_size(const cudaLimit limit) {
   std::size_t cur_size;
   cuda_try(cudaDeviceGetLimit(&cur_size, limit));
   return cur_size;

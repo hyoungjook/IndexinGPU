@@ -49,6 +49,7 @@ void helper_multithread(F&& f, std::size_t num_tasks, ThreadEnter&& thread_enter
   for (auto& w: workers) { w.join(); }
 }
 
+inline
 std::size_t feistel_permute(std::size_t x, std::size_t N, uint64_t seed) {
   if (N <= 1) return 0;
   auto mix = [](std::uint64_t v) {
@@ -116,6 +117,7 @@ struct zipfian_int_distribution {
   double theta_, alpha_, eta_, zetan_;
 };
 
+inline
 std::size_t key_hasher(const key_slice_type* key, size_type length) {
   std::size_t hash = 0;
   for (size_type i = 0; i < length; i++) {
@@ -124,6 +126,7 @@ std::size_t key_hasher(const key_slice_type* key, size_type length) {
   return hash;
 }
 
+inline
 void generate_key_values(std::vector<key_slice_type>& keys,
                          std::vector<size_type>& key_lengths,
                          std::vector<value_slice_type>& values,
@@ -210,6 +213,7 @@ void generate_key_values(std::vector<key_slice_type>& keys,
   }, num_keys, [](unsigned){}, [](unsigned){});
 }
 
+inline
 void generate_lookup_keys(std::vector<key_slice_type>& lookup_keys,
                           std::vector<size_type>& lookup_key_lengths,
                           std::vector<key_slice_type>& keys,
@@ -238,18 +242,19 @@ void generate_lookup_keys(std::vector<key_slice_type>& lookup_keys,
   }, num_queries, [](unsigned){}, [](unsigned){});
 }
 
-std::size_t mix_get_num_insdel(std::size_t num_mixed, double mix_read_ratio) {
+inline std::size_t mix_get_num_insdel(std::size_t num_mixed, double mix_read_ratio) {
   std::size_t num_lookups_tmp = static_cast<std::size_t>(mix_read_ratio * num_mixed);
   std::size_t num_insdel = (num_mixed - num_lookups_tmp) / 2;
   return num_insdel;
 }
 
-std::size_t mix_get_num_lookups(std::size_t num_mixed, double mix_read_ratio) {
+inline std::size_t mix_get_num_lookups(std::size_t num_mixed, double mix_read_ratio) {
   std::size_t num_insdel = mix_get_num_insdel(num_mixed, mix_read_ratio);
   std::size_t num_lookups = num_mixed - num_insdel * 2;
   return num_lookups;
 }
 
+inline
 void generate_mixed_keys(std::vector<kernels::request_type>& mix_types,
                          std::vector<key_slice_type>& mix_keys,
                          std::vector<size_type>& mix_key_lengths,

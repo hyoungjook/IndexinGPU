@@ -33,6 +33,14 @@
 #elif defined(UNIVERSAL_BENCH_WITH_GPU_BASELINE)
 #include <gpu_blink_tree_adapter.hpp>
 #include <gpu_dycuckoo_adapter.hpp>
+#elif defined(UNIVERSAL_BENCH_INSTANTIATE_GPU_MASSTREE)
+#include <gpu_masstree_adapter.hpp>
+#elif defined(UNIVERSAL_BENCH_INSTANTIATE_GPU_CHAINHASHTABLE)
+#include <gpu_chainhashtable_adapter.hpp>
+#elif defined(UNIVERSAL_BENCH_INSTANTIATE_GPU_CUCKOOHASHTABLE)
+#include <gpu_cuckoohashtable_adapter.hpp>
+#elif defined(UNIVERSAL_BENCH_INSTANTIATE_GPU_EXTENDHASHTABLE)
+#include <gpu_extendhashtable_adapter.hpp>
 #else
 #include <gpu_masstree_adapter.hpp>
 #include <gpu_chainhashtable_adapter.hpp>
@@ -94,7 +102,7 @@ struct device_vector {
   }
   device_vector(const T* h_buffer, std::size_t size, bool use_pinned_host_memory = false, bool nullify = false)
       : device_vector(size, use_pinned_host_memory, nullify) {
-    if (size > 0) {
+    if (!nullify && size > 0) {
       if (use_pinned_host_memory) {
         std::copy(std::execution::par, h_buffer, h_buffer + size, d_buffer_);
       }
@@ -129,16 +137,17 @@ static bool varlen_key_big_endian = false;
 #endif
 
 template <typename adapter_type>
-void prefill(adapter_type& adapter,
-             std::vector<key_slice_type>& h_keys,
-             std::vector<size_type>& h_key_lengths,
-             std::vector<value_slice_type>& h_values,
-             std::vector<size_type>& h_value_lengths,
-             uint32_t keylen_min,
-             uint32_t keylen_max,
-             uint32_t valuelen_min,
-             uint32_t valuelen_max,
-             std::size_t num_keys) {
+struct bench_runner {
+static void prefill(adapter_type& adapter,
+                    std::vector<key_slice_type>& h_keys,
+                    std::vector<size_type>& h_key_lengths,
+                    std::vector<value_slice_type>& h_values,
+                    std::vector<size_type>& h_value_lengths,
+                    uint32_t keylen_min,
+                    uint32_t keylen_max,
+                    uint32_t valuelen_min,
+                    uint32_t valuelen_max,
+                    std::size_t num_keys) {
   adapter.initialize();
   #if !defined(NOGPU)
   static const uint32_t prefill_batch = 100 * 1000 * 1000;
@@ -160,39 +169,37 @@ void prefill(adapter_type& adapter,
   #endif
 }
 
-template <typename adapter_type>
-void check_space(adapter_type& adapter,
-                 std::vector<key_slice_type>& h_keys,
-                 std::vector<size_type>& h_key_lengths,
-                 std::vector<value_slice_type>& h_values,
-                 std::vector<size_type>& h_value_lengths,
-                 args_type& args) {
+static void check_space(adapter_type& adapter,
+                        std::vector<key_slice_type>& h_keys,
+                        std::vector<size_type>& h_key_lengths,
+                        std::vector<value_slice_type>& h_values,
+                        std::vector<size_type>& h_value_lengths,
+                        args_type& args) {
   prefill(adapter, h_keys, h_key_lengths, h_values, h_value_lengths, 
           args.keylen_min, args.keylen_max, args.valuelen_min, args.valuelen_max, args.max_keys);
   adapter.print_stats();
   adapter.destroy();
 }
 
-template <typename adapter_type>
-void run_bench(adapter_type& adapter,
-               std::vector<key_slice_type>& h_keys,
-               std::vector<size_type>& h_key_lengths,
-               std::vector<value_slice_type>& h_values,
-               std::vector<size_type>& h_value_lengths,
-               std::vector<key_slice_type>& h_lookup_keys,
-               std::vector<size_type>& h_lookup_key_lengths,
-               std::vector<key_slice_type>& h_scan_upper_keys_if_btree,
-               std::vector<kernels::request_type> h_mix_types,
-               std::vector<key_slice_type> h_mix_keys,
-               std::vector<size_type> h_mix_key_lengths,
-               std::vector<value_slice_type> h_mix_values,
-               std::vector<size_type> h_mix_value_lengths,
-               [[maybe_unused]] std::vector<std::size_t> h_mix_key_tuple_ids,
-               args_type& args,
-               std::size_t result_buffer_size,
-               std::size_t result_length_buffer_size,
-               bool verbose,
-               bool print_all_measurements) {
+static void run_bench(adapter_type& adapter,
+                      std::vector<key_slice_type>& h_keys,
+                      std::vector<size_type>& h_key_lengths,
+                      std::vector<value_slice_type>& h_values,
+                      std::vector<size_type>& h_value_lengths,
+                      std::vector<key_slice_type>& h_lookup_keys,
+                      std::vector<size_type>& h_lookup_key_lengths,
+                      std::vector<key_slice_type>& h_scan_upper_keys_if_btree,
+                      std::vector<kernels::request_type> h_mix_types,
+                      std::vector<key_slice_type> h_mix_keys,
+                      std::vector<size_type> h_mix_key_lengths,
+                      std::vector<value_slice_type> h_mix_values,
+                      std::vector<size_type> h_mix_value_lengths,
+                      [[maybe_unused]] std::vector<std::size_t> h_mix_key_tuple_ids,
+                      args_type& args,
+                      std::size_t result_buffer_size,
+                      std::size_t result_length_buffer_size,
+                      bool verbose,
+                      bool print_all_measurements) {
   const bool use_null_keylength = (args.keylen_min == args.keylen_max);
   const bool use_null_valuelength = (args.valuelen_min == args.valuelen_max);
   // measure lookup & scan
@@ -335,7 +342,7 @@ void run_bench(adapter_type& adapter,
           &h_keys[static_cast<std::size_t>(args.num_space) * args.keylen_max * d],
           static_cast<std::size_t>(args.num_space) * args.keylen_max);
         auto d_delete_key_lengths = device_vector<size_type>(
-          &h_key_lengths[static_cast<std::size_t>(args.num_space) * d], args.num_space, use_null_keylength);
+          &h_key_lengths[static_cast<std::size_t>(args.num_space) * d], args.num_space, false, use_null_keylength);
         adapter.erase(d_delete_keys.data(), args.keylen_max, d_delete_key_lengths.data(), args.num_space);
         cuda_try(cudaDeviceSynchronize());
         if (r == 0) { adapter.print_stats(); }
@@ -391,9 +398,49 @@ void run_bench(adapter_type& adapter,
     }
   }
 }
+};
 
-} // namespace universal_bench
+} // namespace universal
 
+#define UNIVERSAL_BENCH_DECLARE_TEMPLATES(adapter_type) \
+  extern template struct bench_runner<adapter_type>;
+
+#define UNIVERSAL_BENCH_INSTANTIATE_TEMPLATES(adapter_type) \
+  template struct bench_runner<adapter_type>;
+
+#if !defined(UNIVERSAL_BENCH_WITH_CPU_BASELINE) && \
+    !defined(UNIVERSAL_BENCH_WITH_GPU_BASELINE) && \
+    !defined(UNIVERSAL_BENCH_SKIP_MAIN)
+namespace universal {
+UNIVERSAL_BENCH_DECLARE_TEMPLATES(gpu_masstree_adapter)
+UNIVERSAL_BENCH_DECLARE_TEMPLATES(gpu_chainhashtable_adapter)
+UNIVERSAL_BENCH_DECLARE_TEMPLATES(gpu_cuckoohashtable_adapter)
+UNIVERSAL_BENCH_DECLARE_TEMPLATES(gpu_extendhashtable_adapter)
+} // namespace universal
+#endif
+
+#if defined(UNIVERSAL_BENCH_INSTANTIATE_GPU_MASSTREE)
+namespace universal {
+UNIVERSAL_BENCH_INSTANTIATE_TEMPLATES(gpu_masstree_adapter)
+} // namespace universal
+#elif defined(UNIVERSAL_BENCH_INSTANTIATE_GPU_CHAINHASHTABLE)
+namespace universal {
+UNIVERSAL_BENCH_INSTANTIATE_TEMPLATES(gpu_chainhashtable_adapter)
+} // namespace universal
+#elif defined(UNIVERSAL_BENCH_INSTANTIATE_GPU_CUCKOOHASHTABLE)
+namespace universal {
+UNIVERSAL_BENCH_INSTANTIATE_TEMPLATES(gpu_cuckoohashtable_adapter)
+} // namespace universal
+#elif defined(UNIVERSAL_BENCH_INSTANTIATE_GPU_EXTENDHASHTABLE)
+namespace universal {
+UNIVERSAL_BENCH_INSTANTIATE_TEMPLATES(gpu_extendhashtable_adapter)
+} // namespace universal
+#endif
+
+#undef UNIVERSAL_BENCH_INSTANTIATE_TEMPLATES
+#undef UNIVERSAL_BENCH_DECLARE_TEMPLATES
+
+#if !defined(UNIVERSAL_BENCH_SKIP_MAIN)
 int main(int argc, char** argv) {
   auto arg_strings = std::vector<std::string>(argv, argv + argc);
   universal::args_type args(arg_strings);
@@ -503,7 +550,7 @@ int main(int argc, char** argv) {
     if (verbose) { std::cout << "Checking space consumption..." << std::endl; }
     #define ADAPTER_CHECK_SPACE(index) \
     if (args.index_type == #index) { \
-      universal::check_space(index##_adapter_, h_keys, h_key_lengths, h_values, h_value_lengths, args); \
+      universal::bench_runner<index##_adapter>::check_space(index##_adapter_, h_keys, h_key_lengths, h_values, h_value_lengths, args); \
     }
     FORALL_INDEXES(ADAPTER_CHECK_SPACE)
     #undef ADAPTER_CHECK_SPACE
@@ -522,7 +569,7 @@ int main(int argc, char** argv) {
   #undef ADAPTER_REGISTER_DATASET
   #define ADAPTER_RUN_BENCH(index) \
   if (args.index_type == #index) { \
-    universal::run_bench(index##_adapter_, \
+    universal::bench_runner<index##_adapter>::run_bench(index##_adapter_, \
       h_keys, h_key_lengths, h_values, h_value_lengths, h_lookup_keys, h_lookup_key_lengths, h_scan_upper_keys_if_btree, \
       h_mix_types, h_mix_keys, h_mix_key_lengths, h_mix_values, h_mix_value_lengths, h_mix_key_tuple_ids, args, \
       result_buffer_size, result_length_buffer_size, verbose, print_all_measurements); \
@@ -530,3 +577,4 @@ int main(int argc, char** argv) {
   FORALL_INDEXES(ADAPTER_RUN_BENCH)
   #undef ADAPTER_RUN_BENCH
 }
+#endif

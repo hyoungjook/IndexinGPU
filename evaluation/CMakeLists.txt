@@ -7,7 +7,13 @@ set(EVALUATION_INCLUDE_DIRS
   ${CMAKE_CURRENT_SOURCE_DIR}/../include
 )
 
-add_executable(universal_bench universal_bench.cu)
+add_executable(universal_bench
+  universal_bench.cu
+  universal_bench_gpu_masstree.cu
+  universal_bench_gpu_chainhashtable.cu
+  universal_bench_gpu_cuckoohashtable.cu
+  universal_bench_gpu_extendhashtable.cu
+)
 set_target_properties(universal_bench PROPERTIES FOLDER "evaluation")
 target_include_directories(universal_bench PRIVATE ${EVALUATION_INCLUDE_DIRS})
 target_link_libraries(universal_bench PRIVATE robust_gpu_indexing)
