@@ -41,8 +41,8 @@ HATCH_STYLES = {
     IndexType.gpu_extendhashtable: 'x',
     IndexType.cpu_art: '///',
     IndexType.cpu_masstree: '\\\\\\',
-    IndexType.cpu_libcuckoo: '|||',
-    IndexType.cpu_onetbb: '---',
+    IndexType.cpu_libcuckoo: '...',
+    IndexType.cpu_onetbb: '|||',
 }
 EXTRA_COLORS = [
     "#3B60E4", "#00798C", "#8F2D56", "#0B6E4F", "#EDAE49", "#D1495B",
@@ -117,12 +117,12 @@ def _make_fixed_plot_area_figure(plot_width, plot_height, *, include_xlabel=Fals
 def _save_grouped_legend_pdf(legend_groups, output_file):
     group_order = ['ours', 'gpu_baseline', 'cpu_baseline']
     group_names = {
-        'ours': 'Our Libgpumap',
+        'ours': 'Our GpuIndexer',
         'gpu_baseline': 'GPU Baselines',
         'cpu_baseline': 'CPU Baselines',
     }
     fig, axes = plt.subplots(3, 1,
-        figsize=(2.6, 2.3),
+        figsize=(3, 2.3),
         constrained_layout=True,
         gridspec_kw={
             'height_ratios': [len(legend_groups[group]['labels']) + 1 for group in group_order]
@@ -244,7 +244,7 @@ def key_length_plots(configs_and_results, plot_file_prefix):
             ydata = avg_values.copy()
             markevery = range(len(ydata))
             if len(markevery) == 1:
-                ydata.append(ydata[0] * 0.7)
+                ydata.append(0)
             xdata = key_lengths_bytes[0:len(ydata)]
             index_label = INDEX_LABELS[index_type]
             line, = ax.plot(
@@ -263,7 +263,7 @@ def key_length_plots(configs_and_results, plot_file_prefix):
                 color=INDEX_STYLES[index_type]['color']
             )
             if len(markevery) == 1:
-                ax.text(xdata[1], ydata[1], "X", fontsize=10, color='red', fontweight='bold', ha='center', va='center')
+                ax.text(xdata[1], ydata[1], "X", fontsize=10, color='red', fontweight='bold', ha='center', va='center', zorder=10)
             if index_type in IS_INDEX_TYPE_ORDERED:
                 index_label = f'[Tree] {index_label}'
             else:
@@ -362,6 +362,9 @@ def key_length_cpu_plots(configs_and_results, plot_file_prefix):
         ],
     ]
     plot_names = ['tree', 'ht']
+    legend_indexes = set()
+    legend_handles = []
+    legend_labels = []
     for idx, plots in enumerate(plot_spec):
         figwidth = 6
         figheight = 1.8 if idx == 0 else 2.0
@@ -387,9 +390,9 @@ def key_length_cpu_plots(configs_and_results, plot_file_prefix):
                 ymax = max(ymax, max(max_values))
                 markevery = range(len(ydata))
                 if len(markevery) == 1:
-                    ydata.append(ydata[0] * 0.7)
+                    ydata.append(0)
                 xdata = key_lengths_bytes[0:len(ydata)]
-                axes[subplot_idx].plot(
+                line, = axes[subplot_idx].plot(
                     xdata, ydata,
                     label=INDEX_LABELS[index_type],
                     markevery=markevery,
@@ -400,7 +403,11 @@ def key_length_cpu_plots(configs_and_results, plot_file_prefix):
                     axes[subplot_idx], key_lengths_bytes, avg_values, min_values, max_values, color=INDEX_STYLES[index_type]['color']
                 )
                 if len(markevery) == 1:
-                    axes[subplot_idx].text(xdata[1], ydata[1], "X", fontsize=10, color='red', fontweight='bold', ha='center', va='center')
+                    axes[subplot_idx].text(xdata[1], ydata[1], "X", fontsize=10, color='red', fontweight='bold', ha='center', va='center', zorder=10)
+                if index_type not in legend_indexes:
+                    legend_indexes.add(index_type)
+                    legend_labels.append(INDEX_LABELS[index_type])
+                    legend_handles.append(line)
             axes[subplot_idx].set_ylim(bottom=0, top=ymax * 1.1)
             axes[subplot_idx].set_xlim(left=0)
             _, ymax = axes[subplot_idx].get_ylim()
@@ -429,6 +436,11 @@ def key_length_cpu_plots(configs_and_results, plot_file_prefix):
             fig.supxlabel('Key Length (B)', fontsize=10)
         fig.savefig(f'{plot_file_prefix}-{plot_names[idx]}.pdf', bbox_inches='tight')
         plt.close(fig)
+    fig, ax = plt.subplots(1, 1, figsize=(7, 0.5), constrained_layout=True)
+    ax.legend(legend_handles, legend_labels, loc='center', ncol=len(legend_labels) / 2)
+    ax.axis("off")
+    plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
+    plt.close(fig)
 
 def average_slowdown_cpu(configs_and_results):
     slowdowns = []
@@ -511,6 +523,9 @@ def value_length_plots(configs_and_results, plot_file_prefix):
     plot_names = [
         'tree-lookup', 'tree-scan', 'ht-lookup'
     ]
+    legend_indexes = set()
+    legend_handles = []
+    legend_labels = []
     for idx, (index_types, result_type) in enumerate(plot_spec):
         fig, ax = _make_fixed_plot_area_figure(1.3, 1.1,
             include_xlabel=True,
@@ -520,7 +535,7 @@ def value_length_plots(configs_and_results, plot_file_prefix):
             avg_values = _convert_mops_to_bops(tputs[index_type][result_type]['avg'], index_type)
             min_values = _convert_mops_to_bops(tputs[index_type][result_type]['min'], index_type)
             max_values = _convert_mops_to_bops(tputs[index_type][result_type]['max'], index_type)
-            ax.plot(
+            line, = ax.plot(
                 value_lengths_bytes, avg_values,
                 label=INDEX_LABELS[index_type],
                 linewidth=2, markersize=6,
@@ -534,6 +549,10 @@ def value_length_plots(configs_and_results, plot_file_prefix):
                 max_values,
                 color=INDEX_STYLES[index_type]['color']
             )
+            if index_type not in legend_indexes:
+                legend_indexes.add(index_type)
+                legend_labels.append(INDEX_LABELS[index_type])
+                legend_handles.append(line)
         ax.set_ylim(bottom=0)
         ax.set_xlim(left=0)
         ax.grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
@@ -542,6 +561,11 @@ def value_length_plots(configs_and_results, plot_file_prefix):
             ax.set_ylabel(r'Throughput ($10^9$/s)')
         fig.savefig(f'{plot_file_prefix}-{plot_names[idx]}.pdf', bbox_inches='tight')
         plt.close(fig)
+    fig, ax = plt.subplots(1, 1, figsize=(6, 0.3), constrained_layout=True)
+    ax.legend(legend_handles, legend_labels, loc='center', ncol=len(legend_labels))
+    ax.axis("off")
+    plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
+    plt.close(fig)
 
 def suffix_plots(configs_and_results, plot_file_prefix):
     tputs = {}
@@ -857,7 +881,7 @@ def intro_plots(configs_and_results, plot_file_prefix):
         (0, tree_indexes, [ResultType.lookup, ResultType.scan, ResultType.mixed]),
         (1, hashtable_indexes, [ResultType.lookup, ResultType.mixed]),
     ]
-    intro_plot_key_length = 16
+    intro_plot_key_length = 8
     plot_names = ['tree', 'ht']
     legend_handles = []
     legend_labels = []
@@ -902,7 +926,7 @@ def intro_plots(configs_and_results, plot_file_prefix):
                 }
     # plot
     for idx, index_types, result_types in plot_spec:
-        fig, ax = _make_fixed_plot_area_figure(0.8 * len(result_types), 1.5,
+        fig, ax = _make_fixed_plot_area_figure(0.8 * len(result_types), 1.2,
             include_xlabel=False, include_ylabel=(idx == 0))
         bar_width = 0.22 if len(index_types) == 3 else 0.28
         bar_spacing = bar_width * 1.2
@@ -945,7 +969,7 @@ def intro_plots(configs_and_results, plot_file_prefix):
                     for_barplot=True
                 )
             ax.text(our_x, our_ymax, f'{our_ymax / baseline_ymax:.1f}x', fontsize=12, ha='center', va='bottom')
-        ax.set_ylim(bottom=0, top=plot_top * 1.15)
+        ax.set_ylim(bottom=0, top=plot_top * 1.2)
         xmargin = bar_spacing * len(index_types)
         ax.set_xlim(group_centers[0] - xmargin, group_centers[-1] + xmargin)
         ax.set_xticks(group_centers)
