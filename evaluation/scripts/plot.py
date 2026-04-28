@@ -13,16 +13,16 @@ CPU_VM_HOURLY_PRICE = 3.648
 CPU_BASELINE_ADJUST = 1
 
 INDEX_LABELS = {
-    IndexType.gpu_masstree: "GpuMasstree",
-    IndexType.gpu_chainhashtable: "GpuChainHT",
-    IndexType.gpu_cuckoohashtable: "GpuCuckooHT",
-    IndexType.gpu_extendhashtable: "GpuExtendHT",
+    IndexType.gpu_masstree: "GPUMasstree",
+    IndexType.gpu_chainhashtable: "GPUChainHT",
+    IndexType.gpu_cuckoohashtable: "GPUCuckooHT",
+    IndexType.gpu_extendhashtable: "GPUExtendHT",
     IndexType.gpu_blink_tree: "GPUBtree",
     IndexType.gpu_dycuckoo: "DyCuckoo",
     IndexType.cpu_art: "ART",
     IndexType.cpu_masstree: "Masstree",
-    IndexType.cpu_libcuckoo: "Libcuckoo",
-    IndexType.cpu_onetbb: "OneTBB",
+    IndexType.cpu_libcuckoo: "libcuckoo",
+    IndexType.cpu_onetbb: "oneTBB",
 }
 INDEX_STYLES = {
     IndexType.gpu_masstree: {"color": "#0B6E4F", "marker": "o", "linestyle": "-"},
@@ -121,30 +121,82 @@ def _save_grouped_legend_pdf(legend_groups, output_file):
         'gpu_baseline': 'GPU Baselines',
         'cpu_baseline': 'CPU Baselines',
     }
+    ncols = 2
+    group_rows = {
+        group: max(1, (len(legend_groups[group]['labels']) + ncols - 1) // ncols)
+        for group in group_order
+    }
+    legend_width = 2.95
+    legend_height = legend_width * 2.3 / 3
     fig, axes = plt.subplots(3, 1,
-        figsize=(3, 2.3),
-        constrained_layout=True,
+        figsize=(legend_width, legend_height),
         gridspec_kw={
-            'height_ratios': [len(legend_groups[group]['labels']) + 1 for group in group_order]
+            'height_ratios': [
+                group_rows[group] + (0.95 if group_rows[group] == 1 else 0.55)
+                for group in group_order
+            ]
         },
     )
+    fig.subplots_adjust(left=0.05, right=0.95, bottom=0.025, top=0.975, hspace=0.02)
     for ax, group_name in zip(axes, group_order):
-        ax.legend(
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis('off')
+        frame = mpatch.FancyBboxPatch(
+            (0.01, 0.03), 0.98, 0.94,
+            boxstyle='round,pad=0.012,rounding_size=0.02',
+            linewidth=1,
+            edgecolor='#cccccc',
+            facecolor='white',
+            transform=ax.transAxes,
+            clip_on=False,
+        )
+        ax.add_patch(frame)
+        rows = group_rows[group_name]
+        ax.text(
+            0.5, 0.78 if rows == 1 else 0.86, group_names[group_name],
+            ha='center', va='center',
+            fontsize=10, fontweight='bold',
+            transform=ax.transAxes,
+        )
+        row_centers = [0.36] if rows == 1 else [
+            0.54 - row * (0.34 / (rows - 1)) for row in range(rows)
+        ]
+        col_centers = [0.25, 0.75]
+        for idx, (handle, label) in enumerate(zip(
             legend_groups[group_name]['handles'],
             legend_groups[group_name]['labels'],
-            loc='center',
-            ncol=1,
-            bbox_to_anchor=(0.05, 0, 0.9, 1),
-            mode='expand',
-            borderaxespad=0.0,
-            handlelength=3,
-            title=group_names[group_name],
-            title_fontproperties={'weight': 'bold'},
-            frameon=True,
-            labelspacing=0.3,
-        )
-        ax.axis('off')
-    fig.savefig(output_file, bbox_inches='tight')
+        )):
+            row = idx % rows
+            col = idx // rows
+            x = col_centers[col]
+            if rows == 1:
+                line_y = 0.53
+                text_y = 0.20
+            else:
+                line_y = row_centers[row] + 0.085
+                text_y = row_centers[row] - 0.085
+            ax.plot(
+                [x - 0.15, x, x + 0.15],
+                [line_y, line_y, line_y],
+                color=handle.get_color(),
+                linestyle=handle.get_linestyle(),
+                linewidth=handle.get_linewidth(),
+                marker=handle.get_marker(),
+                markersize=handle.get_markersize(),
+                markerfacecolor=handle.get_markerfacecolor(),
+                markeredgecolor=handle.get_markeredgecolor(),
+                markevery=[1],
+                transform=ax.transAxes,
+                clip_on=False,
+            )
+            ax.text(
+                x, text_y, label,
+                ha='center', va='center',
+                fontsize=10,
+                transform=ax.transAxes,
+            )
+    fig.savefig(output_file, bbox_inches='tight', pad_inches=0.02)
     plt.close(fig)
 
 def key_length_plots(configs_and_results, plot_file_prefix):
@@ -264,10 +316,10 @@ def key_length_plots(configs_and_results, plot_file_prefix):
             )
             if len(markevery) == 1:
                 ax.text(xdata[1], ydata[1], "X", fontsize=10, color='red', fontweight='bold', ha='center', va='center', zorder=10)
-            if index_type in IS_INDEX_TYPE_ORDERED:
-                index_label = f'[Tree] {index_label}'
-            else:
-                index_label = f'[HT] {index_label}'
+            #if index_type in IS_INDEX_TYPE_ORDERED:
+            #    index_label = f'[Tree] {index_label}'
+            #else:
+            #    index_label = f'[HT] {index_label}'
             if index_label not in legends[get_index_group(index_type)]['labels']:
                 legends[get_index_group(index_type)]['labels'].append(index_label)
                 legends[get_index_group(index_type)]['handles'].append(line)
