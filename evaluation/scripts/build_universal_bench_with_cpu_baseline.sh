@@ -2,11 +2,14 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
 CXX_BIN="${CXX:-c++}"
 CC_BIN="${CC:-cc}"
 OUTPUT_PATH="${OUTPUT:-${ROOT_DIR}/build/bin/universal_bench_with_cpu_baseline}"
+
 MASSTREE_DIR="${ROOT_DIR}/baselines/masstree-beta"
 ARTSYNC_DIR="${ROOT_DIR}/baselines/ARTSynchronized"
+
 ONETBB_DIR="${ROOT_DIR}/baselines/oneTBB"
 ONETBB_BUILD_DIR="${ROOT_DIR}/build/onetbb"
 ONETBB_INSTALL_DIR="${ONETBB_BUILD_DIR}/install"
@@ -16,7 +19,23 @@ ONETBB_MANUAL_OBJ_DIR="${ONETBB_MANUAL_BUILD_DIR}/obj"
 ONETBB_INCLUDE_DIR="${ONETBB_INSTALL_DIR}/include"
 ONETBB_CMAKE_BIN="${CMAKE:-cmake}"
 ONETBB_LIB_DIRS=()
+
 JEMALLOC_LINK_FLAGS=()
+
+COMMON_OPT_FLAGS=(-O3 -DNDEBUG -march=native -mtune=native)
+COMMON_CXX_FLAGS=(-std=c++20 "${COMMON_OPT_FLAGS[@]}" -pthread)
+COMMON_C_FLAGS=("${COMMON_OPT_FLAGS[@]}")
+
+join_flags() {
+  local IFS=' '
+  printf '%s' "$*"
+}
+
+COMMON_CXX_FLAGS_STR="$(join_flags "${COMMON_CXX_FLAGS[@]}")"
+COMMON_C_FLAGS_STR="$(join_flags "${COMMON_C_FLAGS[@]}")"
+
+TBBMALLOC_BUILD=ON
+TBBMALLOC_PROXY_BUILD=OFF
 
 detect_jemalloc() {
   local tmp_src tmp_bin
@@ -70,14 +89,19 @@ ensure_onetbb() {
     -DCMAKE_INSTALL_PREFIX="${ONETBB_INSTALL_DIR}" \
     -DCMAKE_CXX_COMPILER="${CXX_BIN}" \
     -DCMAKE_C_COMPILER="${CC_BIN}" \
+    -DCMAKE_CXX_FLAGS_RELEASE="${COMMON_CXX_FLAGS_STR}" \
+    -DCMAKE_C_FLAGS_RELEASE="${COMMON_C_FLAGS_STR}" \
     -DTBB_TEST=OFF \
     -DTBB_EXAMPLES=OFF \
     -DTBB_STRICT=OFF \
-    -DTBBMALLOC_PROXY_BUILD=OFF
+    -DTBBMALLOC_BUILD="${TBBMALLOC_BUILD}" \
+    -DTBBMALLOC_PROXY_BUILD="${TBBMALLOC_PROXY_BUILD}"
 
   local build_parallelism
   build_parallelism="${BUILD_PARALLELISM:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1')}"
+
   "${ONETBB_CMAKE_BIN}" --build "${ONETBB_BUILD_DIR}" --config Release --target install --parallel "${build_parallelism}"
+
   ONETBB_INCLUDE_DIR="${ONETBB_INSTALL_DIR}/include"
   ONETBB_LIB_DIRS=("${ONETBB_INSTALL_DIR}/lib" "${ONETBB_INSTALL_DIR}/lib64")
 }
@@ -87,6 +111,7 @@ find_onetbb_libs() {
   if [[ "${#ONETBB_LIB_DIRS[@]}" -eq 0 ]]; then
     ONETBB_LIB_DIRS=("${ONETBB_MANUAL_LIB_DIR}" "${ONETBB_INSTALL_DIR}/lib" "${ONETBB_INSTALL_DIR}/lib64")
   fi
+
   for lib_dir in "${ONETBB_LIB_DIRS[@]}"; do
     if [[ -e "${lib_dir}/libtbb.so" || -e "${lib_dir}/libtbb.dylib" ]]; then
       ONETBB_LIB_DIR="${lib_dir}"
@@ -128,26 +153,45 @@ ROWEX_SOURCES=(
 )
 
 mkdir -p "$(dirname "${OUTPUT_PATH}")"
+
 detect_jemalloc
 ensure_onetbb
 find_onetbb_libs
 
 if [[ ! -x "${MASSTREE_DIR}/configure" ]]; then
-  (
-    cd "${MASSTREE_DIR}"
-    ./bootstrap.sh
-  )
+  ( cd "${MASSTREE_DIR}" && ./bootstrap.sh )
 fi
+
 (
   cd "${MASSTREE_DIR}"
-  LDFLAGS="${JEMALLOC_LINK_FLAGS[*]}" ./configure CXX="${CXX_BIN}" CC="${CC_BIN}" --with-malloc=jemalloc
+  CFLAGS="${COMMON_C_FLAGS_STR}" \
+  CXXFLAGS="${COMMON_CXX_FLAGS_STR}" \
+  LDFLAGS="${JEMALLOC_LINK_FLAGS[*]}" \
+  ./configure \
+    CXX="${CXX_BIN}" \
+    CC="${CC_BIN}" \
+    --with-malloc=jemalloc \
+    --disable-assertions
+)
+
+if [[ ! -e "${ONETBB_MALLOC_LIB}" ]]; then
+  echo "ERROR: oneTBB malloc library was not built/found at ${ONETBB_MALLOC_LIB}." >&2
+  exit 1
+fi
+
+LINK_LIBS=(
+  -lm
+  -Wl,--no-as-needed
+  "${JEMALLOC_LINK_FLAGS[@]}"
+  "${ONETBB_TBB_LIB}"
+  "${ONETBB_MALLOC_LIB}"
+  -Wl,--as-needed
+  -Wl,-rpath,"${ONETBB_LIB_DIR}"
+  -Wl,-rpath-link,"${ONETBB_LIB_DIR}"
 )
 
 "${CXX_BIN}" \
-  -std=c++20 \
-  -O3 \
-  -DNDEBUG \
-  -pthread \
+  "${COMMON_CXX_FLAGS[@]}" \
   -include "${MASSTREE_DIR}/config.h" \
   -include cstring \
   -I"${ROOT_DIR}/evaluation" \
@@ -163,16 +207,7 @@ fi
   "${MASSTREE_SOURCES[@]}" \
   "${ROWEX_SOURCES[@]}" \
   -o "${OUTPUT_PATH}" \
-  -lm \
-  -Wl,--no-as-needed \
-  "${JEMALLOC_LINK_FLAGS[@]}" \
-  -Wl,--as-needed \
-  -Wl,-rpath,"${ONETBB_LIB_DIR}" \
-  -Wl,-rpath-link,"${ONETBB_LIB_DIR}" \
-  "${ONETBB_TBB_LIB}" \
-  -Wl,--no-as-needed \
-  "${ONETBB_MALLOC_LIB}" \
-  -Wl,--as-needed \
+  "${LINK_LIBS[@]}" \
   "$@"
 
 echo "Built ${OUTPUT_PATH}"
