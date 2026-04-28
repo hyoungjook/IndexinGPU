@@ -489,7 +489,7 @@ def key_length_cpu_plots(configs_and_results, plot_file_prefix):
         fig.savefig(f'{plot_file_prefix}-{plot_names[idx]}.pdf', bbox_inches='tight')
         plt.close(fig)
     fig, ax = plt.subplots(1, 1, figsize=(7, 0.5), constrained_layout=True)
-    ax.legend(legend_handles, legend_labels, loc='center', ncol=len(legend_labels) / 2)
+    ax.legend(legend_handles, legend_labels, loc='center', ncol=len(legend_labels) / 2, handlelength=2.5)
     ax.axis("off")
     plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
     plt.close(fig)
@@ -889,7 +889,7 @@ def merge_plots(configs_and_results, plot_file_prefix):
     plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
     plt.close(fig)
     #tput plot
-    mt_xticklabels = ['Naive', 'Merge\nNodes\n(§4.2)', '+P.P.M.\n(§4.3)', '+Root\nCollect\n(§4.3)']
+    mt_xticklabels = ['Naive', 'Merge\nNodes\n(§4.2)', '+PPM\n(§4.3)', '+Root\nCollect\n(§4.3)']
     et_xticklabels = ['Naive', 'Merge\nChains\n(§5.4)', '+Merge\nBuckets\n(§5.5)']
     for idx, index_type in enumerate(index_types):
         fig, ax = _make_fixed_plot_area_figure(0.6 * len(tputs[index_type]['avg']), 1.2,
