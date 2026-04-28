@@ -16,11 +16,51 @@ ONETBB_MANUAL_OBJ_DIR="${ONETBB_MANUAL_BUILD_DIR}/obj"
 ONETBB_INCLUDE_DIR="${ONETBB_INSTALL_DIR}/include"
 ONETBB_CMAKE_BIN="${CMAKE:-cmake}"
 ONETBB_LIB_DIRS=()
+JEMALLOC_LINK_FLAGS=()
+
+detect_jemalloc() {
+  local tmp_src tmp_bin
+  tmp_src="$(mktemp /tmp/jemalloc_check.XXXXXX.cc)"
+  tmp_bin="$(mktemp /tmp/jemalloc_check.XXXXXX)"
+
+  cat > "${tmp_src}" <<'JEMALLOC_CHECK_EOF'
+extern "C" void malloc_stats_print(void (*write_cb)(void *, const char *), void *cbopaque, const char *opts);
+int main() {
+  malloc_stats_print(nullptr, nullptr, "");
+  return 0;
+}
+JEMALLOC_CHECK_EOF
+
+  if [[ -n "${JEMALLOC_LDFLAGS:-}" ]]; then
+    # Optional override, e.g. JEMALLOC_LDFLAGS="-L/opt/jemalloc/lib -ljemalloc".
+    read -r -a JEMALLOC_LINK_FLAGS <<< "${JEMALLOC_LDFLAGS}"
+  elif [[ -n "${JEMALLOC_LIB:-}" ]]; then
+    # Optional override, e.g. JEMALLOC_LIB=/opt/jemalloc/lib/libjemalloc.so.
+    JEMALLOC_LINK_FLAGS=("${JEMALLOC_LIB}")
+  elif command -v pkg-config >/dev/null 2>&1 && pkg-config --exists jemalloc; then
+    read -r -a JEMALLOC_LINK_FLAGS <<< "$(pkg-config --libs jemalloc)"
+  else
+    JEMALLOC_LINK_FLAGS=(-ljemalloc)
+  fi
+
+  if ! "${CXX_BIN}" -std=c++17 "${tmp_src}" -o "${tmp_bin}" "${JEMALLOC_LINK_FLAGS[@]}" >/dev/null 2>&1; then
+    rm -f "${tmp_src}" "${tmp_bin}"
+    echo "ERROR: jemalloc was not found or is not linkable." >&2
+    echo "Install jemalloc development/runtime libraries, or set JEMALLOC_LDFLAGS / JEMALLOC_LIB." >&2
+    echo "Examples:" >&2
+    echo "  JEMALLOC_LDFLAGS='-L/path/to/jemalloc/lib -ljemalloc' $0" >&2
+    echo "  JEMALLOC_LIB=/path/to/libjemalloc.so $0" >&2
+    exit 1
+  fi
+
+  rm -f "${tmp_src}" "${tmp_bin}"
+  echo "Using jemalloc link flags: ${JEMALLOC_LINK_FLAGS[*]}"
+}
 
 ensure_onetbb() {
   if ! command -v "${ONETBB_CMAKE_BIN}" >/dev/null 2>&1; then
-    echo "ERROR: cmake not found."
-    exit 0
+    echo "ERROR: cmake not found." >&2
+    exit 1
   fi
 
   "${ONETBB_CMAKE_BIN}" \
@@ -88,21 +128,20 @@ ROWEX_SOURCES=(
 )
 
 mkdir -p "$(dirname "${OUTPUT_PATH}")"
+detect_jemalloc
 ensure_onetbb
 find_onetbb_libs
 
-if [[ ! -f "${MASSTREE_DIR}/config.h" ]]; then
-  if [[ ! -x "${MASSTREE_DIR}/configure" ]]; then
-    (
-      cd "${MASSTREE_DIR}"
-      ./bootstrap.sh
-    )
-  fi
+if [[ ! -x "${MASSTREE_DIR}/configure" ]]; then
   (
     cd "${MASSTREE_DIR}"
-    ./configure CXX="${CXX_BIN}" CC="${CC_BIN}"
+    ./bootstrap.sh
   )
 fi
+(
+  cd "${MASSTREE_DIR}"
+  LDFLAGS="${JEMALLOC_LINK_FLAGS[*]}" ./configure CXX="${CXX_BIN}" CC="${CC_BIN}" --with-malloc=jemalloc
+)
 
 "${CXX_BIN}" \
   -std=c++20 \
@@ -125,6 +164,9 @@ fi
   "${ROWEX_SOURCES[@]}" \
   -o "${OUTPUT_PATH}" \
   -lm \
+  -Wl,--no-as-needed \
+  "${JEMALLOC_LINK_FLAGS[@]}" \
+  -Wl,--as-needed \
   -Wl,-rpath,"${ONETBB_LIB_DIR}" \
   -Wl,-rpath-link,"${ONETBB_LIB_DIR}" \
   "${ONETBB_TBB_LIB}" \
