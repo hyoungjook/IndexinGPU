@@ -23,6 +23,7 @@ INDEX_LABELS = {
     IndexType.cpu_masstree: "Masstree",
     IndexType.cpu_libcuckoo: "libcuckoo",
     IndexType.cpu_onetbb: "oneTBB",
+    IndexType.cpu_folly: "FollyCHM",
 }
 INDEX_STYLES = {
     IndexType.gpu_masstree: {"color": "#0B6E4F", "marker": "o", "linestyle": "-"},
@@ -35,6 +36,7 @@ INDEX_STYLES = {
     IndexType.cpu_masstree: {"color": "#6C9A8B", "marker": "X", "linestyle": "--"},
     IndexType.cpu_libcuckoo: {"color": "#8F2D56", "marker": "v", "linestyle": "--"},
     IndexType.cpu_onetbb: {"color": "#2A9D8F", "marker": "8", "linestyle": "--"},
+    IndexType.cpu_folly: {"color": "#E76F51", "marker": "d", "linestyle": "--"},
 }
 HATCH_STYLES = {
     IndexType.gpu_masstree: 'o',
@@ -43,6 +45,7 @@ HATCH_STYLES = {
     IndexType.cpu_masstree: '\\\\\\',
     IndexType.cpu_libcuckoo: '...',
     IndexType.cpu_onetbb: '|||',
+    IndexType.cpu_folly: '+++',
 }
 EXTRA_COLORS = [
     "#3B60E4", "#00798C", "#8F2D56", "#0B6E4F", "#EDAE49", "#D1495B",

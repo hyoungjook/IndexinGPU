@@ -29,6 +29,7 @@
 #if defined(UNIVERSAL_BENCH_WITH_CPU_BASELINE)
 #include <cpu_libcuckoo_adapter.hpp>
 #include <cpu_onetbb_adapter.hpp>
+#include <cpu_folly_adapter.hpp>
 #include <cpu_masstree_adapter.hpp>
 #include <cpu_art_adapter.hpp>
 #elif defined(UNIVERSAL_BENCH_WITH_GPU_BASELINE)
@@ -450,7 +451,7 @@ int main(int argc, char** argv) {
 
   #if defined(UNIVERSAL_BENCH_WITH_CPU_BASELINE)
   #define FORALL_INDEXES(x) \
-    x(cpu_libcuckoo) x(cpu_onetbb) x(cpu_masstree) x(cpu_art)
+    x(cpu_libcuckoo) x(cpu_onetbb) x(cpu_folly) x(cpu_masstree) x(cpu_art)
   #elif defined(UNIVERSAL_BENCH_WITH_GPU_BASELINE)
   #define FORALL_INDEXES(x) \
     x(gpu_blink_tree) x(gpu_dycuckoo)

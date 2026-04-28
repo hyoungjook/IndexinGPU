@@ -22,6 +22,7 @@ class IndexType(Enum):
     gpu_dycuckoo = auto()
     cpu_libcuckoo = auto()
     cpu_onetbb = auto()
+    cpu_folly = auto()
     cpu_masstree = auto()
     cpu_art = auto()
 
@@ -100,6 +101,7 @@ EXECUTABLE_INFO = {
         'indexes': [
             IndexType.cpu_libcuckoo,
             IndexType.cpu_onetbb,
+            IndexType.cpu_folly,
             IndexType.cpu_masstree,
             IndexType.cpu_art,
         ]
@@ -155,6 +157,9 @@ INDEX_INFO = {
         OptionalConfigType.initial_capacity
     ],
     IndexType.cpu_onetbb: [
+        OptionalConfigType.initial_capacity
+    ],
+    IndexType.cpu_folly: [
         OptionalConfigType.initial_capacity
     ],
     IndexType.cpu_masstree: [],

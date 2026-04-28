@@ -16,3 +16,6 @@
 [submodule "baselines/oneTBB"]
 	path = baselines/oneTBB
 	url = https://github.com/uxlfoundation/oneTBB.git
+[submodule "baselines/folly"]
+	path = baselines/folly
+	url = https://github.com/facebook/folly.git

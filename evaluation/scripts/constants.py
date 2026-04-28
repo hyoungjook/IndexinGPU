@@ -28,7 +28,8 @@ INDEX_TYPES_CPU_BASELINE = [
     IndexType.cpu_art,
     IndexType.cpu_masstree,
     IndexType.cpu_libcuckoo,
-    IndexType.cpu_onetbb
+    IndexType.cpu_onetbb,
+    IndexType.cpu_folly
 ]
 
 IS_INDEX_TYPE_ORDERED = [

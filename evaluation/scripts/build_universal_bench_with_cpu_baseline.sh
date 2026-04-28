@@ -7,6 +7,7 @@ CC_BIN="${CC:-cc}"
 OUTPUT_PATH="${OUTPUT:-${ROOT_DIR}/build/bin/universal_bench_with_cpu_baseline}"
 MASSTREE_DIR="${ROOT_DIR}/baselines/masstree-beta"
 ARTSYNC_DIR="${ROOT_DIR}/baselines/ARTSynchronized"
+FOLLY_DIR="${ROOT_DIR}/baselines/folly"
 
 if [[ -n "${TBB_LDFLAGS:-}" ]]; then
   read -r -a TBB_LDFLAGS_ARR <<< "${TBB_LDFLAGS}"
@@ -35,6 +36,10 @@ ROWEX_SOURCES=(
   "${ARTSYNC_DIR}/ROWEX/Tree.cpp"
 )
 
+FOLLY_SOURCES=(
+  "${ROOT_DIR}/evaluation/cpu_folly_support.cpp"
+)
+
 mkdir -p "$(dirname "${OUTPUT_PATH}")"
 
 if [[ ! -f "${MASSTREE_DIR}/config.h" ]]; then
@@ -51,22 +56,28 @@ if [[ ! -f "${MASSTREE_DIR}/config.h" ]]; then
 fi
 
 "${CXX_BIN}" \
-  -std=c++17 \
+  -std=c++20 \
   -O3 \
   -pthread \
   -include "${MASSTREE_DIR}/config.h" \
+  -include cstring \
   -I"${ROOT_DIR}/evaluation" \
+  -I"${ROOT_DIR}/evaluation/folly_compat" \
   -I"${ROOT_DIR}/include" \
   -I"${ROOT_DIR}/baselines/libcuckoo" \
   -I"${ROOT_DIR}/baselines/oneTBB/include" \
+  -I"${FOLLY_DIR}" \
   -I"${MASSTREE_DIR}" \
   -I"${ARTSYNC_DIR}" \
   -DUNIVERSAL_BENCH_WITH_CPU_BASELINE \
   -DNOGPU \
+  -DFOLLY_NO_CONFIG \
+  -DFOLLY_MOBILE=1 \
   -x c++ \
   "${ROOT_DIR}/evaluation/universal_bench.cu" \
   "${MASSTREE_SOURCES[@]}" \
   "${ROWEX_SOURCES[@]}" \
+  "${FOLLY_SOURCES[@]}" \
   -o "${OUTPUT_PATH}" \
   -lm \
   "${TBB_LDFLAGS_ARR[@]}" \
