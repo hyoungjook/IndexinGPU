@@ -117,7 +117,7 @@ def _make_fixed_plot_area_figure(plot_width, plot_height, *, include_xlabel=Fals
 def _save_grouped_legend_pdf(legend_groups, output_file):
     group_order = ['ours', 'gpu_baseline', 'cpu_baseline']
     group_names = {
-        'ours': 'Our GpuIndexer',
+        'ours': 'This Paper',
         'gpu_baseline': 'GPU Baselines',
         'cpu_baseline': 'CPU Baselines',
     }
