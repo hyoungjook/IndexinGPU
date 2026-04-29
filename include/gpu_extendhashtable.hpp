@@ -217,28 +217,41 @@ struct gpu_extendhashtable {
       bucket_index_hash = utils::compute_hash<utils::PRIME0>(key, key_length, tile);
       first_slice = (tag_use_same_hash && more_key) ? bucket_index_hash : key[0];
     }
-    // find the bucket
-    node_type node(tile, allocator);
-    find_valid_bucket<concurrent ? utils::memory_order::acq_rel : utils::memory_order::weak>(
-      node, bucket_index_hash, directory_size, tile, allocator);
-    // search bucket
-    suffix_type suffix_if_found(tile, allocator);
-    [[maybe_unused]] uint32_t dummy;
-    int location_if_found = coop_traverse_until_found<
-      concurrent ? utils::memory_order::acq_rel : utils::memory_order::weak, use_hash_tag, false>(
-        node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator, dummy);
-    if (location_if_found >= 0) { // found
-      if (node_type::keystate_has_suffix_ptr(node.get_keystate_from_location(location_if_found))) {
-        suffix_if_found.get_value(value, max_value_length);
-        return suffix_if_found.get_value_length();
+    while (true) {
+      // find the bucket
+      node_type node(tile, allocator);
+      find_valid_bucket<concurrent ? utils::memory_order::acq_rel : utils::memory_order::weak>(
+        node, bucket_index_hash, directory_size, tile, allocator);
+      if constexpr (concurrent) {
+        // early retry if it's garbage
+        if (node.is_garbage()) { continue; }
       }
-      else {
-        value[0] = node.get_value_from_location(location_if_found);
-        return 1;
+      // search bucket
+      suffix_type suffix_if_found(tile, allocator);
+      [[maybe_unused]] uint32_t dummy;
+      const auto head_index = node.get_node_index();
+      int location_if_found = coop_traverse_until_found<
+        concurrent ? utils::memory_order::acq_rel : utils::memory_order::weak, use_hash_tag, false>(
+          node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator, dummy);
+      if constexpr (concurrent) {
+        // retry if it's garbage, for linearizability
+        if (node_type::is_garbage<utils::memory_order::acq_rel>(head_index, tile, allocator)) {
+          continue;
+        }
       }
+      if (location_if_found >= 0) { // found
+        if (node_type::keystate_has_suffix_ptr(node.get_keystate_from_location(location_if_found))) {
+          suffix_if_found.get_value(value, max_value_length);
+          return suffix_if_found.get_value_length();
+        }
+        else {
+          value[0] = node.get_value_from_location(location_if_found);
+          return 1;
+        }
+      }
+      // not found
+      return 0;
     }
-    // not found
-    return 0;
   }
 
   template <bool concurrent, bool use_hash_tag, bool tag_use_same_hash, typename tile_type, typename keyptr_or_keystore, typename valptr_or_valstore>
@@ -375,9 +388,6 @@ struct gpu_extendhashtable {
           // do split!
           node = node_type(head_index, tile, allocator);
           node.template load_from_allocator<utils::memory_order::weak_tilesync>();
-          // mark garbage
-          node.make_garbage();
-          node.template store_to_allocator<utils::memory_order::weak_tilesync>();
           // allocate two new node chains
           auto new_node0_index = allocator.allocate(tile);
           auto new_node1_index = allocator.allocate(tile);
@@ -453,9 +463,11 @@ struct gpu_extendhashtable {
             }
           }
           tile.sync();
+          // mark original chain garbage -> unlock buckets
+          node_type::make_garbage<utils::memory_order::weak>(head_index, tile, allocator);
+          reclaimer.retire(head_index, tile);
           node_type::unlock(new_node0_index, tile, allocator);
           node_type::unlock(new_node1_index, tile, allocator);
-          reclaimer.retire(head_index, tile);
           met_invalid_pointer = false;
         }
       }
