@@ -46,14 +46,14 @@ template <typename Allocator,
 struct gpu_masstree {
   using size_type = uint32_t;
   using key_slice_type = uint32_t;
-  using value_type = uint32_t;
+  using value_slice_type = uint32_t;
   using elem_type = std::conditional_t<tile_size == 16, uint64_t,   // 8B * 16 threads
                                                         uint32_t>;  // 4B * 32 threads
   static constexpr uint32_t tile_size_ = tile_size;
   static_assert(tile_size == 32 || tile_size == 16);
   static auto constexpr branching_factor = 16;
 
-  static constexpr value_type invalid_value = std::numeric_limits<value_type>::max();
+  static constexpr size_type invalid_pointer = std::numeric_limits<size_type>::max();
 
   using host_allocator_type = Allocator;
   using device_allocator_instance_type = typename host_allocator_type::device_instance_type;
@@ -89,11 +89,13 @@ struct gpu_masstree {
   void find(const key_slice_type* keys,
             const size_type max_key_length,
             const size_type* key_lengths,
-            value_type* values,
+            value_slice_type* values,
+            const size_type max_value_length,
+            size_type* value_lengths,
             const size_type num_keys,
             cudaStream_t stream = 0) {
     kernels::GpuMasstree::find_device_func<gpu_masstree, concurrent, reuse_root>
-      func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values};
+      func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths};
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
 
@@ -103,12 +105,14 @@ struct gpu_masstree {
   void insert(const key_slice_type* keys,
               const size_type max_key_length,
               const size_type* key_lengths,
-              const value_type* values,
+              const value_slice_type* values,
+              const size_type max_value_length,
+              const size_type* value_lengths,
               const size_type num_keys,
               cudaStream_t stream = 0,
               bool update_if_exists = false) {
     kernels::GpuMasstree::insert_device_func<gpu_masstree, enable_suffix, reuse_root>
-      func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .update_if_exists = update_if_exists};
+      func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths, .update_if_exists = update_if_exists};
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
 
@@ -140,7 +144,9 @@ struct gpu_masstree {
             const key_slice_type* upper_keys = nullptr,
             const size_type* upper_key_lengths = nullptr,
             size_type* counts = nullptr,
-            value_type* values = nullptr,
+            value_slice_type* values = nullptr,
+            const size_type max_value_length = 1,
+            size_type* value_lengths = nullptr,
             key_slice_type* out_keys = nullptr,
             size_type* out_key_lengths = nullptr,
             cudaStream_t stream = 0) {
@@ -148,7 +154,8 @@ struct gpu_masstree {
       func{.d_lower_keys = lower_keys, .d_lower_key_lengths = lower_key_lengths,
            .max_key_length = max_key_length, .max_count_per_query = max_count_per_query,
            .d_upper_keys = upper_keys, .d_upper_key_lengths = upper_key_lengths,
-           .d_counts = counts, .d_values = values, .d_out_keys = out_keys, .d_out_key_lengths = out_key_lengths};
+           .d_counts = counts, .d_values = values, .d_value_lengths = value_lengths, .max_value_length = max_value_length,
+           .d_out_keys = out_keys, .d_out_key_lengths = out_key_lengths};
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_queries, stream);
   }
 
@@ -162,13 +169,15 @@ struct gpu_masstree {
                    const key_slice_type* keys,
                    const size_type max_key_length,
                    const size_type* key_lengths,
-                   value_type* values,
+                   value_slice_type* values,
+                   const size_type max_value_length,
+                   size_type* value_lengths,
                    bool* results,
                    const size_type num_requests,
                    cudaStream_t stream = 0,
                    bool insert_update_if_exists = false) {
     kernels::GpuMasstree::mixed_device_func<gpu_masstree, enable_suffix, erase_do_merge, erase_pessimistic_merge, erase_do_remove_empty_root, reuse_root>
-      func{.d_types = request_types, .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .d_results = results, .insert_update_if_exists = insert_update_if_exists};
+      func{.d_types = request_types, .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths, .d_results = results, .insert_update_if_exists = insert_update_if_exists};
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_requests, stream);
   }
 
@@ -178,7 +187,7 @@ struct gpu_masstree {
                                                     device_allocator_context_type& allocator) {
     using node_type = masstree_node<tile_type, device_allocator_context_type>;
     auto root_node = node_type(root_index_, tile, allocator);
-    root_node.template load_fetchonly<concurrent>();
+    root_node.template load_fetchonly<concurrent ? utils::memory_order::acq_rel : utils::memory_order::weak>();
     return root_node.get_lane_elem();
   }
 
@@ -188,16 +197,18 @@ struct gpu_masstree {
                                                     device_allocator_context_type& allocator) {
     using node_type = masstree_node<tile_type, device_allocator_context_type>;
     auto root_node = node_type(root_index_, tile, allocator);
-    root_node.template load_warpwidesync<concurrent>(warp_wide_tile);
+    root_node.template load_warpwidesync<concurrent ? utils::memory_order::acq_rel : utils::memory_order::weak>(warp_wide_tile);
     return root_node.get_lane_elem();
   }
 
-  template <bool concurrent, typename tile_type, typename keyptr_or_keystore>
-  DEVICE_QUALIFIER value_type cooperative_find_from_root(elem_type root_lane_elem,
-                                                         keyptr_or_keystore& key,
-                                                         size_type key_length,
-                                                         const tile_type& tile,
-                                                         device_allocator_context_type& allocator) {
+  template <bool concurrent, typename tile_type, typename keyptr_or_keystore, typename valptr_or_valstore>
+  DEVICE_QUALIFIER size_type cooperative_find_from_root(elem_type root_lane_elem,
+                                                        keyptr_or_keystore& key,
+                                                        size_type key_length,
+                                                        valptr_or_valstore& value,
+                                                        size_type max_value_length,
+                                                        const tile_type& tile,
+                                                        device_allocator_context_type& allocator) {
     using node_type = masstree_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     dummy_early_exit_check<node_type> dummy_early_exit;
@@ -207,39 +218,55 @@ struct gpu_masstree {
     while (slice < key_length) {
       const key_slice_type key_slice = key[slice];
       const bool more_key = (slice < key_length - 1);
-      coop_traverse_until_border<concurrent>(current_node, key_slice, tile, allocator, false, dummy_early_exit);
-      value_type found_value;
+      coop_traverse_until_border<concurrent, concurrent ? utils::memory_order::acq_rel : utils::memory_order::weak>(
+        current_node, key_slice, tile, allocator, false, dummy_early_exit);
+      value_slice_type found_value;
       const int found_keystate = current_node.get_key_value_from_node(key_slice, found_value, more_key);
       if (found_keystate < 0) {
         // key not exists, exit early
-        return invalid_value;
+        return 0;
       }
-      if (found_keystate == node_type::KEYSTATE_LINK) {
+      else if (found_keystate == node_type::KEYSTATE_LINK) {
         slice++;
         current_node = node_type(found_value, tile, allocator);
-        current_node.template load<concurrent>();
+        current_node.template load<concurrent ? utils::memory_order::acq_rel : utils::memory_order::weak>();
       }
-      else {// keystate == SUFFIX or VALUE
-        if (found_keystate == node_type::KEYSTATE_SUFFIX) {
-          auto suffix = suffix_type(found_value, tile, allocator);
-          suffix.load_head();
-          const bool suffix_eq = suffix.streq(key + (slice + 1), key_length - slice - 1);
-          found_value = suffix_eq ? suffix.get_value() : invalid_value;
+      else if (found_keystate == node_type::KEYSTATE_VALUE) {
+        value[0] = found_value;
+        return 1;
+      }
+      else if (found_keystate == node_type::KEYSTATE_LONGVAL) {
+        auto suffix = suffix_type(found_value, tile, allocator);
+        suffix.load_head();
+        suffix.get_value(value, max_value_length);
+        return suffix.get_value_length();
+      }
+      else {// keystate == SUFFIX
+        auto suffix = suffix_type(found_value, tile, allocator);
+        suffix.load_head();
+        const bool suffix_eq = suffix.streq(key + (slice + 1), key_length - slice - 1);
+        if (suffix_eq) {
+          suffix.get_value(value, max_value_length);
+          return suffix.get_value_length();
         }
-        return found_value;
+        else {
+          return 0;
+        }
       }
     }
     assert(false);
-    return invalid_value;
+    return 0;
   }
 
-  template <bool concurrent, typename tile_type, typename keyptr_or_keystore>
-  DEVICE_QUALIFIER value_type cooperative_find(keyptr_or_keystore& key,
-                                               size_type key_length,
-                                               const tile_type& tile,
-                                               device_allocator_context_type& allocator) {
+  template <bool concurrent, typename tile_type, typename keyptr_or_keystore, typename valptr_or_valstore>
+  DEVICE_QUALIFIER size_type cooperative_find(keyptr_or_keystore& key,
+                                              size_type key_length,
+                                              valptr_or_valstore& value,
+                                              size_type max_value_length,
+                                              const tile_type& tile,
+                                              device_allocator_context_type& allocator) {
     auto root_lane_elem = cooperative_fetch_root<concurrent>(tile, allocator);
-    return cooperative_find_from_root<concurrent>(root_lane_elem, key, key_length, tile, allocator);
+    return cooperative_find_from_root<concurrent>(root_lane_elem, key, key_length, value, max_value_length, tile, allocator);
   }
 
   template <bool use_upper_key, bool concurrent, typename tile_type, typename keyptr_or_keystore>
@@ -251,7 +278,9 @@ struct gpu_masstree {
                                                         const key_slice_type* upper_key = nullptr,
                                                         const size_type upper_key_length = 1,
                                                         size_type out_max_count = 1,
-                                                        value_type* out_value = nullptr,
+                                                        value_slice_type* out_values = nullptr,
+                                                        size_type* out_value_lengths = nullptr,
+                                                        const size_type out_value_max_length = 1,
                                                         key_slice_type* out_keys = nullptr,
                                                         size_type* out_key_lengths = nullptr,
                                                         const size_type out_key_max_length = 1) {
@@ -282,7 +311,8 @@ struct gpu_masstree {
     current_node.read_metadata_from_registers();
     while (true) {
       // traverse the btree: current_node can be root node or border node
-      coop_traverse_until_border<concurrent>(current_node, lower_key_slice, tile, allocator, false, dummy_early_exit);
+      coop_traverse_until_border<concurrent, concurrent ? utils::memory_order::acq_rel : utils::memory_order::weak>(
+        current_node, lower_key_slice, tile, allocator, false, dummy_early_exit);
       // traverse side links, scan the nodes, and decide scan_op:
       //      >=0 (down-link location; go to next layer)
       //      -1 (continue side-link traverse)
@@ -296,11 +326,14 @@ struct gpu_masstree {
           uint32_t count = current_node.template scan<use_upper_key>(
               lower_key_slice, lower_key_more, lower_key, lower_key_length, passed_lower_key,
               upper_key_slice, upper_key_more, upper_key, upper_key_length, ignore_upper_key,
-              out_max_count, scan_op, out_value, out_keys, out_key_lengths, layer, out_key_max_length);
+              out_max_count, scan_op,
+              out_values, out_value_lengths, out_value_max_length,
+              out_keys, out_key_lengths, layer, out_key_max_length);
           if (count > 0) {
             out_count += count;
             out_max_count -= count;
-            if (out_value) { out_value += count; }
+            if (out_value_lengths) { out_value_lengths += count; }
+            if (out_values) { out_values += (count * out_value_max_length); }
             if (out_key_lengths) {out_key_lengths += count;}
             if (out_keys) {
               key_slice_and_node_index_stack.template fill_output_keys<0>(
@@ -322,7 +355,7 @@ struct gpu_masstree {
         }
         if (scan_op != -1) { break; }
         current_node = node_type(current_node.get_sibling_index(), tile, allocator);
-        current_node.template load<concurrent>();
+        current_node.template load<concurrent ? utils::memory_order::acq_rel : utils::memory_order::weak>();
       }
       // switch layer
       if (scan_op >= 0) { // go to next layer
@@ -331,7 +364,7 @@ struct gpu_masstree {
         const key_slice_type checkpoint_key_slice = current_node.get_key_from_location(scan_op);
         key_slice_and_node_index_stack.push(checkpoint_key_slice, current_node.get_node_index());
         current_node = node_type(current_node.get_value_from_location(scan_op), tile, allocator);
-        current_node.template load<concurrent>();
+        current_node.template load<concurrent ? utils::memory_order::acq_rel : utils::memory_order::weak>();
         // check if passed the lower key
         passed_lower_key = passed_lower_key ||
             (lower_key_slice < checkpoint_key_slice || layer == lower_key_length);
@@ -368,7 +401,7 @@ struct gpu_masstree {
           if (lower_key_slice < max_key_slice) { break; }
         }
         current_node = node_type(next_node_index, tile, allocator);
-        current_node.template load<concurrent>();
+        current_node.template load<concurrent ? utils::memory_order::acq_rel : utils::memory_order::weak>();
         // scan from checkpoint_key, exclusive
         lower_key_slice++;
         lower_key_more = false;
@@ -396,7 +429,9 @@ struct gpu_masstree {
                                               const key_slice_type* upper_key = nullptr,
                                               const size_type upper_key_length = 1,
                                               size_type out_max_count = 1,
-                                              value_type* out_value = nullptr,
+                                              value_slice_type* out_values = nullptr,
+                                              size_type* out_value_lengths = nullptr,
+                                              const size_type out_value_max_length = 1,
                                               key_slice_type* out_keys = nullptr,
                                               size_type* out_key_lengths = nullptr,
                                               const size_type out_key_max_length = 1) {
@@ -404,14 +439,16 @@ struct gpu_masstree {
     return cooperative_scan_from_root<use_upper_key, concurrent>(
       root_lane_elem,
       lower_key, lower_key_length, tile, allocator, upper_key, upper_key_length,
-      out_max_count, out_value, out_keys, out_key_lengths, out_key_max_length);
+      out_max_count, out_values, out_value_lengths, out_value_max_length,
+      out_keys, out_key_lengths, out_key_max_length);
   }
 
-  template <bool enable_suffix, typename tile_type, typename keyptr_or_keystore>
+  template <bool enable_suffix, typename tile_type, typename keyptr_or_keystore, typename valptr_or_valstore>
   DEVICE_QUALIFIER bool cooperative_insert_from_root(elem_type root_lane_elem,
                                                      keyptr_or_keystore& key,
                                                      const size_type key_length,
-                                                     const value_type& value,
+                                                     valptr_or_valstore& value,
+                                                     const size_type value_length,
                                                      const tile_type& tile,
                                                      device_allocator_context_type& allocator,
                                                      device_reclaimer_context_type& reclaimer,
@@ -430,7 +467,7 @@ struct gpu_masstree {
       const bool& more_key_;
       bool exited_ = false;
     };
-    size_type prev_root_index = invalid_value;
+    size_type prev_root_index = invalid_pointer;
     size_type slice = 0;
     size_type current_root_index = root_index_;
     auto current_node = node_type(root_index_, root_lane_elem, tile, allocator);
@@ -445,7 +482,7 @@ struct gpu_masstree {
         prev_root_index = current_root_index;
         current_node.get_key_value_from_node(key_slice, current_root_index, more_key);
         current_node = node_type(current_root_index, tile, allocator);
-        current_node.template load<true>();
+        current_node.template load<utils::memory_order::acq_rel>();
         slice++;
         continue;
       }
@@ -455,21 +492,21 @@ struct gpu_masstree {
         // which means it's an empty root node that's collected by erasure.
         // we should retry from the previous layer
         current_node.unlock();
-        if (prev_root_index == invalid_value) {
+        if (prev_root_index == invalid_pointer) {
           // if it's cascading, restart from the global root
           current_node = node_type(root_index_, tile, allocator);
-          current_node.template load<true>();
+          current_node.template load<utils::memory_order::acq_rel>();
           slice = 0;
           continue;
         }
         assert(slice > 0);
         current_node = node_type(prev_root_index, tile, allocator);
-        current_node.template load<true>();
-        prev_root_index = invalid_value;
+        current_node.template load<utils::memory_order::acq_rel>();
+        prev_root_index = invalid_pointer;
         slice--;
         continue;
       }
-      value_type found_value;
+      value_slice_type found_value;
       auto keystate = current_node.get_key_value_from_node(key_slice, found_value, more_key);
       if (keystate >= 0) {
         // key exists, the value is stored in found_value
@@ -479,14 +516,42 @@ struct gpu_masstree {
           prev_root_index = current_root_index;
           current_root_index = found_value;
           current_node = node_type(current_root_index, tile, allocator);
-          current_node.template load<true>();
+          current_node.template load<utils::memory_order::acq_rel>();
           slice++;
           continue;
         }
-        if (keystate == node_type::KEYSTATE_VALUE) {
+        else if (keystate == node_type::KEYSTATE_VALUE ||
+                 keystate == node_type::KEYSTATE_LONGVAL) {
           // update or fail
           if (update_if_exists) {
-            current_node.update(key_slice, value, node_type::KEYSTATE_VALUE, node_type::KEYSTATE_VALUE);
+            if (keystate == node_type::KEYSTATE_VALUE) {
+              if (value_length == 1) {
+                found_value = value[0];
+              }
+              else {
+                found_value = allocator.allocate(tile);
+                auto suffix = suffix_type(found_value, tile, allocator);
+                suffix.template create_from<const key_slice_type*>(nullptr, 0, value, value_length);
+                suffix.store_head();
+              }
+            }
+            else { // keystate = LONGVAL
+              if (value_length == 1) {
+                auto suffix = suffix_type(found_value, tile, allocator);
+                suffix.load_head();
+                suffix.retire(reclaimer);
+                found_value = value[0];
+              }
+              else {
+                auto suffix = suffix_type(found_value, tile, allocator);
+                suffix.load_head();
+                found_value = allocator.allocate(tile);
+                auto new_suffix = suffix_type(found_value, tile, allocator);
+                new_suffix.switch_value_from(suffix, value, value_length, reclaimer);
+                new_suffix.store_head();
+              }
+            }
+            current_node.update(key_slice, found_value, keystate, value_length == 1 ? node_type::KEYSTATE_VALUE : node_type::KEYSTATE_LONGVAL);
           }
           else { // fail_if_exists
             current_node.unlock();
@@ -501,10 +566,11 @@ struct gpu_masstree {
           if (cmp == 0) { // already exists
             if (update_if_exists) {
               // protected by current_node.lock()
-              suffix.update_value(value);
-              suffix.store_head();
-              current_node.unlock();
-              return true;
+              found_value = allocator.allocate(tile);
+              auto new_suffix = suffix_type(found_value, tile, allocator);
+              new_suffix.switch_value_from(suffix, value, value_length, reclaimer);
+              new_suffix.store_head();
+              current_node.update(key_slice, found_value, node_type::KEYSTATE_SUFFIX, node_type::KEYSTATE_SUFFIX);
             }
             else {  // fail_if_exists
               current_node.unlock();
@@ -522,7 +588,7 @@ struct gpu_masstree {
               singleton_node.initialize_root();
               node_chain_index = allocator.allocate(tile);
               singleton_node.insert(key[slice], node_chain_index, node_type::KEYSTATE_LINK);
-              singleton_node.template store<true, false>();
+              singleton_node.template store<utils::memory_order::weak_tilesync>();
             }
             slice++;
             // one diverging node with two entries
@@ -530,7 +596,7 @@ struct gpu_masstree {
             doubleton_node.initialize_root();
             // insert suffix of suffix key
             assert(num_matches < suffix.get_key_length());
-            if (num_matches == suffix.get_key_length() - 1) {
+            if (num_matches == suffix.get_key_length() - 1 && suffix.get_value_length() == 1) {
               doubleton_node.insert(mismatch_suffix_slice, suffix.get_value(), node_type::KEYSTATE_VALUE);
               suffix.retire(reclaimer);
             }
@@ -539,21 +605,22 @@ struct gpu_masstree {
               auto new_suffix = suffix_type(new_suffix_index, tile, allocator);
               new_suffix.move_from(suffix, num_matches + 1, reclaimer);
               new_suffix.store_head();
-              doubleton_node.insert(mismatch_suffix_slice, new_suffix_index, node_type::KEYSTATE_SUFFIX);
+              doubleton_node.insert(mismatch_suffix_slice, new_suffix_index, 
+                                    new_suffix.get_key_length() == 0 ? node_type::KEYSTATE_LONGVAL : node_type::KEYSTATE_SUFFIX);
             }
             // insert suffix of this key
             assert(slice < key_length);
-            if (slice == key_length - 1) {
-              doubleton_node.insert(key[slice], value, node_type::KEYSTATE_VALUE);
+            if (slice == key_length - 1 && value_length == 1) {
+              doubleton_node.insert(key[slice], value[0], node_type::KEYSTATE_VALUE);
             }
             else {
               node_chain_index = allocator.allocate(tile);
               suffix = suffix_type(node_chain_index, tile, allocator);
-              suffix.create_from(key + (slice + 1), key_length - slice - 1, value);
+              suffix.create_from(key + (slice + 1), key_length - slice - 1, value, value_length);
               suffix.store_head();
-              doubleton_node.insert(key[slice], node_chain_index, node_type::KEYSTATE_SUFFIX);
+              doubleton_node.insert(key[slice], node_chain_index, suffix.get_key_length() == 0 ? node_type::KEYSTATE_LONGVAL : node_type::KEYSTATE_SUFFIX);
             }
-            doubleton_node.template store<true, false>();
+            doubleton_node.template store<utils::memory_order::weak_tilesync>();
           }
         }
       }
@@ -564,7 +631,7 @@ struct gpu_masstree {
             // insert suffix entry
             found_value = allocator.allocate(tile);
             auto suffix = suffix_type(found_value, tile, allocator);
-            suffix.create_from(key + (slice + 1), key_length - slice - 1, value);
+            suffix.create_from(key + (slice + 1), key_length - slice - 1, value, value_length);
             suffix.store_head();
             keystate = node_type::KEYSTATE_SUFFIX;
           }
@@ -574,9 +641,9 @@ struct gpu_masstree {
             current_root_index = allocator.allocate(tile);
             auto next_root_node = node_type(current_root_index, tile, allocator);
             next_root_node.initialize_root();
-            next_root_node.template store<true, false>();
+            next_root_node.template store<utils::memory_order::weak_tilesync>();
             current_node.insert(key_slice, current_root_index, node_type::KEYSTATE_LINK);
-            current_node.template store_unlock<true>();
+            current_node.template store_unlock<utils::memory_order::acq_rel>();
             current_node = next_root_node;
             slice++;
             continue;
@@ -584,29 +651,39 @@ struct gpu_masstree {
         }
         else {
           // insert value to the node
-          found_value = value;
-          keystate = node_type::KEYSTATE_VALUE;
+          if (value_length == 1) {
+            found_value = value[0];
+            keystate = node_type::KEYSTATE_VALUE;
+          }
+          else {
+            found_value = allocator.allocate(tile);
+            auto suffix = suffix_type(found_value, tile, allocator);
+            suffix.template create_from<const key_slice_type*>(nullptr, 0, value, value_length);
+            suffix.store_head();
+            keystate = node_type::KEYSTATE_LONGVAL;
+          }
         }
         current_node.insert(key_slice, found_value, keystate);
       }
       // reaching here means we updated border node and it's done
-      current_node.template store_unlock<true>();
+      current_node.template store_unlock<utils::memory_order::acq_rel>();
       return true;
     }
     assert(false);
     return false;
   }
 
-  template <bool enable_suffix, typename tile_type, typename keyptr_or_keystore>
+  template <bool enable_suffix, typename tile_type, typename keyptr_or_keystore, typename valptr_or_valstore>
   DEVICE_QUALIFIER bool cooperative_insert(keyptr_or_keystore& key,
                                            const size_type key_length,
-                                           const value_type& value,
+                                           valptr_or_valstore& value,
+                                           const size_type value_length,
                                            const tile_type& tile,
                                            device_allocator_context_type& allocator,
                                            device_reclaimer_context_type& reclaimer,
                                            bool update_if_exists = false) {
     auto root_lane_elem = cooperative_fetch_root<true>(tile, allocator);
-    return cooperative_insert_from_root<enable_suffix>(root_lane_elem, key, key_length, value, tile, allocator, reclaimer, update_if_exists);
+    return cooperative_insert_from_root<enable_suffix>(root_lane_elem, key, key_length, value, value_length, tile, allocator, reclaimer, update_if_exists);
   }
 
   template <bool concurrent, bool do_merge, bool pessimistic_merge, bool do_remove_empty_root, typename tile_type, typename keyptr_or_keystore>
@@ -651,7 +728,8 @@ struct gpu_masstree {
         }
         else {
           const bool lock_border_node = !more_key;
-          coop_traverse_until_border<concurrent>(current_node, key_slice, tile, allocator, lock_border_node, early_exit);
+          coop_traverse_until_border<concurrent, concurrent ? utils::memory_order::acq_rel : utils::memory_order::weak_tilesync>(
+            current_node, key_slice, tile, allocator, lock_border_node, early_exit);
           border_node_locked_by_me = lock_border_node;
         }
         if (early_exit.exited_) {
@@ -665,7 +743,7 @@ struct gpu_masstree {
       }
       if (more_key) {
         // try traverse
-        value_type found_value;
+        value_slice_type found_value;
         int found_keystate = current_node.get_key_value_from_node(key_slice, found_value, true);
         if (found_keystate < 0) { // key not exists
           if (border_node_locked_by_me) { current_node.unlock(); }
@@ -679,7 +757,7 @@ struct gpu_masstree {
           }
           current_root_index = found_value;
           current_node = node_type(current_root_index, tile, allocator);
-          current_node.template load<true>();
+          current_node.template load<utils::memory_order::acq_rel>();
           slice++;
           continue;
         }
@@ -693,7 +771,7 @@ struct gpu_masstree {
               if (border_node_locked_by_me) { current_node.unlock(); }
               retry_with_merge = true;
               current_node = node_type(current_root_index, tile, allocator);
-              current_node.template load<true>();
+              current_node.template load<utils::memory_order::acq_rel>();
               continue;
             }
             if (!border_node_locked_by_me) {
@@ -705,7 +783,7 @@ struct gpu_masstree {
                 current_node.unlock();
                 retry_with_merge = true;
                 current_node = node_type(current_root_index, tile, allocator);
-                current_node.template load<true>();
+                current_node.template load<utils::memory_order::acq_rel>();
                 continue;
               }
             }
@@ -717,7 +795,7 @@ struct gpu_masstree {
               current_node.unlock();
               retry_with_merge = true;
               current_node = node_type(current_root_index, tile, allocator);
-              current_node.template load<true>();
+              current_node.template load<utils::memory_order::acq_rel>();
               continue;
             }
             const bool success = current_node.erase(key_slice, node_type::KEYSTATE_SUFFIX);
@@ -735,12 +813,12 @@ struct gpu_masstree {
                 }
                 current_root_index = found_value;
                 current_node = node_type(current_root_index, tile, allocator);
-                current_node.template load<true>();
+                current_node.template load<utils::memory_order::acq_rel>();
                 slice++;
                 continue;
               }
             }
-            current_node.template store_unlock<true>();
+            current_node.template store_unlock<utils::memory_order::acq_rel>();
             suffix.retire(reclaimer);
           }
           else {
@@ -750,22 +828,29 @@ struct gpu_masstree {
         }
       }
       else {  // !more_key
-        // erase VALUE entry if exists
+        // erase VALUE or LONGVAL entry if exists
         assert(border_node_locked_by_me);
         if (do_merge && current_node.is_underflow()) {
           current_node.unlock();
           retry_with_merge = true;
           current_node = node_type(current_root_index, tile, allocator);
-          current_node.template load<true>();
+          current_node.template load<utils::memory_order::acq_rel>();
           continue;
         }
-        const bool success = current_node.erase(key_slice, node_type::KEYSTATE_VALUE);
-        if (success) {
-          current_node.template store_unlock<true>();
-        }
-        else {
+        value_slice_type found_value;
+        int found_keystate = current_node.get_key_value_from_node(key_slice, found_value, false);
+        if (found_keystate < 0) { // key not exists
           current_node.unlock();
           return false;
+        }
+        else {
+          current_node.erase(key_slice, found_keystate);
+          current_node.template store_unlock<utils::memory_order::acq_rel>();
+          if (found_keystate == node_type::KEYSTATE_LONGVAL) {
+            auto suffix = suffix_type(found_value, tile, allocator);
+            suffix.load_head();
+            suffix.retire(reclaimer);
+          }
         }
       }
       // reaching here means we succeeded to erase the entry
@@ -778,18 +863,18 @@ struct gpu_masstree {
           per_layer_indexes.pop(layer_root_index, layer_border_index);
           merge_early_exit_check early_exit{key_slice, true};
           current_node = node_type(layer_border_index, tile, allocator);
-          current_node.template load<true>();
-          coop_traverse_until_border<true>(current_node, key_slice, tile, allocator, true, early_exit);
+          current_node.template load<utils::memory_order::acq_rel>();
+          coop_traverse_until_border<true, utils::memory_order::acq_rel>(current_node, key_slice, tile, allocator, true, early_exit);
           if (early_exit.exited_) { break; }
           if (current_node.key_is_in_node(key_slice, node_type::KEYSTATE_LINK) && current_node.is_underflow()) {
             // cannot allow underflow. retry from root with proactive merging
             current_node.unlock();
             current_node = node_type(layer_root_index, tile, allocator);
-            current_node.template load<true>();
+            current_node.template load<utils::memory_order::acq_rel>();
             coop_traverse_until_border_merge(current_node, key_slice, tile, allocator, reclaimer, early_exit);
             if (early_exit.exited_) { break; }
           }
-          value_type found_value;
+          value_slice_type found_value;
           if (current_node.get_key_value_from_node(key_slice, found_value, node_type::KEYSTATE_LINK)) {
             // check next layer root node
             // found_value is next_layer_root_node_index
@@ -799,8 +884,8 @@ struct gpu_masstree {
               // still empty, remove them
               next_layer_root_node.make_garbage_node(false);
               current_node.erase(key_slice, node_type::KEYSTATE_LINK);
-              next_layer_root_node.template store_unlock<false>();
-              current_node.template store_unlock<true>();
+              next_layer_root_node.template store_unlock<utils::memory_order::weak_tilesync>();
+              current_node.template store_unlock<utils::memory_order::acq_rel>();
               reclaimer.retire(next_layer_root_node.get_node_index(), tile);
             }
             else {
@@ -845,7 +930,7 @@ struct gpu_masstree {
     }
   };
 
-  template <bool concurrent, typename tile_type, typename early_exit_check>
+  template <bool concurrent, utils::memory_order order, typename tile_type, typename early_exit_check>
   DEVICE_QUALIFIER void coop_traverse_until_border(masstree_node<tile_type, device_allocator_context_type>& current_node,
                                                    const key_slice_type& key_slice,
                                                    const tile_type& tile,
@@ -877,7 +962,7 @@ struct gpu_masstree {
       else {
         auto next_index = current_node.find_next(key_slice);
         current_node = node_type(next_index, tile, allocator);
-        current_node.template load<concurrent>();
+        current_node.template load<order>();
       }
     }
     assert(false);
@@ -916,7 +1001,7 @@ struct gpu_masstree {
                 (current_node.get_node_index() == parent_index || link_traversed || current_node.traverse_required(key_slice))) {
               current_node.unlock();
               current_node = node_type(root_index, tile, allocator);
-              current_node.template load<true>();
+              current_node.template load<utils::memory_order::acq_rel>();
               parent_index = root_index;
               continue;
             }
@@ -930,7 +1015,7 @@ struct gpu_masstree {
         else {
           // try_lock failed, retry from parent
           current_node = node_type(parent_index, tile, allocator);
-          current_node.template load<true>();
+          current_node.template load<utils::memory_order::acq_rel>();
           continue;
         }
       }
@@ -952,7 +1037,7 @@ struct gpu_masstree {
             current_node.unlock();
             parent_node.unlock();
             current_node = node_type(root_index, tile, allocator);
-            current_node.template load<true>();
+            current_node.template load<utils::memory_order::acq_rel>();
             parent_index = root_index;
             continue;
           }
@@ -962,15 +1047,15 @@ struct gpu_masstree {
           // write order: right -> left -> parent
           if (current_node.get_high_key() < key_slice) {
             // continue traverse with right_sibling_node
-            right_sibling_node.template store<false>();
-            current_node.template store_unlock<true>();
-            parent_node.template store_unlock<true>();
+            right_sibling_node.template store<utils::memory_order::weak_tilesync>();
+            current_node.template store_unlock<utils::memory_order::acq_rel>();
+            parent_node.template store_unlock<utils::memory_order::acq_rel>();
             current_node = right_sibling_node;
           }
           else {  // continue traverse with current_node 
-            right_sibling_node.template store_unlock<false>();
-            current_node.template store<true>();
-            parent_node.template store_unlock<true>();
+            right_sibling_node.template store_unlock<utils::memory_order::weak_tilesync>();
+            current_node.template store<utils::memory_order::acq_rel>();
+            parent_node.template store_unlock<utils::memory_order::acq_rel>();
           }
         }
         else { // (current_node.get_node_index() == root_node_index)
@@ -981,15 +1066,15 @@ struct gpu_masstree {
           // write order: right -> left -> parent
           if (current_node.find_next(key_slice) == left_child_node.get_node_index()) {
             // continue traversal with left_child_node
-            right_child_node.template store_unlock<false>();
-            left_child_node.template store<false>();
-            current_node.template store_unlock<true>();
+            right_child_node.template store_unlock<utils::memory_order::weak_tilesync>();
+            left_child_node.template store<utils::memory_order::weak_tilesync>();
+            current_node.template store_unlock<utils::memory_order::acq_rel>();
             current_node = left_child_node;
           }
           else {  // continue traversal with right_child_node
-            right_child_node.template store<false>();
-            left_child_node.template store_unlock<false>();
-            current_node.template store_unlock<true>();
+            right_child_node.template store<utils::memory_order::weak_tilesync>();
+            left_child_node.template store_unlock<utils::memory_order::weak_tilesync>();
+            current_node.template store_unlock<utils::memory_order::acq_rel>();
             current_node = right_child_node;
           }
           parent_index = root_index;
@@ -1007,7 +1092,7 @@ struct gpu_masstree {
         parent_index = current_node.get_node_index();
         auto next_index = current_node.find_next(key_slice);
         current_node = node_type(next_index, tile, allocator);
-        current_node.template load<true>();
+        current_node.template load<utils::memory_order::acq_rel>();
       }
     }
     assert(false);
@@ -1050,7 +1135,7 @@ struct gpu_masstree {
                  link_traversed || current_node.traverse_required(key_slice))) {
               current_node.unlock();
               current_node = node_type(root_index, tile, allocator);
-              current_node.template load<true>();
+              current_node.template load<utils::memory_order::acq_rel>();
               parent_index = root_index;
               sibling_index = root_index;
               continue;
@@ -1065,7 +1150,7 @@ struct gpu_masstree {
         else {
           // try_lock failed, retry from parent
           current_node = node_type(parent_index, tile, allocator);
-          current_node.template load<true>();
+          current_node.template load<utils::memory_order::acq_rel>();
           sibling_index = root_index;
           continue;
         }
@@ -1088,7 +1173,7 @@ struct gpu_masstree {
           if (!sibling_node.try_lock_load()) {
             current_node.unlock();
             current_node = node_type(parent_index, tile, allocator);
-            current_node.template load<true>();
+            current_node.template load<utils::memory_order::acq_rel>();
             sibling_index = root_index;
             continue;
           }
@@ -1101,7 +1186,7 @@ struct gpu_masstree {
           current_node.unlock();
           sibling_node.unlock();
           current_node = node_type(root_index, tile, allocator);
-          current_node.template load<true>();
+          current_node.template load<utils::memory_order::acq_rel>();
           parent_index = root_index;
           sibling_index = root_index;
           continue;
@@ -1115,7 +1200,7 @@ struct gpu_masstree {
           sibling_node.unlock();
           parent_node.unlock();
           current_node = node_type(root_index, tile, allocator);
-          current_node.template load<true>();
+          current_node.template load<utils::memory_order::acq_rel>();
           parent_index = root_index;
           sibling_index = root_index;
           continue;
@@ -1128,7 +1213,7 @@ struct gpu_masstree {
           sibling_node.unlock();
           parent_node.unlock();
           current_node = node_type(root_index, tile, allocator);
-          current_node.template load<true>();
+          current_node.template load<utils::memory_order::acq_rel>();
           parent_index = root_index;
           sibling_index = root_index;
           continue;
@@ -1140,18 +1225,18 @@ struct gpu_masstree {
             if (sibling_at_left) { // left_node = sibling_node, right_node = current_node
               sibling_node.merge(current_node, parent_node);
               // write order: left -> right -> parent
-              sibling_node.template store<false>();
-              current_node.template store_unlock<true>();
-              parent_node.template store_unlock<true>();
+              sibling_node.template store<utils::memory_order::weak_tilesync>();
+              current_node.template store_unlock<utils::memory_order::acq_rel>();
+              parent_node.template store_unlock<utils::memory_order::acq_rel>();
               reclaimer.retire(current_node.get_node_index(), tile);
               current_node = sibling_node;
             }
             else { // left_node = current_node, right_node = sibling_node
               current_node.merge(sibling_node, parent_node);
               // write order: left -> right -> parent
-              current_node.template store<false>();
-              sibling_node.template store_unlock<true>();
-              parent_node.template store_unlock<true>();
+              current_node.template store<utils::memory_order::weak_tilesync>();
+              sibling_node.template store_unlock<utils::memory_order::acq_rel>();
+              parent_node.template store_unlock<utils::memory_order::acq_rel>();
               reclaimer.retire(sibling_node.get_node_index(), tile);
             }
           }
@@ -1159,16 +1244,16 @@ struct gpu_masstree {
             if (sibling_at_left) { // left_node = sibling_node, right_node = current_node
               parent_node.merge_to_root(root_index, sibling_node, current_node);
               // write order: parent -> left -> right
-              parent_node.template store<false>();
-              sibling_node.template store_unlock<true>();
-              current_node.template store_unlock<true>();
+              parent_node.template store<utils::memory_order::weak_tilesync>();
+              sibling_node.template store_unlock<utils::memory_order::acq_rel>();
+              current_node.template store_unlock<utils::memory_order::acq_rel>();
             }
             else { // left_node = current_node, right_node = sibling_node
               parent_node.merge_to_root(root_index, current_node, sibling_node);
               // write order: parent -> left -> right
-              parent_node.template store<false>();
-              current_node.template store_unlock<true>();
-              sibling_node.template store_unlock<true>();
+              parent_node.template store<utils::memory_order::weak_tilesync>();
+              current_node.template store_unlock<utils::memory_order::acq_rel>();
+              sibling_node.template store_unlock<utils::memory_order::acq_rel>();
             }
             reclaimer.retire(current_node.get_node_index(), tile);
             reclaimer.retire(sibling_node.get_node_index(), tile);
@@ -1180,19 +1265,19 @@ struct gpu_masstree {
           if (sibling_at_left) { // left_node = sibling_node, right_node = current_node
             current_node.borrow_left(sibling_node, parent_node);
             // write order: right -> left -> parent
-            current_node.template store<false>();
-            sibling_node.template store_unlock<true>();
-            parent_node.template store_unlock<true>();
+            current_node.template store<utils::memory_order::weak>();
+            sibling_node.template store_unlock<utils::memory_order::acq_rel>();
+            parent_node.template store_unlock<utils::memory_order::acq_rel>();
           }
           else { // left_node = current_node, right_node = sibling_node
             // borrow_right need additional node to ensure correct lock-free traversal
             auto new_sibling_node = node_type(allocator.allocate(tile), tile, allocator);
             current_node.borrow_right(sibling_node, parent_node, new_sibling_node);
             // write order: new_right -> left -> right -> parent
-            new_sibling_node.template store_unlock<false>();
-            current_node.template store<true>();
-            sibling_node.template store_unlock<true>();
-            parent_node.template store_unlock<true>();
+            new_sibling_node.template store_unlock<utils::memory_order::weak_tilesync>();
+            current_node.template store<utils::memory_order::acq_rel>();
+            sibling_node.template store_unlock<utils::memory_order::acq_rel>();
+            parent_node.template store_unlock<utils::memory_order::acq_rel>();
             reclaimer.retire(sibling_node.get_node_index(), tile);
           }
         }
@@ -1209,7 +1294,7 @@ struct gpu_masstree {
         parent_index = current_node.get_node_index();
         auto next_index = current_node.find_next_and_sibling(key_slice, sibling_index, sibling_at_left);
         current_node = node_type(next_index, tile, allocator);
-        current_node.template load<true>();
+        current_node.template load<utils::memory_order::acq_rel>();
       }
     }
     assert(false);
@@ -1234,7 +1319,7 @@ struct gpu_masstree {
       stack.pop(current_node_index, num_traversed_children);
       stack_size--;
       node_type current_node = node_type(current_node_index, tile, allocator);
-      current_node.template load<false>();
+      current_node.template load<utils::memory_order::weak>();
       if (num_traversed_children == 0) {
         // first time visiting
         task.exec(current_node, tile, allocator);
@@ -1297,11 +1382,11 @@ struct gpu_masstree {
           if (i > 0) {
             assert(before_key <= key);
             if (before_key == key) {
-              assert((before_keystate == node_type::KEYSTATE_VALUE && 
-                      keystate != node_type::KEYSTATE_VALUE));
+              assert(!node_type::keystate_has_more_key(before_keystate) && 
+                     node_type::keystate_has_more_key(keystate));
             }
           }
-          if (keystate == node_type::KEYSTATE_SUFFIX) {
+          if (node_type::keystate_has_suffix_ptr(keystate)) {
             auto suffix_index = node.get_value_from_location(i);
             auto suffix = suffix_type(suffix_index, tile, allocator);
             suffix.load_head();
@@ -1309,8 +1394,7 @@ struct gpu_masstree {
           }
           before_key = key;
           before_keystate = keystate;
-          if (keystate == node_type::KEYSTATE_VALUE ||
-              keystate == node_type::KEYSTATE_SUFFIX) {
+          if (keystate != node_type::KEYSTATE_LINK) {
             num_entries++;
           }
         }
@@ -1347,7 +1431,7 @@ struct gpu_masstree {
     while (node.traverse_required(key_slice)) {
       auto node_index = node.get_sibling_index();
       node = node_type(node_index, tile, allocator);
-      node.template load<true>();
+      node.template load<utils::memory_order::acq_rel>();
       traversed |= true;
     }
     return traversed;
@@ -1379,7 +1463,7 @@ struct gpu_masstree {
     using node_type = masstree_node<tile_type, device_allocator_context_type>;
     auto root_node = node_type(root_index, tile, allocator);
     root_node.initialize_root();
-    root_node.template store<false>();
+    root_node.template store<utils::memory_order::weak>();
   }
 
   void allocate() {

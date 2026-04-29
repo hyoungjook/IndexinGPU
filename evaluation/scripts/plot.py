@@ -13,15 +13,16 @@ CPU_VM_HOURLY_PRICE = 3.648
 CPU_BASELINE_ADJUST = 1
 
 INDEX_LABELS = {
-    IndexType.gpu_masstree: "GpuMasstree",
-    IndexType.gpu_chainhashtable: "GpuChainHT",
-    IndexType.gpu_cuckoohashtable: "GpuCuckooHT",
-    IndexType.gpu_extendhashtable: "GpuExtendHT",
+    IndexType.gpu_masstree: "GPUMasstree",
+    IndexType.gpu_chainhashtable: "GPUChainHT",
+    IndexType.gpu_cuckoohashtable: "GPUCuckooHT",
+    IndexType.gpu_extendhashtable: "GPUExtendHT",
     IndexType.gpu_blink_tree: "GPUBtree",
     IndexType.gpu_dycuckoo: "DyCuckoo",
     IndexType.cpu_art: "ART",
     IndexType.cpu_masstree: "Masstree",
-    IndexType.cpu_libcuckoo: "Libcuckoo",
+    IndexType.cpu_libcuckoo: "libcuckoo",
+    IndexType.cpu_onetbb: "oneTBB",
 }
 INDEX_STYLES = {
     IndexType.gpu_masstree: {"color": "#0B6E4F", "marker": "o", "linestyle": "-"},
@@ -33,14 +34,15 @@ INDEX_STYLES = {
     IndexType.cpu_art: {"color": "#5C4D7D", "marker": "P", "linestyle": "--"},
     IndexType.cpu_masstree: {"color": "#6C9A8B", "marker": "X", "linestyle": "--"},
     IndexType.cpu_libcuckoo: {"color": "#8F2D56", "marker": "v", "linestyle": "--"},
+    IndexType.cpu_onetbb: {"color": "#2A9D8F", "marker": "8", "linestyle": "--"},
 }
 HATCH_STYLES = {
     IndexType.gpu_masstree: 'o',
     IndexType.gpu_extendhashtable: 'x',
     IndexType.cpu_art: '///',
     IndexType.cpu_masstree: '\\\\\\',
-    IndexType.cpu_libcuckoo: '|||',
-    IndexType.gpu_dycuckoo: '---',
+    IndexType.cpu_libcuckoo: '...',
+    IndexType.cpu_onetbb: '|||',
 }
 EXTRA_COLORS = [
     "#3B60E4", "#00798C", "#8F2D56", "#0B6E4F", "#EDAE49", "#D1495B",
@@ -115,34 +117,86 @@ def _make_fixed_plot_area_figure(plot_width, plot_height, *, include_xlabel=Fals
 def _save_grouped_legend_pdf(legend_groups, output_file):
     group_order = ['ours', 'gpu_baseline', 'cpu_baseline']
     group_names = {
-        'ours': 'Our Libgpumap',
+        'ours': 'This Paper',
         'gpu_baseline': 'GPU Baselines',
         'cpu_baseline': 'CPU Baselines',
     }
+    ncols = 2
+    group_rows = {
+        group: max(1, (len(legend_groups[group]['labels']) + ncols - 1) // ncols)
+        for group in group_order
+    }
+    legend_width = 2.95
+    legend_height = legend_width * 2.3 / 3
     fig, axes = plt.subplots(3, 1,
-        figsize=(2.6, 2.3),
-        constrained_layout=True,
+        figsize=(legend_width, legend_height),
         gridspec_kw={
-            'height_ratios': [len(legend_groups[group]['labels']) + 1 for group in group_order]
+            'height_ratios': [
+                group_rows[group] + (0.95 if group_rows[group] == 1 else 0.55)
+                for group in group_order
+            ]
         },
     )
+    fig.subplots_adjust(left=0.05, right=0.95, bottom=0.025, top=0.975, hspace=0.02)
     for ax, group_name in zip(axes, group_order):
-        ax.legend(
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis('off')
+        frame = mpatch.FancyBboxPatch(
+            (0.01, 0.03), 0.98, 0.94,
+            boxstyle='round,pad=0.012,rounding_size=0.02',
+            linewidth=1,
+            edgecolor='#cccccc',
+            facecolor='white',
+            transform=ax.transAxes,
+            clip_on=False,
+        )
+        ax.add_patch(frame)
+        rows = group_rows[group_name]
+        ax.text(
+            0.5, 0.78 if rows == 1 else 0.86, group_names[group_name],
+            ha='center', va='center',
+            fontsize=10, fontweight='bold',
+            transform=ax.transAxes,
+        )
+        row_centers = [0.36] if rows == 1 else [
+            0.54 - row * (0.34 / (rows - 1)) for row in range(rows)
+        ]
+        col_centers = [0.25, 0.75]
+        for idx, (handle, label) in enumerate(zip(
             legend_groups[group_name]['handles'],
             legend_groups[group_name]['labels'],
-            loc='center',
-            ncol=1,
-            bbox_to_anchor=(0.05, 0, 0.9, 1),
-            mode='expand',
-            borderaxespad=0.0,
-            handlelength=3,
-            title=group_names[group_name],
-            title_fontproperties={'weight': 'bold'},
-            frameon=True,
-            labelspacing=0.3,
-        )
-        ax.axis('off')
-    fig.savefig(output_file, bbox_inches='tight')
+        )):
+            row = idx % rows
+            col = idx // rows
+            x = col_centers[col]
+            if rows == 1:
+                line_y = 0.53
+                text_y = 0.20
+            else:
+                line_y = row_centers[row] + 0.085
+                text_y = row_centers[row] - 0.085
+            ax.plot(
+                [x - 0.15, x, x + 0.15],
+                [line_y, line_y, line_y],
+                color=handle.get_color(),
+                linestyle=handle.get_linestyle(),
+                linewidth=handle.get_linewidth(),
+                marker=handle.get_marker(),
+                markersize=handle.get_markersize(),
+                markerfacecolor=handle.get_markerfacecolor(),
+                markeredgecolor=handle.get_markeredgecolor(),
+                markevery=[1],
+                transform=ax.transAxes,
+                clip_on=False,
+            )
+            ax.text(
+                x, text_y, label,
+                ha='center', va='center',
+                fontsize=10,
+                transform=ax.transAxes,
+            )
+    fig.savefig(output_file, bbox_inches='tight', pad_inches=0.02)
     plt.close(fig)
 
 def key_length_plots(configs_and_results, plot_file_prefix):
@@ -170,6 +224,8 @@ def key_length_plots(configs_and_results, plot_file_prefix):
                     ConfigType.keylen_prefix: 0,
                     ConfigType.keylen_min: key_length,
                     ConfigType.keylen_max: key_length,
+                    ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH_OVERVIEW,
+                    ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH_OVERVIEW,
                 }
                 if result_type == ResultType.lookup:
                     desired_config[ConfigType.num_lookups] = DEFAULT_BATCH_SIZE
@@ -240,7 +296,7 @@ def key_length_plots(configs_and_results, plot_file_prefix):
             ydata = avg_values.copy()
             markevery = range(len(ydata))
             if len(markevery) == 1:
-                ydata.append(ydata[0] * 0.7)
+                ydata.append(0)
             xdata = key_lengths_bytes[0:len(ydata)]
             index_label = INDEX_LABELS[index_type]
             line, = ax.plot(
@@ -259,11 +315,11 @@ def key_length_plots(configs_and_results, plot_file_prefix):
                 color=INDEX_STYLES[index_type]['color']
             )
             if len(markevery) == 1:
-                ax.text(xdata[1], ydata[1], "X", fontsize=10, color='red', fontweight='bold', ha='center', va='center')
-            if index_type in IS_INDEX_TYPE_ORDERED:
-                index_label = f'[Tree] {index_label}'
-            else:
-                index_label = f'[HT] {index_label}'
+                ax.text(xdata[1], ydata[1], "X", fontsize=10, color='red', fontweight='bold', ha='center', va='center', zorder=10)
+            #if index_type in IS_INDEX_TYPE_ORDERED:
+            #    index_label = f'[Tree] {index_label}'
+            #else:
+            #    index_label = f'[HT] {index_label}'
             if index_label not in legends[get_index_group(index_type)]['labels']:
                 legends[get_index_group(index_type)]['labels'].append(index_label)
                 legends[get_index_group(index_type)]['handles'].append(line)
@@ -319,6 +375,8 @@ def key_length_cpu_plots(configs_and_results, plot_file_prefix):
                     ConfigType.keylen_prefix: 0,
                     ConfigType.keylen_min: key_length,
                     ConfigType.keylen_max: key_length,
+                    ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH_OVERVIEW,
+                    ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH_OVERVIEW,
                 }
                 if index_type in INDEX_TYPES_ROBUST + INDEX_TYPES_GPU_BASELINE:
                     desired_config[ConfigType.use_pinned_host_memory] = 1
@@ -356,6 +414,9 @@ def key_length_cpu_plots(configs_and_results, plot_file_prefix):
         ],
     ]
     plot_names = ['tree', 'ht']
+    legend_indexes = set()
+    legend_handles = []
+    legend_labels = []
     for idx, plots in enumerate(plot_spec):
         figwidth = 6
         figheight = 1.8 if idx == 0 else 2.0
@@ -381,9 +442,9 @@ def key_length_cpu_plots(configs_and_results, plot_file_prefix):
                 ymax = max(ymax, max(max_values))
                 markevery = range(len(ydata))
                 if len(markevery) == 1:
-                    ydata.append(ydata[0] * 0.7)
+                    ydata.append(0)
                 xdata = key_lengths_bytes[0:len(ydata)]
-                axes[subplot_idx].plot(
+                line, = axes[subplot_idx].plot(
                     xdata, ydata,
                     label=INDEX_LABELS[index_type],
                     markevery=markevery,
@@ -394,7 +455,11 @@ def key_length_cpu_plots(configs_and_results, plot_file_prefix):
                     axes[subplot_idx], key_lengths_bytes, avg_values, min_values, max_values, color=INDEX_STYLES[index_type]['color']
                 )
                 if len(markevery) == 1:
-                    axes[subplot_idx].text(xdata[1], ydata[1], "X", fontsize=10, color='red', fontweight='bold', ha='center', va='center')
+                    axes[subplot_idx].text(xdata[1], ydata[1], "X", fontsize=10, color='red', fontweight='bold', ha='center', va='center', zorder=10)
+                if index_type not in legend_indexes:
+                    legend_indexes.add(index_type)
+                    legend_labels.append(INDEX_LABELS[index_type])
+                    legend_handles.append(line)
             axes[subplot_idx].set_ylim(bottom=0, top=ymax * 1.1)
             axes[subplot_idx].set_xlim(left=0)
             _, ymax = axes[subplot_idx].get_ylim()
@@ -423,6 +488,11 @@ def key_length_cpu_plots(configs_and_results, plot_file_prefix):
             fig.supxlabel('Key Length (B)', fontsize=10)
         fig.savefig(f'{plot_file_prefix}-{plot_names[idx]}.pdf', bbox_inches='tight')
         plt.close(fig)
+    fig, ax = plt.subplots(1, 1, figsize=(7, 0.5), constrained_layout=True)
+    ax.legend(legend_handles, legend_labels, loc='center', ncol=len(legend_labels) / 2, handlelength=2.5)
+    ax.axis("off")
+    plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
+    plt.close(fig)
 
 def average_slowdown_cpu(configs_and_results):
     slowdowns = []
@@ -463,6 +533,92 @@ def average_slowdown_cpu(configs_and_results):
     avg_slowdown = sum(slowdowns) / len(slowdowns)
     print(f'average slowdown for cpu inputs: {avg_slowdown}')
 
+def value_length_plots(configs_and_results, plot_file_prefix):
+    tputs = {}
+    for index_type in INDEX_TYPES_ROBUST:
+        tputs[index_type] = {}
+        result_types = [ResultType.lookup]
+        if index_type in IS_INDEX_TYPE_ORDERED:
+            result_types.append(ResultType.scan)
+        for result_type in result_types:
+            tputs[index_type][result_type] = {
+                'avg': [], 'min': [], 'max': []
+            }
+            for value_length in EXP_VALUE_LENGTHS:
+                desired_config = {
+                    ConfigType.index_type: index_type,
+                    ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+                    ConfigType.keylen_prefix: 0,
+                    ConfigType.keylen_min: 1,
+                    ConfigType.keylen_max: 1,
+                    ConfigType.valuelen_min: value_length,
+                    ConfigType.valuelen_max: value_length,
+                }
+                if result_type == ResultType.lookup:
+                    desired_config[ConfigType.num_lookups] = DEFAULT_BATCH_SIZE
+                elif result_type == ResultType.scan:
+                    desired_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
+                    desired_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
+                result = filter(configs_and_results, desired_config, result_type)
+                processed_result = _compute_avg_min_max_from_raw(result[result_type.name]['raw'])
+                for metric_type in ['avg', 'min', 'max']:
+                    tputs[index_type][result_type][metric_type].append(processed_result[metric_type])
+    # plot
+    value_lengths_bytes = [4 * l for l in EXP_VALUE_LENGTHS]
+    tree_indexes = [i for i in INDEX_TYPES_ROBUST if i in IS_INDEX_TYPE_ORDERED]
+    hashtable_indexes = [i for i in INDEX_TYPES_ROBUST if i not in IS_INDEX_TYPE_ORDERED]
+    plot_spec = [
+        (tree_indexes, ResultType.lookup),
+        (tree_indexes, ResultType.scan),
+        (hashtable_indexes, ResultType.lookup),
+    ]
+    plot_names = [
+        'tree-lookup', 'tree-scan', 'ht-lookup'
+    ]
+    legend_indexes = set()
+    legend_handles = []
+    legend_labels = []
+    for idx, (index_types, result_type) in enumerate(plot_spec):
+        fig, ax = _make_fixed_plot_area_figure(1.3, 1.1,
+            include_xlabel=True,
+            include_ylabel=(idx == 0),
+        )
+        for index_type in index_types:
+            avg_values = _convert_mops_to_bops(tputs[index_type][result_type]['avg'], index_type)
+            min_values = _convert_mops_to_bops(tputs[index_type][result_type]['min'], index_type)
+            max_values = _convert_mops_to_bops(tputs[index_type][result_type]['max'], index_type)
+            line, = ax.plot(
+                value_lengths_bytes, avg_values,
+                label=INDEX_LABELS[index_type],
+                linewidth=2, markersize=6,
+                **INDEX_STYLES[index_type]
+            )
+            _add_throughput_error_bars(
+                ax,
+                value_lengths_bytes,
+                avg_values,
+                min_values,
+                max_values,
+                color=INDEX_STYLES[index_type]['color']
+            )
+            if index_type not in legend_indexes:
+                legend_indexes.add(index_type)
+                legend_labels.append(INDEX_LABELS[index_type])
+                legend_handles.append(line)
+        ax.set_ylim(bottom=0)
+        ax.set_xlim(left=0)
+        ax.grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
+        ax.set_xlabel('Value Length (B)')
+        if idx == 0:
+            ax.set_ylabel(r'Throughput ($10^9$/s)')
+        fig.savefig(f'{plot_file_prefix}-{plot_names[idx]}.pdf', bbox_inches='tight')
+        plt.close(fig)
+    fig, ax = plt.subplots(1, 1, figsize=(6, 0.3), constrained_layout=True)
+    ax.legend(legend_handles, legend_labels, loc='center', ncol=len(legend_labels))
+    ax.axis("off")
+    plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
+    plt.close(fig)
+
 def suffix_plots(configs_and_results, plot_file_prefix):
     tputs = {}
     plot_specs = [
@@ -482,6 +638,8 @@ def suffix_plots(configs_and_results, plot_file_prefix):
             ConfigType.max_keys: max_key,
             ConfigType.keylen_min: DEFAULT_KEY_LENGTH,
             ConfigType.keylen_max: DEFAULT_KEY_LENGTH,
+            ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH,
+            ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH,
         }
         if result_type == ResultType.lookup:
             desired_config[ConfigType.num_lookups] = DEFAULT_BATCH_SIZE
@@ -552,6 +710,8 @@ def tile_plots(configs_and_results, plot_file_prefix):
                     ConfigType.keylen_prefix: 0,
                     ConfigType.keylen_min: DEFAULT_KEY_LENGTH,
                     ConfigType.keylen_max: DEFAULT_KEY_LENGTH,
+                    ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH,
+                    ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH,
                     ConfigType.num_mixed: DEFAULT_BATCH_SIZE,
                     ConfigType.mix_read_ratio: mix_read_ratio,
                 }
@@ -633,6 +793,8 @@ def merge_plots(configs_and_results, plot_file_prefix):
                     ConfigType.keylen_prefix: prefix_length,
                     ConfigType.keylen_min: key_length,
                     ConfigType.keylen_max: key_length,
+                    ConfigType.valuelen_min: 1,
+                    ConfigType.valuelen_max: 1,
                     ConfigType.num_space: DEFAULT_BATCH_SIZE,
                     OptionalConfigType.merge_level: merge_level,
                 }
@@ -657,6 +819,8 @@ def merge_plots(configs_and_results, plot_file_prefix):
                 ConfigType.keylen_prefix: DEFAULT_KEY_LENGTH - 1,
                 ConfigType.keylen_min: DEFAULT_KEY_LENGTH,
                 ConfigType.keylen_max: DEFAULT_KEY_LENGTH,
+                ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH,
+                ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH,
                 ConfigType.num_insdel: DEFAULT_BATCH_SIZE,
                 OptionalConfigType.merge_level: merge_level,
             }
@@ -725,7 +889,7 @@ def merge_plots(configs_and_results, plot_file_prefix):
     plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
     plt.close(fig)
     #tput plot
-    mt_xticklabels = ['Naive', 'Merge\nNodes\n(§4.2)', '+P.P.M.\n(§4.3)', '+Root\nCollect\n(§4.3)']
+    mt_xticklabels = ['Naive', 'Merge\nNodes\n(§4.2)', '+PPM\n(§4.3)', '+Root\nCollect\n(§4.3)']
     et_xticklabels = ['Naive', 'Merge\nChains\n(§5.4)', '+Merge\nBuckets\n(§5.5)']
     for idx, index_type in enumerate(index_types):
         fig, ax = _make_fixed_plot_area_figure(0.6 * len(tputs[index_type]['avg']), 1.2,
@@ -764,12 +928,12 @@ def merge_plots(configs_and_results, plot_file_prefix):
 def intro_plots(configs_and_results, plot_file_prefix):
     tputs = {}
     tree_indexes = [IndexType.cpu_art, IndexType.cpu_masstree, IndexType.gpu_masstree,]
-    hashtable_indexes = [IndexType.cpu_libcuckoo, IndexType.gpu_dycuckoo, IndexType.gpu_extendhashtable,]
+    hashtable_indexes = [IndexType.cpu_libcuckoo, IndexType.cpu_onetbb, IndexType.gpu_extendhashtable,]
     plot_spec = [
         (0, tree_indexes, [ResultType.lookup, ResultType.scan, ResultType.mixed]),
         (1, hashtable_indexes, [ResultType.lookup, ResultType.mixed]),
     ]
-    intro_plot_key_length = 16
+    intro_plot_key_length = 8
     plot_names = ['tree', 'ht']
     legend_handles = []
     legend_labels = []
@@ -788,36 +952,33 @@ def intro_plots(configs_and_results, plot_file_prefix):
     for _, index_types, result_types in plot_spec:
         for result_type in result_types:
             for index_type in index_types:
-                if index_type == IndexType.gpu_dycuckoo and result_type == ResultType.mixed:
-                    tputs[(index_type, result_type)] = {
-                        'avg': [0], 'min': [0], 'max': [0],
-                    }
+                desired_config = {
+                    ConfigType.index_type: index_type,
+                    ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+                    ConfigType.keylen_prefix: 0,
+                    ConfigType.keylen_min: intro_plot_key_length,
+                    ConfigType.keylen_max: intro_plot_key_length,
+                    ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH_OVERVIEW,
+                    ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH_OVERVIEW,
+                }
+                if result_type == ResultType.lookup:
+                    desired_config[ConfigType.num_lookups] = DEFAULT_BATCH_SIZE
+                elif result_type == ResultType.scan:
+                    desired_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
+                    desired_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
                 else:
-                    desired_config = {
-                        ConfigType.index_type: index_type,
-                        ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
-                        ConfigType.keylen_prefix: 0,
-                        ConfigType.keylen_min: intro_plot_key_length,
-                        ConfigType.keylen_max: intro_plot_key_length,
-                    }
-                    if result_type == ResultType.lookup:
-                        desired_config[ConfigType.num_lookups] = DEFAULT_BATCH_SIZE
-                    elif result_type == ResultType.scan:
-                        desired_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
-                        desired_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
-                    else:
-                        desired_config[ConfigType.num_mixed] = DEFAULT_BATCH_SIZE
-                        desired_config[ConfigType.mix_read_ratio] = DEFAULT_MIX_READ_RATIO
-                    result = filter(configs_and_results, desired_config, result_type)
-                    processed_result = _compute_avg_min_max_from_raw(result[result_type.name]['raw'])
-                    tputs[(index_type, result_type)] = {
-                        'avg': [processed_result['avg']],
-                        'min': [processed_result['min']],
-                        'max': [processed_result['max']],
-                    }
+                    desired_config[ConfigType.num_mixed] = DEFAULT_BATCH_SIZE
+                    desired_config[ConfigType.mix_read_ratio] = DEFAULT_MIX_READ_RATIO
+                result = filter(configs_and_results, desired_config, result_type)
+                processed_result = _compute_avg_min_max_from_raw(result[result_type.name]['raw'])
+                tputs[(index_type, result_type)] = {
+                    'avg': [processed_result['avg']],
+                    'min': [processed_result['min']],
+                    'max': [processed_result['max']],
+                }
     # plot
     for idx, index_types, result_types in plot_spec:
-        fig, ax = _make_fixed_plot_area_figure(0.8 * len(result_types), 1.5,
+        fig, ax = _make_fixed_plot_area_figure(0.8 * len(result_types), 1.2,
             include_xlabel=False, include_ylabel=(idx == 0))
         bar_width = 0.22 if len(index_types) == 3 else 0.28
         bar_spacing = bar_width * 1.2
@@ -843,27 +1004,24 @@ def intro_plots(configs_and_results, plot_file_prefix):
                     our_x = xdata[0]
                 else:
                     baseline_ymax = max(baseline_ymax, ydata[0])
-                if ydata[0] == 0:
-                    ax.text(xdata[0], ydata[0], "X", fontsize=10, color='red', fontweight='bold', ha='center', va='bottom')
-                else:
-                    ax.bar(xdata, ydata,
-                        width=bar_width,
-                        fill=False,
-                        edgecolor=INDEX_STYLES[index_type]['color'],
-                        hatch=HATCH_STYLES[index_type],
-                        linewidth=(2 if index_type in INDEX_TYPES_ROBUST else 1)
-                    )
-                    _add_throughput_error_bars(
-                        ax,
-                        xdata,
-                        avg_values,
-                        min_values,
-                        max_values,
-                        color=INDEX_STYLES[index_type]['color'],
-                        for_barplot=True
-                    )
+                ax.bar(xdata, ydata,
+                    width=bar_width,
+                    fill=False,
+                    edgecolor=INDEX_STYLES[index_type]['color'],
+                    hatch=HATCH_STYLES[index_type],
+                    linewidth=(2 if index_type in INDEX_TYPES_ROBUST else 1)
+                )
+                _add_throughput_error_bars(
+                    ax,
+                    xdata,
+                    avg_values,
+                    min_values,
+                    max_values,
+                    color=INDEX_STYLES[index_type]['color'],
+                    for_barplot=True
+                )
             ax.text(our_x, our_ymax, f'{our_ymax / baseline_ymax:.1f}x', fontsize=12, ha='center', va='bottom')
-        ax.set_ylim(bottom=0, top=plot_top * 1.15)
+        ax.set_ylim(bottom=0, top=plot_top * 1.2)
         xmargin = bar_spacing * len(index_types)
         ax.set_xlim(group_centers[0] - xmargin, group_centers[-1] + xmargin)
         ax.set_xticks(group_centers)
@@ -884,6 +1042,7 @@ def generate_plots(args, configs_and_results):
     key_length_plots(configs_and_results, Path(args.result_dir) / 'plot_keylength')
     key_length_cpu_plots(configs_and_results, Path(args.result_dir) / 'plot_keylength_cpu')
     average_slowdown_cpu(configs_and_results)
+    value_length_plots(configs_and_results, Path(args.result_dir) / 'plot_valuelength')
     suffix_plots(configs_and_results, Path(args.result_dir) / 'plot_suffix')
     tile_plots(configs_and_results, Path(args.result_dir) / 'plot_tile')
     merge_plots(configs_and_results, Path(args.result_dir) / 'plot_merge')

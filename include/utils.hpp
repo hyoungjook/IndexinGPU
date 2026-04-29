@@ -43,18 +43,18 @@ struct device_memory_usage_results {
   std::size_t used_bytes;
   std::size_t total_bytes;
 };
-device_memory_usage_results compute_device_memory_usage() {
+inline device_memory_usage_results compute_device_memory_usage() {
   std::size_t total_bytes;
   std::size_t free_bytes;
   cuda_try(cudaMemGetInfo(&free_bytes, &total_bytes));
   std::size_t used_bytes = total_bytes - free_bytes;
   return {used_bytes, free_bytes};
 }
-void set_cuda_buffer_size(const std::size_t new_size, const cudaLimit limit) {
+inline void set_cuda_buffer_size(const std::size_t new_size, const cudaLimit limit) {
   cuda_try(cudaDeviceSetLimit(limit, new_size));
 }
 
-std::size_t get_cuda_buffer_size(const cudaLimit limit) {
+inline std::size_t get_cuda_buffer_size(const cudaLimit limit) {
   std::size_t cur_size;
   cuda_try(cudaDeviceGetLimit(&cur_size, limit));
   return cur_size;
@@ -64,13 +64,20 @@ __host__ __device__ static constexpr uint32_t constexpr_pow(uint32_t base, uint3
   return (exp == 0) ? 1 : base * constexpr_pow(base, exp - 1);
 }
 
+enum memory_order {
+  weak,
+  weak_tilesync,  // same as weak unless cacheline_atomic
+  relaxed,
+  acq_rel
+};
+
 namespace memory {
 
-template <typename T, bool atomic, bool acquire = false>
-DEVICE_QUALIFIER T load(T* ptr) {
-  if constexpr (atomic) {
-    cuda::atomic_ref<T, cuda::thread_scope_device> ptr_ref(*ptr);
-    if constexpr (acquire) {
+template <typename T, memory_order order>
+DEVICE_QUALIFIER T load(const T* ptr) {
+  if constexpr (order == memory_order::acq_rel || order == memory_order::relaxed) {
+    cuda::atomic_ref<const T, cuda::thread_scope_device> ptr_ref(*ptr);
+    if constexpr (order == memory_order::acq_rel) {
       return ptr_ref.load(cuda::memory_order_acquire);
     }
     else {
@@ -82,11 +89,11 @@ DEVICE_QUALIFIER T load(T* ptr) {
   }
 }
 
-template <typename T, bool atomic, bool release = false>
+template <typename T, memory_order order>
 DEVICE_QUALIFIER void store(T* ptr, T value) {
-  if constexpr (atomic) {
+  if constexpr (order == memory_order::acq_rel || order == memory_order::relaxed) {
     cuda::atomic_ref<T, cuda::thread_scope_device> ptr_ref(*ptr);
-    if constexpr (release) {
+    if constexpr (order == memory_order::acq_rel) {
       ptr_ref.store(value, cuda::memory_order_release);
     }
     else {
@@ -95,6 +102,56 @@ DEVICE_QUALIFIER void store(T* ptr, T value) {
   }
   else {
     *ptr = value;
+  }
+}
+
+template <typename T, memory_order order, typename tile_type>
+DEVICE_QUALIFIER T cacheline_atomic_load(const T* base_ptr, const tile_type& tile) {
+  T lane_elem;
+  if constexpr (order == memory_order::acq_rel || order == memory_order::relaxed) {
+    cuda::atomic_ref<const T, cuda::thread_scope_device> ptr_ref(base_ptr[tile.thread_rank()]);
+    tile.sync();
+    if constexpr (order == memory_order::acq_rel) {
+      lane_elem = ptr_ref.load(cuda::memory_order_acquire);
+    }
+    else {
+      lane_elem = ptr_ref.load(cuda::memory_order_relaxed);
+    }
+    tile.sync();
+  }
+  else {
+    if constexpr (order == memory_order::weak_tilesync) {
+      tile.sync();
+    }
+    lane_elem = base_ptr[tile.thread_rank()];
+    if constexpr (order == memory_order::weak_tilesync) {
+      tile.sync();
+    }
+  }
+  return lane_elem;
+}
+
+template <typename T, memory_order order, typename tile_type>
+DEVICE_QUALIFIER void cacheline_atomic_store(T* base_ptr, T lane_elem, const tile_type& tile) {
+  if constexpr (order == memory_order::acq_rel || order == memory_order::relaxed) {
+    cuda::atomic_ref<T, cuda::thread_scope_device> ptr_ref(base_ptr[tile.thread_rank()]);
+    tile.sync();
+    if constexpr (order == memory_order::acq_rel) {
+      ptr_ref.store(lane_elem, cuda::memory_order_release);
+    }
+    else {
+      ptr_ref.store(lane_elem, cuda::memory_order_relaxed);
+    }
+    tile.sync();
+  }
+  else {
+    if constexpr (order == memory_order::weak_tilesync) {
+      tile.sync();
+    }
+    base_ptr[tile.thread_rank()] = lane_elem;
+    if constexpr (order == memory_order::weak_tilesync) {
+      tile.sync();
+    }
   }
 }
 

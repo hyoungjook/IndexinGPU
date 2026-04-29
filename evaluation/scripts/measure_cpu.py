@@ -12,6 +12,8 @@ def generate_configs():
                 ConfigType.keylen_prefix: 0,
                 ConfigType.keylen_min: key_length,
                 ConfigType.keylen_max: key_length,
+                ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH_OVERVIEW,
+                ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH_OVERVIEW,
                 ConfigType.num_lookups: DEFAULT_BATCH_SIZE,
                 ConfigType.num_insdel: DEFAULT_BATCH_SIZE,
                 ConfigType.rep_lookup: NUM_REPEATS,

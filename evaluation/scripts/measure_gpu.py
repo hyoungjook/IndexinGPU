@@ -14,6 +14,8 @@ def generate_configs():
                 ConfigType.keylen_prefix: 0,
                 ConfigType.keylen_min: key_length,
                 ConfigType.keylen_max: key_length,
+                ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH_OVERVIEW,
+                ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH_OVERVIEW,
                 ConfigType.num_lookups: DEFAULT_BATCH_SIZE,
                 ConfigType.num_insdel: DEFAULT_BATCH_SIZE,
                 ConfigType.rep_lookup: NUM_REPEATS,
@@ -36,13 +38,37 @@ def generate_configs():
             if index_type in INDEX_TYPES_ROBUST:
                 cpu_input_configs[OptionalConfigType.use_shmem_key] = 1
             configs.append({**common_config, **cpu_input_configs})
-    # MT suffix / reuse_root
+    # value length
+    for value_length in EXP_VALUE_LENGTHS:
+        if value_length == DEFAULT_VALUE_LENGTH_OVERVIEW:
+            continue # already measured above
+        for index_type in INDEX_TYPES_ROBUST:
+            common_config = {
+                ConfigType.index_type: index_type,
+                ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+                ConfigType.keylen_prefix: 0,
+                ConfigType.keylen_min: 1,
+                ConfigType.keylen_max: 1,
+                ConfigType.valuelen_min: value_length,
+                ConfigType.valuelen_max: value_length,
+                ConfigType.num_lookups: DEFAULT_BATCH_SIZE,
+                ConfigType.rep_lookup: NUM_REPEATS,
+                OptionalConfigType.allocator_pool_ratio: ROBUST_INDEX_ALLOC_POOL_RATIO(index_type),
+            }
+            if index_type in IS_INDEX_TYPE_ORDERED:
+                common_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
+                common_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
+                common_config[ConfigType.rep_scan] = NUM_REPEATS
+            configs.append(common_config)
+    # MT suffix
     for index_type in [IndexType.gpu_masstree]:
         common_config = {
             ConfigType.index_type: index_type,
             ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
             ConfigType.keylen_min: DEFAULT_KEY_LENGTH,
             ConfigType.keylen_max: DEFAULT_KEY_LENGTH,
+            ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH,
+            ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH,
             ConfigType.num_lookups: DEFAULT_BATCH_SIZE,
             ConfigType.rep_lookup: NUM_REPEATS,
             OptionalConfigType.allocator_pool_ratio: ROBUST_INDEX_ALLOC_POOL_RATIO(index_type)
@@ -58,6 +84,8 @@ def generate_configs():
             ConfigType.max_keys: 2 * DEFAULT_BATCH_SIZE, # use smaller max_key to see split impact
             ConfigType.keylen_min: DEFAULT_KEY_LENGTH,
             ConfigType.keylen_max: DEFAULT_KEY_LENGTH,
+            ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH,
+            ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH,
             ConfigType.num_lookups: DEFAULT_BATCH_SIZE,
             ConfigType.rep_lookup: NUM_REPEATS,
             ConfigType.num_insdel: DEFAULT_BATCH_SIZE,
@@ -75,6 +103,8 @@ def generate_configs():
                 ConfigType.keylen_prefix: 0,
                 ConfigType.keylen_min: DEFAULT_KEY_LENGTH,
                 ConfigType.keylen_max: DEFAULT_KEY_LENGTH,
+                ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH,
+                ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH,
                 ConfigType.num_mixed: DEFAULT_BATCH_SIZE,
                 ConfigType.mix_read_ratio: mix_read_ratio,
                 ConfigType.rep_mixed: NUM_REPEATS,
@@ -91,6 +121,8 @@ def generate_configs():
                 ConfigType.keylen_prefix: prefix_length,
                 ConfigType.keylen_min: key_length,
                 ConfigType.keylen_max: key_length,
+                ConfigType.valuelen_min: 1,
+                ConfigType.valuelen_max: 1,
                 ConfigType.num_space: DEFAULT_BATCH_SIZE,
                 ConfigType.rep_space: 1,
                 OptionalConfigType.allocator_pool_ratio: ROBUST_INDEX_ALLOC_POOL_RATIO(index_type)
@@ -108,6 +140,8 @@ def generate_configs():
                 ConfigType.keylen_prefix: DEFAULT_KEY_LENGTH - 1,
                 ConfigType.keylen_min: DEFAULT_KEY_LENGTH,
                 ConfigType.keylen_max: DEFAULT_KEY_LENGTH,
+                ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH,
+                ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH,
                 ConfigType.num_insdel: DEFAULT_BATCH_SIZE,
                 ConfigType.rep_insdel: NUM_REPEATS,
                 OptionalConfigType.allocator_pool_ratio: ROBUST_INDEX_ALLOC_POOL_RATIO(index_type),

@@ -5,6 +5,8 @@ MILLION = 1000000
 DEFAULT_MAXKEY_LONG = int(500 * MILLION)
 DEFAULT_BATCH_SIZE = int(100 * MILLION)
 DEFAULT_KEY_LENGTH = 8
+DEFAULT_VALUE_LENGTH_OVERVIEW = 1
+DEFAULT_VALUE_LENGTH = 2
 DEFAULT_SCAN_COUNT = 10
 DEFAULT_MIX_READ_RATIO = 0.5
 DEFAULT_SCAN_BATCH_SIZE = int(DEFAULT_BATCH_SIZE // DEFAULT_SCAN_COUNT)
@@ -25,7 +27,8 @@ INDEX_TYPES_GPU_BASELINE = [
 INDEX_TYPES_CPU_BASELINE = [
     IndexType.cpu_art,
     IndexType.cpu_masstree,
-    IndexType.cpu_libcuckoo
+    IndexType.cpu_libcuckoo,
+    IndexType.cpu_onetbb
 ]
 
 IS_INDEX_TYPE_ORDERED = [
@@ -52,6 +55,10 @@ def ROBUST_INDEX_ALLOC_POOL_RATIO(index_type):
     assert False
 
 EXP_KEY_LENGTHS = [
+    1, 2, 4, 8, 16
+]
+
+EXP_VALUE_LENGTHS = [
     1, 2, 4, 8, 16
 ]
 

@@ -13,7 +13,7 @@
  *   See the License for the specific language governing permissions and
  *   limitations under the License.
  */
-
+#pragma once
 #include <type_traits>
 #include <masstree_node_warp.hpp>
 #include <masstree_node_subwarp.hpp>
@@ -27,10 +27,16 @@ using masstree_node = std::conditional_t<tile_type::size() == 32,
                                          masstree_node_warp<tile_type, allocator_type>,
                                          masstree_node_subwarp<tile_type, allocator_type>>;
 
+inline const uint32_t hashtable_node_capacity = 14;
 template <typename tile_type, typename allocator_type>
-using hashtable_node = std::conditional_t<tile_type::size() == 32,
-                                          hashtable_node_warp<tile_type, allocator_type>,
-                                          hashtable_node_subwarp<tile_type, allocator_type>>;
+struct hashtable_node_helper {
+  using type = std::conditional_t<tile_type::size() == 32,
+                                  hashtable_node_warp<tile_type, allocator_type>,
+                                  hashtable_node_subwarp<tile_type, allocator_type>>;
+  static_assert(type::capacity == hashtable_node_capacity);
+};
+template <typename tile_type, typename allocator_type>
+using hashtable_node = typename hashtable_node_helper<tile_type, allocator_type>::type;
 
 template <typename tile_type, typename allocator_type>
 using suffix_node = std::conditional_t<tile_type::size() == 32,

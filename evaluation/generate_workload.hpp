@@ -28,7 +28,7 @@
 #include <macros.hpp>
 
 using key_slice_type = uint32_t;
-using value_type = uint32_t;
+using value_slice_type = uint32_t;
 using size_type = uint32_t;
 
 namespace universal {
@@ -49,6 +49,7 @@ void helper_multithread(F&& f, std::size_t num_tasks, ThreadEnter&& thread_enter
   for (auto& w: workers) { w.join(); }
 }
 
+inline
 std::size_t feistel_permute(std::size_t x, std::size_t N, uint64_t seed) {
   if (N <= 1) return 0;
   auto mix = [](std::uint64_t v) {
@@ -116,6 +117,7 @@ struct zipfian_int_distribution {
   double theta_, alpha_, eta_, zetan_;
 };
 
+inline
 std::size_t key_hasher(const key_slice_type* key, size_type length) {
   std::size_t hash = 0;
   for (size_type i = 0; i < length; i++) {
@@ -124,14 +126,19 @@ std::size_t key_hasher(const key_slice_type* key, size_type length) {
   return hash;
 }
 
+inline
 void generate_key_values(std::vector<key_slice_type>& keys,
                          std::vector<size_type>& key_lengths,
-                         std::vector<value_type>& values,
+                         std::vector<value_slice_type>& values,
+                         std::vector<size_type>& value_lengths,
                          std::size_t num_keys,
                          uint32_t keylen_prefix,
                          uint32_t keylen_min,
                          uint32_t keylen_max,
                          double keylen_theta,
+                         uint32_t valuelen_min,
+                         uint32_t valuelen_max,
+                         double valuelen_theta,
                          bool big_endian) {
   // key: [common prefix (keylen_prefix)], [random slices], [unique_id]
   // normally unique_id is 1 slice, but if num_keys exceeds uint32, should be 2 slices
@@ -151,8 +158,10 @@ void generate_key_values(std::vector<key_slice_type>& keys,
   // generate keys
   keys = std::vector<key_slice_type>(num_keys * keylen_max);
   key_lengths = std::vector<size_type>(num_keys);
-  values = std::vector<value_type>(num_keys);
+  values = std::vector<value_slice_type>(num_keys * valuelen_max);
+  value_lengths = std::vector<size_type>(num_keys);
   zipfian_int_distribution<key_slice_type> length_dist(keylen_min, keylen_max, keylen_theta);
+  zipfian_int_distribution<key_slice_type> value_length_dist(valuelen_min, valuelen_max, valuelen_theta);
   std::uniform_int_distribution<key_slice_type> slice_dist(0, std::numeric_limits<key_slice_type>::max());
   const unsigned num_workers = std::max(1u, std::thread::hardware_concurrency());
   std::vector<std::mt19937> per_thd_rng;
@@ -194,10 +203,17 @@ void generate_key_values(std::vector<key_slice_type>& keys,
         }
       }
       // compute value
-      values[key_idx] = key_hasher(key, length);
+      uint32_t value_length = value_length_dist(rng);
+      value_slice_type value_slice = key_hasher(key, length);
+      value_lengths[key_idx] = value_length;
+      auto* value = &values[key_idx * valuelen_max];
+      for (uint32_t slice = 0; slice < value_length; slice++) {
+        value[slice] = value_slice;
+      }
   }, num_keys, [](unsigned){}, [](unsigned){});
 }
 
+inline
 void generate_lookup_keys(std::vector<key_slice_type>& lookup_keys,
                           std::vector<size_type>& lookup_key_lengths,
                           std::vector<key_slice_type>& keys,
@@ -226,28 +242,32 @@ void generate_lookup_keys(std::vector<key_slice_type>& lookup_keys,
   }, num_queries, [](unsigned){}, [](unsigned){});
 }
 
-std::size_t mix_get_num_insdel(std::size_t num_mixed, double mix_read_ratio) {
+inline std::size_t mix_get_num_insdel(std::size_t num_mixed, double mix_read_ratio) {
   std::size_t num_lookups_tmp = static_cast<std::size_t>(mix_read_ratio * num_mixed);
   std::size_t num_insdel = (num_mixed - num_lookups_tmp) / 2;
   return num_insdel;
 }
 
-std::size_t mix_get_num_lookups(std::size_t num_mixed, double mix_read_ratio) {
+inline std::size_t mix_get_num_lookups(std::size_t num_mixed, double mix_read_ratio) {
   std::size_t num_insdel = mix_get_num_insdel(num_mixed, mix_read_ratio);
   std::size_t num_lookups = num_mixed - num_insdel * 2;
   return num_lookups;
 }
 
+inline
 void generate_mixed_keys(std::vector<kernels::request_type>& mix_types,
                          std::vector<key_slice_type>& mix_keys,
                          std::vector<size_type>& mix_key_lengths,
-                         std::vector<value_type>& mix_values,
+                         std::vector<value_slice_type>& mix_values,
+                         std::vector<size_type>& mix_value_lengths,
                          std::vector<std::size_t>& mix_key_tuple_ids,
                          std::vector<key_slice_type>& keys,
                          std::vector<size_type>& key_lengths,
-                         std::vector<value_type>& values,
+                         std::vector<value_slice_type>& values,
+                         std::vector<size_type>& value_lengths,
                          std::size_t num_keys,
                          uint32_t keylen_max,
+                         uint32_t valuelen_max,
                          std::size_t num_mixed,
                          double mix_read_ratio,
                          bool mix_presort,
@@ -264,7 +284,8 @@ void generate_mixed_keys(std::vector<kernels::request_type>& mix_types,
   mix_types = std::vector<kernels::request_type>(num_mixed);
   mix_keys = std::vector<key_slice_type>(num_mixed * keylen_max);
   mix_key_lengths = std::vector<size_type>(num_mixed);
-  mix_values = std::vector<value_type>(num_mixed);
+  mix_values = std::vector<value_slice_type>(num_mixed * valuelen_max);
+  mix_value_lengths = std::vector<size_type>(num_mixed);
   mix_key_tuple_ids = std::vector<std::size_t>(num_mixed);
   std::vector<key_slice_type> tmp_lookup_keys;
   std::vector<size_type> tmp_lookup_key_lengths;
@@ -284,7 +305,8 @@ void generate_mixed_keys(std::vector<kernels::request_type>& mix_types,
       auto insert_idx = num_keys - 1 - (idx - num_lookups);
       mix_key_lengths[dst_idx] = key_lengths[insert_idx];
       memcpy(&mix_keys[dst_idx * keylen_max], &keys[insert_idx * keylen_max], sizeof(key_slice_type) * keylen_max);
-      mix_values[dst_idx] = values[insert_idx];
+      mix_value_lengths[dst_idx] = value_lengths[insert_idx];
+      memcpy(&mix_values[dst_idx * valuelen_max], &values[insert_idx * valuelen_max], sizeof(value_slice_type) * valuelen_max);
       mix_key_tuple_ids[dst_idx] = insert_idx;
     }
     else {
@@ -303,6 +325,10 @@ void generate_mixed_keys(std::vector<kernels::request_type>& mix_types,
   x(keylen_min, uint32_t, 1) \
   x(keylen_max, uint32_t, 1) \
   x(keylen_theta, double, 0.0) \
+  /* value distribution */ \
+  x(valuelen_min, uint32_t, 1) \
+  x(valuelen_max, uint32_t, 1) \
+  x(valuelen_theta, double, 0.0) \
   /* lookup test */ \
   x(num_lookups, uint32_t, 0) \
   x(lookup_theta, double, 0.0) \

@@ -32,7 +32,10 @@ struct hashtable_node_subwarp {
   };
   using elem_unsigned_type = uint64_t;
   static constexpr int node_width = 16;
-  static constexpr int capacity = node_width - 1;
+  static constexpr int capacity = node_width - 2;
+  static constexpr uint32_t KEYSTATE_VALUE = 0b00u;
+  static constexpr uint32_t KEYSTATE_SUFFIX = 0b11u;
+  static constexpr uint32_t KEYSTATE_LONGVAL = 0b10u;
   static_assert(tile_type::size() == node_width);
   DEVICE_QUALIFIER hashtable_node_subwarp(const tile_type& tile, allocator_type& allocator)
       : tile_(tile), allocator_(allocator) {}
@@ -51,46 +54,43 @@ struct hashtable_node_subwarp {
     write_metadata_to_registers();
   }
 
-  template <bool atomic, bool acquire = true>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void load_from_array(key_type* table_ptr) {
     auto node_ptr = reinterpret_cast<elem_unsigned_type*>(table_ptr + (static_cast<std::size_t>(2 * node_width) * node_index_));
-    do_load<atomic, acquire>(node_ptr);
+    do_load<order>(node_ptr);
   }
-  template <bool atomic, bool acquire = true>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void load_from_allocator() {
     auto node_ptr = reinterpret_cast<elem_unsigned_type*>(allocator_.address(node_index_));
-    do_load<atomic, acquire>(node_ptr);
+    do_load<order>(node_ptr);
   }
-  template <bool atomic, bool acquire>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void do_load(elem_unsigned_type* node_ptr) {
-    if constexpr (atomic) { tile_.sync(); }
-    auto elem = utils::memory::load<elem_unsigned_type, atomic, acquire>(node_ptr + tile_.thread_rank());
+    auto elem = utils::memory::cacheline_atomic_load<elem_unsigned_type, order>(node_ptr, tile_);
     lane_elem_ = *reinterpret_cast<elem_type*>(&elem);
-    if constexpr (atomic) { tile_.sync(); }
     read_metadata_from_registers();
   }
-  template <bool atomic, bool release = true>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void store_to_array(key_type* table_ptr) {
     auto node_ptr = table_ptr + (static_cast<std::size_t>(2 * node_width) * node_index_);
-    do_store<atomic, release>(reinterpret_cast<elem_unsigned_type*>(node_ptr));
+    do_store<order>(reinterpret_cast<elem_unsigned_type*>(node_ptr));
   }
-  template <bool atomic, bool release = true>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void store_to_allocator() {
     auto node_ptr = reinterpret_cast<elem_unsigned_type*>(allocator_.address(node_index_));
-    do_store<atomic, release>(node_ptr);
+    do_store<order>(node_ptr);
   }
-  template <bool atomic, bool release = true>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void store_head_to_array_aux_to_allocator(key_type* table_ptr) {
     auto node_ptr = is_head() ?
         reinterpret_cast<elem_unsigned_type*>(table_ptr + (static_cast<std::size_t>(2 * node_width) * node_index_)) :
         reinterpret_cast<elem_unsigned_type*>(allocator_.address(node_index_));
-    do_store<atomic, release>(node_ptr);
+    do_store<order>(node_ptr);
   }
-  template <bool atomic, bool release>
+  template <utils::memory_order order>
   DEVICE_QUALIFIER void do_store(elem_unsigned_type* node_ptr) {
-    if constexpr (atomic) { tile_.sync(); }
-    utils::memory::store<elem_unsigned_type, atomic, release>(node_ptr + tile_.thread_rank(), *reinterpret_cast<elem_unsigned_type*>(&lane_elem_));
-    if constexpr (atomic) { tile_.sync(); }
+    utils::memory::cacheline_atomic_store<elem_unsigned_type, order>(
+      node_ptr, *reinterpret_cast<elem_unsigned_type*>(&lane_elem_), tile_);
   }
 
   DEVICE_QUALIFIER void read_metadata_from_registers() {
@@ -107,6 +107,21 @@ struct hashtable_node_subwarp {
   }
   DEVICE_QUALIFIER value_type get_value_from_location(const int location) const {
     return tile_.shfl(lane_elem_.value, location);
+  }
+  DEVICE_QUALIFIER uint32_t get_keystate_from_location(int location) const {
+    uint32_t keystate_bits = tile_.shfl(lane_elem_.value, keystate_bits_lane_);
+    if (static_cast<uint32_t>(location) < max_num_keys_) {
+      return (keystate_bits >> (2 * location)) & keystate_mask_;
+    }
+    else { // prevent undefiend shifts
+      return 0;
+    }
+  }
+  static DEVICE_QUALIFIER bool keystate_has_more_key(const uint32_t keystate) {
+    return (keystate & keystate_mask_more_key_) != 0;
+  }
+  static DEVICE_QUALIFIER bool keystate_has_suffix_ptr(const uint32_t keystate) {
+    return (keystate & keystate_mask_suffix_) != 0;
   }
   DEVICE_QUALIFIER bool is_valid_lane() const {
     return tile_.thread_rank() < num_keys();
@@ -125,16 +140,6 @@ struct hashtable_node_subwarp {
   }
   DEVICE_QUALIFIER bool is_mergeable(const hashtable_node_subwarp& next_node) const {
     return (num_keys() + next_node.num_keys()) <= max_num_keys_;
-  }
-  DEVICE_QUALIFIER bool get_suffix_of_location(int location) const {
-    if (location < 0 || location >= static_cast<int>(max_num_keys_)) { return false; }
-    return (metadata_ >> (suffix_bits_offset_ + location)) & 1u;
-  }
-  DEVICE_QUALIFIER void set_suffix_of_location(int location, bool more_key) {
-    assert(0 <= location && location < static_cast<int>(max_num_keys_));
-    auto mask = (1u << (suffix_bits_offset_ + location));
-    if (more_key) { metadata_ |= mask; }
-    else { metadata_ &= ~mask; }
   }
   DEVICE_QUALIFIER bool has_next() const {
     return static_cast<bool>(metadata_ & next_bit_mask_);
@@ -232,53 +237,70 @@ struct hashtable_node_subwarp {
   }
 
   DEVICE_QUALIFIER uint32_t match_key_in_node(const key_type& key, bool more_key) const {
+    auto lane_keystate = get_keystate_from_location(tile_.thread_rank());
     return tile_.ballot(is_valid_lane() &&
                         lane_elem_.key == key &&
-                        get_suffix_of_location(tile_.thread_rank()) == more_key);
+                        keystate_has_more_key(lane_keystate) == more_key);
   }
-  DEVICE_QUALIFIER uint32_t match_key_value_in_node(const key_type& key, const value_type& value, bool more_key) const {
+  DEVICE_QUALIFIER uint32_t match_key_in_node(const key_type& key, uint32_t keystate) const {
+    auto lane_keystate = get_keystate_from_location(tile_.thread_rank());
+    return tile_.ballot(is_valid_lane() &&
+                        lane_elem_.key == key &&
+                        lane_keystate == keystate);
+  }
+  DEVICE_QUALIFIER uint32_t match_key_value_in_node(const key_type& key, const value_type& value, uint32_t keystate) const {
+    auto lane_keystate = get_keystate_from_location(tile_.thread_rank());
     return tile_.ballot(is_valid_lane() &&
                         lane_elem_.key == key &&
                         lane_elem_.value == value &&
-                        get_suffix_of_location(tile_.thread_rank()) == more_key);
+                        lane_keystate == keystate);
   }
 
-  DEVICE_QUALIFIER void insert(const key_type& key, const value_type& value, bool more_key) {
+  DEVICE_QUALIFIER void insert(const key_type& key, const value_type& value, uint32_t keystate) {
     assert(!is_full());
     auto location = num_keys();
     if (tile_.thread_rank() == location) {
       lane_elem_ = {key, value};
     }
-    set_suffix_of_location(location, more_key);
+    if (tile_.thread_rank() == keystate_bits_lane_) {
+      const int key_lane_x2 = 2 * location;
+      lane_elem_.value &= ((1u << key_lane_x2) - 1);
+      lane_elem_.value |= ((keystate & keystate_mask_) << key_lane_x2);
+    }
     metadata_++;    // equiv. to num_keys++
     write_metadata_to_registers();
   }
 
-  DEVICE_QUALIFIER void update(int location, const value_type& value) {
+  DEVICE_QUALIFIER void update(int location, const value_type& value, uint32_t keystate) {
     assert(location < num_keys());
     if (tile_.thread_rank() == location) {
       lane_elem_.value = value;
+    }
+    if (tile_.thread_rank() == keystate_bits_lane_) {
+      auto key_location_x2 = 2 * location;
+      lane_elem_.value &= ~(keystate_mask_ << key_location_x2);
+      lane_elem_.value |= ((keystate & keystate_mask_) << key_location_x2);
     }
   }
 
   DEVICE_QUALIFIER void merge(const hashtable_node_subwarp<tile_type, allocator_type>& next_node) {
     assert(is_mergeable(next_node));
     // copy elements from next node
-    bool suffix_bit = get_suffix_of_location(tile_.thread_rank());
     elem_type shifted_elem;
     auto this_num_keys = num_keys();
     shifted_elem.key = tile_.shfl_up(next_node.lane_elem_.key, this_num_keys);
     shifted_elem.value = tile_.shfl_up(next_node.lane_elem_.value, this_num_keys);
-    bool shifted_suffix_bit = next_node.get_suffix_of_location(tile_.thread_rank() - this_num_keys);
     auto new_num_keys = this_num_keys + next_node.num_keys();
     if (this_num_keys <= tile_.thread_rank() && tile_.thread_rank() < new_num_keys) {
       lane_elem_ = shifted_elem;
-      suffix_bit = shifted_suffix_bit;
+    }
+    if (tile_.thread_rank() == keystate_bits_lane_) {
+      auto num_keys_x2 = 2 * this_num_keys;
+      uint32_t num_keys_x2_mask = ((1u << num_keys_x2) - 1);
+      lane_elem_.value &= num_keys_x2_mask;
+      lane_elem_.value |= ((next_node.lane_elem_.value << num_keys_x2) & ~num_keys_x2_mask);
     }
     set_num_keys(new_num_keys);
-    auto new_suffix_bits = tile_.ballot(suffix_bit);
-    metadata_ &= ~suffix_bits_mask_;
-    metadata_ |= ((new_suffix_bits << suffix_bits_offset_) & suffix_bits_mask_);
     // copy next node's next index
     if (tile_.thread_rank() == next_ptr_lane_) {
       lane_elem_.value = next_node.lane_elem_.value;
@@ -292,20 +314,19 @@ struct hashtable_node_subwarp {
   DEVICE_QUALIFIER void erase(int location) {
     assert(location < num_keys());
     metadata_--;    // equiv. to num_keys--
-    bool suffix_bit = get_suffix_of_location(tile_.thread_rank());
     elem_type down_elem;
     down_elem.key = tile_.shfl_down(lane_elem_.key, 1);
     down_elem.value = tile_.shfl_down(lane_elem_.value, 1);
-    auto down_suffix_bit = get_suffix_of_location(tile_.thread_rank() + 1);
     if (is_valid_lane()) {
       if (tile_.thread_rank() >= location) {
         lane_elem_ = down_elem;
-        suffix_bit = down_suffix_bit;
       }
     }
-    auto new_suffix_bits = tile_.ballot(suffix_bit);
-    metadata_ &= ~suffix_bits_mask_;
-    metadata_ |= ((new_suffix_bits << suffix_bits_offset_) & suffix_bits_mask_);
+    if (tile_.thread_rank() == keystate_bits_lane_) {
+      uint32_t key_lane_x2_mask = ((1u << (2 * location)) - 1);
+      lane_elem_.value = (lane_elem_.value & key_lane_x2_mask) |
+                         ((lane_elem_.value >> 2) & ~key_lane_x2_mask);
+    }
     write_metadata_to_registers();
   }
 
@@ -339,8 +360,14 @@ struct hashtable_node_subwarp {
     for (size_type i = 0; i < num_keys(); ++i) {
       key_type key = get_key_from_location(i);
       value_type value = get_value_from_location(i);
-      bool suffix_bit = get_suffix_of_location(i);
-      if (lead_lane) printf("(%u %u %s) ", key, value, suffix_bit ? "s" : "$");
+      uint32_t keystate = get_keystate_from_location(i);
+      auto keystate_symbol = [](uint32_t keystate) -> const char* {
+        if (keystate == KEYSTATE_VALUE) { return "$"; }
+        if (keystate == KEYSTATE_SUFFIX) { return "s"; }
+        if (keystate == KEYSTATE_LONGVAL) { return "v"; }
+        return "?";
+      };
+      if (lead_lane) printf("(%u %u %s) ", key, value, keystate_symbol(keystate));
     }
     if (lead_lane) printf("%s ", (metadata_ & lock_bit_mask_) ? "locked" : "free");
     size_type next_index = get_next_index();
@@ -352,8 +379,8 @@ struct hashtable_node_subwarp {
     }
     if (lead_lane) printf("}\n");
     for (size_type i = 0; i < num_keys(); ++i) {
-      bool suffix_bit = get_suffix_of_location(i);
-      if (suffix_bit) {
+      uint32_t keystate = get_keystate_from_location(i);
+      if (keystate_has_suffix_ptr(keystate)) {
         size_type suffix_index = get_value_from_location(i);
         auto suffix = suffix_node_subwarp<tile_type, allocator_type>(suffix_index, tile_, allocator_);
         suffix.load_head();
@@ -369,13 +396,19 @@ struct hashtable_node_subwarp {
   allocator_type& allocator_;
 
   // node consists of 2*node_width elements, each mapped to a lane in the tile.
-  //  [key,val0] [key,val1] ... [key,val14] | [metadata,next]
+  //  [key,val0] [key,val1] ... [key,val13] | [-,keystates] [metadata,next]
+
+  // keystates: each key 13-0 has 2 bits (total 28 bits used)
+  //      (MSB)[empty:4][ks13:2][ks12:2]...[ks1:2][ks0:2](LSB)
+  //      Each (key, value) pair has three options:
+  //        (1) keystate=0b00 (key_suffix=0, key_more=0): value is the final value, key ends here
+  //        (2) keystate=0b11 (key_suffix=1, key_more=1): value is link to the suffix info, key continues (but suffix info contains the final value)
+  //        (3) keystate=0b10 (key_suffix=1, key_more=0): value is link to the suffix info but key ends here (final value is long)
 
   // metadata is 32bits.
   //    (MSB)
-  //    [empty:3]
+  //    [empty:18]
   //    [local_depth:6]
-  //    [key_suffix_bits_per_key:15]
   //    [is_garbage:1][is_head:1]
   //    [has_next:1][is_locked:1]
   //    [num_keys:4]
@@ -386,6 +419,7 @@ struct hashtable_node_subwarp {
   static_assert(sizeof(elem_type) == sizeof(uint64_t));
   static constexpr uint32_t metadata_lane_ = node_width - 1;  // key
   static constexpr uint32_t next_ptr_lane_ = node_width - 1;  // value
+  static constexpr uint32_t keystate_bits_lane_ = node_width - 2; // value
   static constexpr uint32_t num_keys_offset_ = 0;
   static constexpr uint32_t num_keys_bits_ = 4;
   static constexpr uint32_t num_keys_mask_ = ((1u << num_keys_bits_) - 1) << num_keys_offset_;
@@ -397,15 +431,15 @@ struct hashtable_node_subwarp {
   static constexpr uint32_t head_bit_mask_ = 1u << head_bit_offset_;
   static constexpr uint32_t garbage_bit_offset_ = 7;
   static constexpr uint32_t garbage_bit_mask_ = 1u << garbage_bit_offset_;
-  static constexpr uint32_t suffix_bits_offset_ = 8;
-  static constexpr uint32_t suffix_bits_bits_ = 15;
-  static constexpr uint32_t suffix_bits_mask_ = ((1u << suffix_bits_bits_) - 1) << suffix_bits_offset_;
-  static constexpr uint32_t local_depth_bits_offset_ = 23;
+  static constexpr uint32_t local_depth_bits_offset_ = 8;
   static constexpr uint32_t local_depth_bits_bits_ = 6;
   static constexpr uint32_t local_depth_bits_mask_ = ((1u << local_depth_bits_bits_) - 1) << local_depth_bits_offset_;
-  static constexpr uint32_t max_num_keys_ = node_width - 1;
+  static constexpr uint32_t max_num_keys_ = node_width - 2;
   static_assert(num_keys_offset_ == 0); // this allows (metadata +/- N) equivalent to (num_keys +/- N) within range
   static_assert(max_num_keys_ == capacity);
 
   uint32_t metadata_;
+  static constexpr uint32_t keystate_mask_more_key_ = 0b01u;
+  static constexpr uint32_t keystate_mask_suffix_ = 0b10u;
+  static constexpr uint32_t keystate_mask_ = 0b11u;
 };

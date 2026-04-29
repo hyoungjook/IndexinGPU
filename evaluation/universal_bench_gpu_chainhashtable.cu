@@ -1,0 +1,3 @@
+#define UNIVERSAL_BENCH_SKIP_MAIN
+#define UNIVERSAL_BENCH_INSTANTIATE_GPU_CHAINHASHTABLE
+#include "universal_bench.cu"

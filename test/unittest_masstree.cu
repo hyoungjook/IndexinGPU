@@ -25,10 +25,9 @@ std::size_t num_keys;
 
 namespace {
 using key_slice_type   = uint32_t;
-using value_type = uint32_t;
+using value_slice_type = uint32_t;
 using size_type = uint32_t;
 
-const auto invalid_value = std::numeric_limits<value_type>::max();
 template <typename Map>
 struct MapData {
   using map = Map;
@@ -81,35 +80,47 @@ struct mapped_vector {
 };
 
 struct testing_input {
-  testing_input(std::size_t input_num_keys, uint32_t input_min_key_length, uint32_t input_max_key_length, bool duplicate = false)
+  testing_input(std::size_t input_num_keys,
+                uint32_t input_min_key_length,
+                uint32_t input_max_key_length,
+                uint32_t input_min_value_length,
+                uint32_t input_max_value_length,
+                bool duplicate = false)
       : num_keys(input_num_keys)
       , min_key_length(input_min_key_length)
       , max_key_length(input_max_key_length)
+      , min_value_length(input_min_value_length)
+      , max_value_length(input_max_value_length)
       , keys(num_keys * max_key_length)
       , lengths(num_keys)
-      , values(num_keys)
-      , values2(num_keys)
+      , values(num_keys * max_value_length)
+      , value_lengths(num_keys)
+      , values2(num_keys * max_value_length)
       , keys_not_exist(input_num_keys * max_key_length)
   {
     assert(min_key_length <= max_key_length);
     make_input(duplicate);
   }
   void make_input(bool duplicate = false) {
-    uint32_t key_length_modulo = max_key_length - min_key_length + 1;
+    std::mt19937 rng(0);
+    std::uniform_int_distribution<uint32_t> key_length_dist(min_key_length, max_key_length);
+    std::uniform_int_distribution<uint32_t> value_length_dist(min_value_length, max_value_length);
     for (std::size_t i = 0; i < num_keys; i++) {
-      uint32_t key_length = min_key_length + (i % key_length_modulo);
-      value_type value = 0;
+      uint32_t key_length = key_length_dist(rng);
+      uint32_t value_length = value_length_dist(rng);
       for (uint32_t s = 0; s < key_length; s++) {
         uint32_t common_prefix_factor = 1u << (key_length - 1 - s);
         uint32_t effective_i = i / common_prefix_factor;
         key_slice_type key_slice = static_cast<key_slice_type>(effective_i + 1) * 2 + s;
         keys[i * max_key_length + s] = key_slice;
         keys_not_exist[i * max_key_length + s] = key_slice + 1;
-        value += key_slice;
+      }
+      for (uint32_t s = 0; s < value_length; s++) {
+        values[i * max_value_length + s] = i + 1;
+        values2[i * max_value_length + s] = i + 7;
       }
       lengths[i] = key_length;
-      values[i] = value;
-      values2[i] = value + 7;
+      value_lengths[i] = value_length;
     }
     if (duplicate) {
       for (std::size_t i = (num_keys + 1) / 2; i < num_keys; i++) {
@@ -118,9 +129,12 @@ struct testing_input {
           keys[i * max_key_length + s] = keys[src_i * max_key_length + s];
           keys_not_exist[i * max_key_length + s] = keys_not_exist[src_i * max_key_length + s];
         }
+        for (uint32_t s = 0; s < max_value_length; s++) {
+          values[i * max_value_length + s] = values[src_i * max_value_length + s];
+          values2[i * max_value_length + s] = values2[src_i * max_value_length + s];
+        }
         lengths[i] = lengths[src_i];
-        values[i] = values[src_i];
-        values2[i] = values[i] + 7;
+        value_lengths[i] = value_lengths[src_i];
       }
     }
   }
@@ -128,6 +142,7 @@ struct testing_input {
     keys.free();
     lengths.free();
     values.free();
+    value_lengths.free();
     values2.free();
     keys_not_exist.free();
   }
@@ -145,21 +160,27 @@ struct testing_input {
     // rearrange
     mapped_vector<key_slice_type> sorted_keys(keys.size());
     mapped_vector<size_type> sorted_lengths(lengths.size());
-    mapped_vector<value_type> sorted_values(values.size());
+    mapped_vector<value_slice_type> sorted_values(values.size());
+    mapped_vector<size_type> sorted_value_lengths(value_lengths.size());
     for (std::size_t i = 0; i < num_keys; i++) {
       std::size_t old_i = order[i];
       for (uint32_t s = 0; s < max_key_length; s++) {
         sorted_keys[i * max_key_length + s] = keys[old_i * max_key_length + s];
       }
+      for (uint32_t s = 0; s < max_value_length; s++) {
+        sorted_values[i * max_value_length + s] = values[old_i * max_value_length + s];
+      }
       sorted_lengths[i] = lengths[old_i];
-      sorted_values[i] = values[old_i];
+      sorted_value_lengths[i] = value_lengths[old_i];
     }
     keys.free();
     lengths.free();
     values.free();
+    value_lengths.free();
     keys = sorted_keys;
     lengths = sorted_lengths;
     values = sorted_values;
+    value_lengths = sorted_value_lengths;
   }
   void shuffle() {
     // decide order
@@ -170,30 +191,39 @@ struct testing_input {
     // rearrange
     mapped_vector<key_slice_type> sorted_keys(keys.size());
     mapped_vector<size_type> sorted_lengths(lengths.size());
-    mapped_vector<value_type> sorted_values(values.size());
+    mapped_vector<value_slice_type> sorted_values(values.size());
+    mapped_vector<size_type> sorted_value_lengths(value_lengths.size());
     for (std::size_t i = 0; i < num_keys; i++) {
       std::size_t old_i = order[i];
       for (uint32_t s = 0; s < max_key_length; s++) {
         sorted_keys[i * max_key_length + s] = keys[old_i * max_key_length + s];
       }
+      for (uint32_t s = 0; s < max_value_length; s++) {
+        sorted_values[i * max_value_length + s] = values[old_i * max_value_length + s];
+      }
       sorted_lengths[i] = lengths[old_i];
-      sorted_values[i] = values[old_i];
+      sorted_value_lengths[i] = value_lengths[old_i];
     }
     keys.free();
     lengths.free();
     values.free();
+    value_lengths.free();
     keys = sorted_keys;
     lengths = sorted_lengths;
     values = sorted_values;
+    value_lengths = sorted_value_lengths;
   }
 
   std::size_t num_keys;
   uint32_t min_key_length;
   uint32_t max_key_length;
+  uint32_t min_value_length;
+  uint32_t max_value_length;
   mapped_vector<key_slice_type> keys;
   mapped_vector<size_type> lengths;
-  mapped_vector<value_type> values;
-  mapped_vector<value_type> values2;
+  mapped_vector<value_slice_type> values;
+  mapped_vector<size_type> value_lengths;
+  mapped_vector<value_slice_type> values2;
   mapped_vector<key_slice_type> keys_not_exist;
 };
 
@@ -201,6 +231,7 @@ struct testing_range_input {
   testing_range_input(testing_input& input_, uint32_t input_num_queries, uint32_t input_max_count_per_query)
       : input(input_)
       , max_key_length(input.max_key_length)
+      , max_value_length(input.max_value_length)
       , num_queries(input_num_queries)
       , max_count_per_query(input_max_count_per_query)
       , lower_keys(num_queries * max_key_length)
@@ -208,7 +239,8 @@ struct testing_range_input {
       , lower_lengths(num_queries)
       , upper_lengths(num_queries)
       , counts(num_queries)
-      , values(num_queries * max_count_per_query)
+      , values(num_queries * max_count_per_query * max_value_length)
+      , value_lengths(num_queries * max_count_per_query)
       , out_keys(num_queries * max_count_per_query * max_key_length)
       , out_key_lengths(num_queries * max_count_per_query)
   {
@@ -232,7 +264,11 @@ struct testing_range_input {
       upper_lengths[i] = input.lengths[end];
       counts[i] = min(count, max_count_per_query);
       for (uint32_t v = 0; v < counts[i]; v++) {
-        values[i * max_count_per_query + v] = input.values[begin + v];
+        for (uint32_t ss = 0; ss < max_value_length; ss++) {
+          values[(i * max_count_per_query + v) * max_value_length + ss] =
+            input.values[(begin + v) * max_value_length + ss];
+        }
+        value_lengths[i * max_count_per_query + v] = input.value_lengths[begin + v];
         for (uint32_t ss = 0; ss < max_key_length; ss++) {
           out_keys[i * max_count_per_query * max_key_length + v * max_key_length + ss] =
               input.keys[(begin + v) * max_key_length + ss];
@@ -248,18 +284,21 @@ struct testing_range_input {
     upper_lengths.free();
     counts.free();
     values.free();
+    value_lengths.free();
     out_keys.free();
     out_key_lengths.free();
   }
 
   testing_input& input;
   uint32_t max_key_length;
+  uint32_t max_value_length;
   uint32_t num_queries;
   uint32_t max_count_per_query;
   mapped_vector<key_slice_type> lower_keys, upper_keys;
   mapped_vector<size_type> lower_lengths, upper_lengths;
   mapped_vector<size_type> counts;
-  mapped_vector<size_type> values;
+  mapped_vector<value_slice_type> values;
+  mapped_vector<size_type> value_lengths;
   mapped_vector<key_slice_type> out_keys;
   mapped_vector<size_type> out_key_lengths;
 };
@@ -277,209 +316,226 @@ typedef testing::Types<
 TYPED_TEST_SUITE(MapTest, Implementations);
 
 template <typename map_type>
-void validate(map_type* map, uint32_t min_key_length_bytes, uint32_t max_key_length_bytes) {
-  const size_type min_key_length = min_key_length_bytes / sizeof(key_slice_type);
-  const size_type max_key_length = max_key_length_bytes / sizeof(key_slice_type);
-  testing_input input(num_keys, min_key_length, max_key_length);
-  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), num_keys);
+void validate(map_type* map, uint32_t min_key_length, uint32_t max_key_length, uint32_t min_value_length, uint32_t max_value_length) {
+  testing_input input(num_keys, min_key_length, max_key_length, min_value_length, max_value_length);
+  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), max_value_length, input.value_lengths.data(), num_keys);
   EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   map->validate();
   input.free();
 }
 
 template <typename map_type>
-void test_exist(map_type* map, uint32_t min_key_length_bytes, uint32_t max_key_length_bytes) {
-  const size_type min_key_length = min_key_length_bytes / sizeof(key_slice_type);
-  const size_type max_key_length = max_key_length_bytes / sizeof(key_slice_type);
-  mapped_vector<value_type> find_results(num_keys);
-  testing_input input(num_keys, min_key_length, max_key_length);
-  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), num_keys);
+void test_exist(map_type* map, uint32_t min_key_length, uint32_t max_key_length, uint32_t min_value_length, uint32_t max_value_length) {
+  mapped_vector<value_slice_type> find_values(num_keys * max_value_length);
+  mapped_vector<size_type> find_value_lengths(num_keys);
+  testing_input input(num_keys, min_key_length, max_key_length, min_value_length, max_value_length);
+  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), max_value_length, input.value_lengths.data(), num_keys);
   cuda_try(cudaDeviceSynchronize());
-  map->find(input.keys.data(), max_key_length, input.lengths.data(), find_results.data(), num_keys);
+  map->find(input.keys.data(), max_key_length, input.lengths.data(), find_values.data(), max_value_length, find_value_lengths.data(), num_keys);
   EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   for (std::size_t i = 0; i < num_keys; i++) {
-    auto expected_value = input.values[i];
-    auto found_value    = find_results[i];
-    ASSERT_EQ(found_value, expected_value);
+    auto expected_value_length = input.value_lengths[i];
+    auto found_value_length = find_value_lengths[i];
+    ASSERT_EQ(found_value_length, expected_value_length);
+    for (uint32_t s = 0; s < expected_value_length; s++) {
+      auto expected_value_slice = input.values[i * max_value_length + s];
+      auto found_value_slice = find_values[i * max_value_length + s];
+      ASSERT_EQ(expected_value_slice, found_value_slice);
+    }
   }
-  find_results.free();
+  find_values.free();
+  find_value_lengths.free();
   input.free();
 }
 
 template <typename map_type>
-void test_notexist(map_type* map, uint32_t min_key_length_bytes, uint32_t max_key_length_bytes) {
-  const size_type min_key_length = min_key_length_bytes / sizeof(key_slice_type);
-  const size_type max_key_length = max_key_length_bytes / sizeof(key_slice_type);
-  mapped_vector<value_type> find_results(num_keys);
-  testing_input input(num_keys, min_key_length, max_key_length);
-  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), num_keys);
+void test_notexist(map_type* map, uint32_t min_key_length, uint32_t max_key_length, uint32_t min_value_length, uint32_t max_value_length) {
+  mapped_vector<value_slice_type> find_values(num_keys * max_value_length);
+  mapped_vector<size_type> find_value_lengths(num_keys);
+  testing_input input(num_keys, min_key_length, max_key_length, min_value_length, max_value_length);
+  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), max_value_length, input.value_lengths.data(), num_keys);
   cuda_try(cudaDeviceSynchronize());
-  map->find(input.keys_not_exist.data(), max_key_length, input.lengths.data(), find_results.data(), num_keys);
+  map->find(input.keys_not_exist.data(), max_key_length, input.lengths.data(), find_values.data(), max_value_length, find_value_lengths.data(), num_keys);
   EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   for (std::size_t i = 0; i < num_keys; i++) {
-    auto expected_value = invalid_value;
-    auto found_value    = find_results[i];
-    ASSERT_EQ(found_value, expected_value);
+    auto expected_value_length = 0;
+    auto found_value_length = find_value_lengths[i];
+    ASSERT_EQ(found_value_length, expected_value_length);
   }
-  find_results.free();
+  find_values.free();
+  find_value_lengths.free();
   input.free();
 }
 
 template <typename map_type>
-void test_update(map_type* map, uint32_t min_key_length_bytes, uint32_t max_key_length_bytes) {
-  const size_type min_key_length = min_key_length_bytes / sizeof(key_slice_type);
-  const size_type max_key_length = max_key_length_bytes / sizeof(key_slice_type);
-  mapped_vector<value_type> find_results(num_keys);
-  testing_input input(num_keys, min_key_length, max_key_length);
-  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), num_keys);
+void test_update(map_type* map, uint32_t min_key_length, uint32_t max_key_length, uint32_t min_value_length, uint32_t max_value_length) {
+  mapped_vector<value_slice_type> find_values(num_keys * max_value_length);
+  mapped_vector<size_type> find_value_lengths(num_keys);
+  testing_input input(num_keys, min_key_length, max_key_length, min_value_length, max_value_length);
+  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), max_value_length, input.value_lengths.data(), num_keys);
   cuda_try(cudaDeviceSynchronize());
-  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values2.data(), num_keys, 0, true);
+  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values2.data(), max_value_length, input.value_lengths.data(), num_keys, 0, true);
   cuda_try(cudaDeviceSynchronize());
-  map->find(input.keys.data(), max_key_length, input.lengths.data(), find_results.data(), num_keys);
+  map->find(input.keys.data(), max_key_length, input.lengths.data(), find_values.data(), max_value_length, find_value_lengths.data(), num_keys);
   EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   for (std::size_t i = 0; i < num_keys; i++) {
-    auto expected_value = input.values2[i];
-    auto found_value    = find_results[i];
-    ASSERT_EQ(found_value, expected_value);
+    auto expected_value_length = input.value_lengths[i];
+    auto found_value_length = find_value_lengths[i];
+    ASSERT_EQ(found_value_length, expected_value_length);
+    for (uint32_t s = 0; s < expected_value_length; s++) {
+      auto expected_value_slice = input.values2[i * max_value_length + s];
+      auto found_value_slice = find_values[i * max_value_length + s];
+      ASSERT_EQ(expected_value_slice, found_value_slice);
+    }
   }
-  find_results.free();
+  find_values.free();
+  find_value_lengths.free();
   input.free();
 }
 
 template <typename map_type>
-void test_eraseall(map_type* map, uint32_t min_key_length_bytes, uint32_t max_key_length_bytes) {
-  const size_type min_key_length = min_key_length_bytes / sizeof(key_slice_type);
-  const size_type max_key_length = max_key_length_bytes / sizeof(key_slice_type);
-  mapped_vector<value_type> find_results(num_keys);
-  testing_input input(num_keys, min_key_length, max_key_length);
-  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), num_keys);
+void test_eraseall(map_type* map, uint32_t min_key_length, uint32_t max_key_length, uint32_t min_value_length, uint32_t max_value_length) {
+  mapped_vector<value_slice_type> find_values(num_keys * max_value_length);
+  mapped_vector<size_type> find_value_lengths(num_keys);
+  testing_input input(num_keys, min_key_length, max_key_length, min_value_length, max_value_length);
+  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), max_value_length, input.value_lengths.data(), num_keys);
   cuda_try(cudaDeviceSynchronize());
   map->erase(input.keys.data(), max_key_length, input.lengths.data(), num_keys);
   cuda_try(cudaDeviceSynchronize());
-  map->find(input.keys.data(), max_key_length, input.lengths.data(), find_results.data(), num_keys);
+  map->find(input.keys.data(), max_key_length, input.lengths.data(), find_values.data(), max_value_length, find_value_lengths.data(), num_keys);
   EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   for (std::size_t i = 0; i < num_keys; i++) {
-    auto expected_value = invalid_value;
-    auto found_value    = find_results[i];
-    ASSERT_EQ(found_value, expected_value);
+    auto expected_value_length = 0;
+    auto found_value_length = find_value_lengths[i];
+    ASSERT_EQ(found_value_length, expected_value_length);
   }
   map->validate();
-  find_results.free();
+  find_values.free();
+  find_value_lengths.free();
   input.free();
 }
 
 template <typename map_type>
-void test_erasenone(map_type* map, uint32_t min_key_length_bytes, uint32_t max_key_length_bytes) {
-  const size_type min_key_length = min_key_length_bytes / sizeof(key_slice_type);
-  const size_type max_key_length = max_key_length_bytes / sizeof(key_slice_type);
-  mapped_vector<value_type> find_results(num_keys);
-  testing_input input(num_keys, min_key_length, max_key_length);
-  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), num_keys);
+void test_erasenone(map_type* map, uint32_t min_key_length, uint32_t max_key_length, uint32_t min_value_length, uint32_t max_value_length) {
+  mapped_vector<value_slice_type> find_values(num_keys * max_value_length);
+  mapped_vector<size_type> find_value_lengths(num_keys);
+  testing_input input(num_keys, min_key_length, max_key_length, min_value_length, max_value_length);
+  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), max_value_length, input.value_lengths.data(), num_keys);
   cuda_try(cudaDeviceSynchronize());
   map->erase(input.keys_not_exist.data(), max_key_length, input.lengths.data(), num_keys);
   cuda_try(cudaDeviceSynchronize());
-  map->find(input.keys.data(), max_key_length, input.lengths.data(), find_results.data(), num_keys);
+  map->find(input.keys.data(), max_key_length, input.lengths.data(), find_values.data(), max_value_length, find_value_lengths.data(), num_keys);
   EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   for (std::size_t i = 0; i < num_keys; i++) {
-    auto expected_value = input.values[i];
-    auto found_value    = find_results[i];
-    ASSERT_EQ(found_value, expected_value);
+    auto expected_value_length = input.value_lengths[i];
+    auto found_value_length = find_value_lengths[i];
+    ASSERT_EQ(found_value_length, expected_value_length);
+    for (uint32_t s = 0; s < expected_value_length; s++) {
+      auto expected_value_slice = input.values[i * max_value_length + s];
+      auto found_value_slice = find_values[i * max_value_length + s];
+      ASSERT_EQ(expected_value_slice, found_value_slice);
+    }
   }
-  find_results.free();
+  find_values.free();
+  find_value_lengths.free();
   input.free();
 }
 
 template <typename map_type>
-void test_inserttwiceeraseall(map_type* map, uint32_t min_key_length_bytes, uint32_t max_key_length_bytes) {
-  const size_type min_key_length = min_key_length_bytes / sizeof(key_slice_type);
-  const size_type max_key_length = max_key_length_bytes / sizeof(key_slice_type);
-  mapped_vector<value_type> find_results(num_keys);
-  testing_input input(num_keys, min_key_length, max_key_length, true);
-  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), num_keys);
+void test_inserttwiceeraseall(map_type* map, uint32_t min_key_length, uint32_t max_key_length, uint32_t min_value_length, uint32_t max_value_length) {
+  mapped_vector<value_slice_type> find_values(num_keys * max_value_length);
+  mapped_vector<size_type> find_value_lengths(num_keys);
+  testing_input input(num_keys, min_key_length, max_key_length, min_value_length, max_value_length, true);
+  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), max_value_length, input.value_lengths.data(), num_keys);
   cuda_try(cudaDeviceSynchronize());
   map->erase(input.keys.data(), max_key_length, input.lengths.data(), num_keys);
   cuda_try(cudaDeviceSynchronize());
-  map->find(input.keys.data(), max_key_length, input.lengths.data(), find_results.data(), num_keys);
+  map->find(input.keys.data(), max_key_length, input.lengths.data(), find_values.data(), max_value_length, find_value_lengths.data(), num_keys);
   EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   for (std::size_t i = 0; i < num_keys; i++) {
-    auto expected_value = invalid_value;
-    auto found_value    = find_results[i];
-    ASSERT_EQ(found_value, expected_value);
+    auto expected_value_length = 0;
+    auto found_value_length = find_value_lengths[i];
+    ASSERT_EQ(found_value_length, expected_value_length);
   }
-  find_results.free();
+  find_values.free();
+  find_value_lengths.free();
   input.free();
 }
 
 template <typename map_type>
-void test_eraseallinsertall(map_type* map, uint32_t min_key_length_bytes, uint32_t max_key_length_bytes) {
-  const size_type min_key_length = min_key_length_bytes / sizeof(key_slice_type);
-  const size_type max_key_length = max_key_length_bytes / sizeof(key_slice_type);
-  mapped_vector<value_type> find_results(num_keys);
-  testing_input input(num_keys, min_key_length, max_key_length);
-  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), num_keys);
+void test_eraseallinsertall(map_type* map, uint32_t min_key_length, uint32_t max_key_length, uint32_t min_value_length, uint32_t max_value_length) {
+  mapped_vector<value_slice_type> find_values(num_keys * max_value_length);
+  mapped_vector<size_type> find_value_lengths(num_keys);
+  testing_input input(num_keys, min_key_length, max_key_length, min_value_length, max_value_length);
+  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), max_value_length, input.value_lengths.data(), num_keys);
   cuda_try(cudaDeviceSynchronize());
   map->erase(input.keys.data(), max_key_length, input.lengths.data(), num_keys);
   cuda_try(cudaDeviceSynchronize());
-  map->find(input.keys.data(), max_key_length, input.lengths.data(), find_results.data(), num_keys);
+  map->find(input.keys.data(), max_key_length, input.lengths.data(), find_values.data(), max_value_length, find_value_lengths.data(), num_keys);
   EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   for (std::size_t i = 0; i < num_keys; i++) {
-    auto expected_value = invalid_value;
-    auto found_value    = find_results[i];
-    ASSERT_EQ(found_value, expected_value);
+    auto expected_value_length = 0;
+    auto found_value_length = find_value_lengths[i];
+    ASSERT_EQ(found_value_length, expected_value_length);
   }
-  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), num_keys);
+  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), max_value_length, input.value_lengths.data(), num_keys);
   cuda_try(cudaDeviceSynchronize());
-  map->find(input.keys.data(), max_key_length, input.lengths.data(), find_results.data(), num_keys);
+  map->find(input.keys.data(), max_key_length, input.lengths.data(), find_values.data(), max_value_length, find_value_lengths.data(), num_keys);
   EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   for (std::size_t i = 0; i < num_keys; i++) {
-    auto expected_value = input.values[i];
-    auto found_value    = find_results[i];
-    ASSERT_EQ(found_value, expected_value);
+    auto expected_value_length = input.value_lengths[i];
+    auto found_value_length = find_value_lengths[i];
+    ASSERT_EQ(found_value_length, expected_value_length);
+    for (uint32_t s = 0; s < expected_value_length; s++) {
+      auto expected_value_slice = input.values[i * max_value_length + s];
+      auto found_value_slice = find_values[i * max_value_length + s];
+      ASSERT_EQ(expected_value_slice, found_value_slice);
+    }
   }
-  find_results.free();
+  find_values.free();
+  find_value_lengths.free();
   input.free();
 }
 
 template <typename map_type>
-void test_erasealltwice(map_type* map, uint32_t min_key_length_bytes, uint32_t max_key_length_bytes) {
-  const size_type min_key_length = min_key_length_bytes / sizeof(key_slice_type);
-  const size_type max_key_length = max_key_length_bytes / sizeof(key_slice_type);
-  mapped_vector<value_type> find_results(num_keys);
-  testing_input input(num_keys, min_key_length, max_key_length, true);
+void test_erasealltwice(map_type* map, uint32_t min_key_length, uint32_t max_key_length, uint32_t min_value_length, uint32_t max_value_length) {
+  mapped_vector<value_slice_type> find_values(num_keys * max_value_length);
+  mapped_vector<size_type> find_value_lengths(num_keys);
+  testing_input input(num_keys, min_key_length, max_key_length, min_value_length, max_value_length, true);
   auto half_num_keys = (num_keys + 1) / 2;
-  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), half_num_keys);
+  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), max_value_length, input.value_lengths.data(), half_num_keys);
   cuda_try(cudaDeviceSynchronize());
   map->erase(input.keys.data(), max_key_length, input.lengths.data(), num_keys);
   cuda_try(cudaDeviceSynchronize());
-  map->find(input.keys.data(), max_key_length, input.lengths.data(), find_results.data(), half_num_keys);
+  map->find(input.keys.data(), max_key_length, input.lengths.data(), find_values.data(), max_value_length, find_value_lengths.data(), half_num_keys);
   EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   for (std::size_t i = 0; i < half_num_keys; i++) {
-    auto expected_value = invalid_value;
-    auto found_value    = find_results[i];
-    ASSERT_EQ(found_value, expected_value);
+    auto expected_value_length = 0;
+    auto found_value_length = find_value_lengths[i];
+    ASSERT_EQ(found_value_length, expected_value_length);
   }
-  find_results.free();
+  find_values.free();
+  find_value_lengths.free();
   input.free();
 }
 
 template <typename map_type>
-void test_scan(map_type* map, uint32_t min_key_length_bytes, uint32_t max_key_length_bytes) {
-  const size_type min_key_length = min_key_length_bytes / sizeof(key_slice_type);
-  const size_type max_key_length = max_key_length_bytes / sizeof(key_slice_type);
+void test_scan(map_type* map, uint32_t min_key_length, uint32_t max_key_length, uint32_t min_value_length, uint32_t max_value_length) {
   uint32_t num_queries = num_keys / 2;
   uint32_t max_count_per_query = 10;
   mapped_vector<size_type> result_counts(num_queries);
-  mapped_vector<value_type> result_values(num_queries * max_count_per_query);
+  mapped_vector<value_slice_type> result_values(num_queries * max_count_per_query * max_value_length);
+  mapped_vector<size_type> result_value_lengths(num_queries * max_count_per_query);
   mapped_vector<key_slice_type> result_keys(num_queries * max_count_per_query * max_key_length);
   mapped_vector<size_type> result_key_lengths(num_queries * max_count_per_query);
-  testing_input input(num_keys, min_key_length, max_key_length);
+  testing_input input(num_keys, min_key_length, max_key_length, min_value_length, max_value_length);
   testing_range_input rinput(input, num_queries, max_count_per_query);
-  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), num_keys);
+  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), max_value_length, input.value_lengths.data(), num_keys);
   cuda_try(cudaDeviceSynchronize());
   map->scan(rinput.lower_keys.data(), rinput.lower_lengths.data(),
              max_key_length, max_count_per_query, num_queries,
              rinput.upper_keys.data(), rinput.upper_lengths.data(),
-             result_counts.data(), result_values.data(),
+             result_counts.data(), result_values.data(), max_value_length, result_value_lengths.data(),
              result_keys.data(), result_key_lengths.data());
   EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   for (std::size_t i = 0; i < num_queries; i++) {
@@ -487,9 +543,14 @@ void test_scan(map_type* map, uint32_t min_key_length_bytes, uint32_t max_key_le
     auto found_count    = result_counts[i];
     ASSERT_EQ(found_count, expected_count);
     for (uint32_t v = 0; v < expected_count; v++) {
-      auto expected_value = rinput.values[i * max_count_per_query + v];
-      auto found_value = result_values[i * max_count_per_query + v];
-      ASSERT_EQ(found_value, expected_value);
+      auto expected_value_length = rinput.value_lengths[i * max_count_per_query + v];
+      auto found_value_length = result_value_lengths[i * max_count_per_query + v];
+      ASSERT_EQ(expected_value_length, found_value_length);
+      for (uint32_t s = 0; s < expected_value_length; s++) {
+        auto expected_value_slice = rinput.values[(i * max_count_per_query + v) * max_value_length + s];
+        auto found_value_slice = result_values[(i * max_count_per_query + v) * max_value_length + s];
+        ASSERT_EQ(expected_value_slice, found_value_slice);
+      }
       auto expected_length = rinput.out_key_lengths[i * max_count_per_query + v];
       auto found_length = result_key_lengths[i * max_count_per_query + v];
       ASSERT_EQ(found_length, expected_length);
@@ -502,16 +563,16 @@ void test_scan(map_type* map, uint32_t min_key_length_bytes, uint32_t max_key_le
   }
   result_counts.free();
   result_values.free();
+  result_value_lengths.free();
   rinput.free();
   input.free();
 }
 
 template <typename map_type>
-void test_concurrentmix(map_type* map, uint32_t min_key_length_bytes, uint32_t max_key_length_bytes) {
-  const size_type min_key_length = min_key_length_bytes / sizeof(key_slice_type);
-  const size_type max_key_length = max_key_length_bytes / sizeof(key_slice_type);
-  mapped_vector<value_type> find_results(num_keys);
-  testing_input input(num_keys, min_key_length, max_key_length);
+void test_concurrentmix(map_type* map, uint32_t min_key_length, uint32_t max_key_length, uint32_t min_value_length, uint32_t max_value_length) {
+  mapped_vector<value_slice_type> find_values(num_keys * max_value_length);
+  mapped_vector<size_type> find_value_lengths(num_keys);
+  testing_input input(num_keys, min_key_length, max_key_length, min_value_length, max_value_length);
   input.shuffle();
   // keys: [A: num_keys/4][B: num_keys/4][C: num_keys/4][D: num_keys/4]
   std::size_t num_keyset = num_keys / 4;
@@ -526,7 +587,8 @@ void test_concurrentmix(map_type* map, uint32_t min_key_length_bytes, uint32_t m
   mapped_vector<kernels::request_type> mix_types(mix_num_requests);
   mapped_vector<key_slice_type> mix_keys(mix_num_requests * max_key_length);
   mapped_vector<size_type> mix_lengths(mix_num_requests);
-  mapped_vector<value_type> mix_values(mix_num_requests);
+  mapped_vector<value_slice_type> mix_values(mix_num_requests * max_value_length);
+  mapped_vector<size_type> mix_value_lengths(mix_num_requests);
   mapped_vector<bool> mix_results(mix_num_requests);
   std::vector<std::size_t> shuffle_order(mix_num_requests);
   std::vector<std::size_t> shuffle_order_inverse(mix_num_requests);
@@ -544,8 +606,12 @@ void test_concurrentmix(map_type* map, uint32_t min_key_length_bytes, uint32_t m
         mix_keys[shuffled_dst_i * max_key_length + s] = input.keys[src_i * max_key_length + s];
       }
       mix_lengths[shuffled_dst_i] = input.lengths[src_i];
-      if (type == kernels::request_type_insert) { mix_values[shuffled_dst_i] = input.values[src_i]; }
-      else { mix_values[shuffled_dst_i] = invalid_value; }
+      if (type == kernels::request_type_insert) {
+        for (uint32_t s = 0; s < max_value_length; s++) {
+          mix_values[shuffled_dst_i * max_value_length + s] = input.values[src_i * max_value_length + s];
+        }
+        mix_value_lengths[shuffled_dst_i] = input.value_lengths[src_i];
+      }
       mix_results[shuffled_dst_i] = false;
       shuffle_order_inverse[shuffled_dst_i] = dst_i;
     }
@@ -559,10 +625,10 @@ void test_concurrentmix(map_type* map, uint32_t min_key_length_bytes, uint32_t m
   fill_requests(6 * num_keyset, offset_keysetB, kernels::request_type_erase);
   fill_requests(7 * num_keyset, offset_keysetD, kernels::request_type_erase);
   // 1. insert A, B
-  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), 2 * num_keyset);
+  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), max_value_length, input.value_lengths.data(), 2 * num_keyset);
   cuda_try(cudaDeviceSynchronize());
   // 2. concurrent mix
-  map->mixed_batch(mix_types.data(), mix_keys.data(), max_key_length, mix_lengths.data(), mix_values.data(), mix_results.data(), mix_num_requests);
+  map->mixed_batch(mix_types.data(), mix_keys.data(), max_key_length, mix_lengths.data(), mix_values.data(), max_value_length, mix_value_lengths.data(), mix_results.data(), mix_num_requests);
   cuda_try(cudaDeviceSynchronize());
   // on order before shuffle, result should be:
   //    [insert A: fail][insert C: success]
@@ -579,14 +645,19 @@ void test_concurrentmix(map_type* map, uint32_t min_key_length_bytes, uint32_t m
     else if (dst_i < 6 * num_keyset) {
       ASSERT_EQ(mix_types[i], kernels::request_type_find);
       if (dst_i < 3 * num_keyset) {
-        auto expected_result = input.values[dst_i - 2 * num_keyset];
-        auto found_result = mix_values[i];
-        ASSERT_EQ(expected_result, found_result);
+        auto expected_value_length = input.value_lengths[dst_i - 2 * num_keyset];
+        auto found_value_length = mix_value_lengths[i];
+        ASSERT_EQ(expected_value_length, found_value_length);
+        for (uint32_t s = 0; s < expected_value_length; s++) {
+          auto expected_value_slice = input.values[(dst_i - 2 * num_keyset) * max_value_length + s];
+          auto found_value_slice = mix_values[i * max_value_length + s];
+          ASSERT_EQ(expected_value_slice, found_value_slice);
+        }
       }
       else if (5 * num_keyset <= dst_i) {
-        auto expected_result = invalid_value;
-        auto found_result = mix_values[i];
-        ASSERT_EQ(expected_result, found_result);
+        auto expected_value_length = 0;
+        auto found_value_length = mix_value_lengths[i];
+        ASSERT_EQ(expected_value_length, found_value_length);
       }
     }
     else {
@@ -597,64 +668,79 @@ void test_concurrentmix(map_type* map, uint32_t min_key_length_bytes, uint32_t m
     }
   }
   // 3. find all
-  map->find(input.keys.data(), max_key_length, input.lengths.data(), find_results.data(), 4 * num_keyset);
+  map->find(input.keys.data(), max_key_length, input.lengths.data(), find_values.data(), max_value_length, find_value_lengths.data(), 4 * num_keyset);
   cuda_try(cudaDeviceSynchronize());
   // A, C should exist; B, D should not
   for (std::size_t i = 0; i < 4 * num_keyset; i++) {
-    auto expected_value = (i < num_keyset || (2 * num_keyset <= i && i < 3 * num_keyset)) ? input.values[i] : invalid_value;
-    auto found_value    = find_results[i];
-    ASSERT_EQ(found_value, expected_value);
+    auto expected_value_length = (i < num_keyset || (2 * num_keyset <= i && i < 3 * num_keyset)) ? input.value_lengths[i] : 0;
+    auto found_value_length = find_value_lengths[i];
+    ASSERT_EQ(found_value_length, expected_value_length);
+    for (uint32_t s = 0; s < expected_value_length; s++) {
+      auto expected_value_slice = input.values[i * max_value_length + s];
+      auto found_value_slice = find_values[i * max_value_length + s];
+      ASSERT_EQ(found_value_slice, expected_value_slice);
+    }
   }
-  find_results.free();
+  find_values.free();
+  find_value_lengths.free();
   input.free();
   mix_types.free();
   mix_keys.free();
   mix_lengths.free();
   mix_values.free();
+  mix_value_lengths.free();
   mix_results.free();
 }
 
-#define DECLARE_TESTS_FOR_KEY_LENGTHS(min_length, max_length) \
-TYPED_TEST(MapTest, Validate##min_length##_##max_length) { \
-  validate(this->map_, min_length, max_length); \
+#define DECLARE_TESTS_FOR_KEY_LENGTHS(min_length, max_length, min_val_length, max_val_length) \
+TYPED_TEST(MapTest, Validate__K##min_length##_##max_length##__V##min_val_length##_##max_val_length) { \
+  validate(this->map_, min_length, max_length, min_val_length, max_val_length); \
 } \
-TYPED_TEST(MapTest, FindExist##min_length##_##max_length) { \
-  test_exist(this->map_, min_length, max_length); \
+TYPED_TEST(MapTest, FindExist__K##min_length##_##max_length##__V##min_val_length##_##max_val_length) { \
+  test_exist(this->map_, min_length, max_length, min_val_length, max_val_length); \
 } \
-TYPED_TEST(MapTest, FindNotExist##min_length##_##max_length) { \
-  test_notexist(this->map_, min_length, max_length); \
+TYPED_TEST(MapTest, FindNotExist__K##min_length##_##max_length##__V##min_val_length##_##max_val_length) { \
+  test_notexist(this->map_, min_length, max_length, min_val_length, max_val_length); \
 } \
-TYPED_TEST(MapTest, Update##min_length##_##max_length) { \
-  test_update(this->map_, min_length, max_length); \
+TYPED_TEST(MapTest, Update__K##min_length##_##max_length##__V##min_val_length##_##max_val_length) { \
+  test_update(this->map_, min_length, max_length, min_val_length, max_val_length); \
 } \
-TYPED_TEST(MapTest, EraseAll##min_length##_##max_length) { \
-  test_eraseall(this->map_, min_length, max_length); \
+TYPED_TEST(MapTest, EraseAll__K##min_length##_##max_length##__V##min_val_length##_##max_val_length) { \
+  test_eraseall(this->map_, min_length, max_length, min_val_length, max_val_length); \
 } \
-TYPED_TEST(MapTest, EraseNone##min_length##_##max_length) { \
-  test_erasenone(this->map_, min_length, max_length); \
+TYPED_TEST(MapTest, EraseNone__K##min_length##_##max_length##__V##min_val_length##_##max_val_length) { \
+  test_erasenone(this->map_, min_length, max_length, min_val_length, max_val_length); \
 } \
-TYPED_TEST(MapTest, InsertTwiceEraseAll##min_length##_##max_length) { \
-  test_inserttwiceeraseall(this->map_, min_length, max_length); \
+TYPED_TEST(MapTest, InsertTwiceEraseAll__K##min_length##_##max_length##__V##min_val_length##_##max_val_length) { \
+  test_inserttwiceeraseall(this->map_, min_length, max_length, min_val_length, max_val_length); \
 } \
-TYPED_TEST(MapTest, EraseAllInsertAll##min_length##_##max_length) { \
-  test_eraseallinsertall(this->map_, min_length, max_length); \
+TYPED_TEST(MapTest, EraseAllInsertAll__K##min_length##_##max_length##__V##min_val_length##_##max_val_length) { \
+  test_eraseallinsertall(this->map_, min_length, max_length, min_val_length, max_val_length); \
 } \
-TYPED_TEST(MapTest, EraseAllTwice##min_length##_##max_length) { \
-  test_erasealltwice(this->map_, min_length, max_length); \
+TYPED_TEST(MapTest, EraseAllTwice__K##min_length##_##max_length##__V##min_val_length##_##max_val_length) { \
+  test_erasealltwice(this->map_, min_length, max_length, min_val_length, max_val_length); \
 } \
-TYPED_TEST(MapTest, ConcurrentMix##min_length##_##max_length) { \
-  test_concurrentmix(this->map_, min_length, max_length); \
+TYPED_TEST(MapTest, ConcurrentMix__K##min_length##_##max_length##__V##min_val_length##_##max_val_length) { \
+  test_concurrentmix(this->map_, min_length, max_length, min_val_length, max_val_length); \
 } \
-TYPED_TEST(MapTest, RangeQuery##min_length##_##max_length) { \
-  test_scan(this->map_, min_length, max_length); \
+TYPED_TEST(MapTest, RangeQuery__K##min_length##_##max_length##__V##min_val_length##_##max_val_length) { \
+  test_scan(this->map_, min_length, max_length, min_val_length, max_val_length); \
 }
 
-DECLARE_TESTS_FOR_KEY_LENGTHS(4, 4)
-DECLARE_TESTS_FOR_KEY_LENGTHS(64, 64)
-DECLARE_TESTS_FOR_KEY_LENGTHS(4, 64)
-DECLARE_TESTS_FOR_KEY_LENGTHS(200, 200)
-DECLARE_TESTS_FOR_KEY_LENGTHS(100, 200)
-DECLARE_TESTS_FOR_KEY_LENGTHS(100, 800)
+//DECLARE_TESTS_FOR_KEY_LENGTHS(1, 1, 1, 1)
+//DECLARE_TESTS_FOR_KEY_LENGTHS(16, 16, 1, 1)
+//DECLARE_TESTS_FOR_KEY_LENGTHS(1, 16, 1, 1)
+//DECLARE_TESTS_FOR_KEY_LENGTHS(1, 1, 1, 16)
+//DECLARE_TESTS_FOR_KEY_LENGTHS(1, 16, 1, 16)
+//DECLARE_TESTS_FOR_KEY_LENGTHS(50, 50, 1, 1)
+//DECLARE_TESTS_FOR_KEY_LENGTHS(25, 50, 1, 1)
+//DECLARE_TESTS_FOR_KEY_LENGTHS(25, 200, 1, 1)
+//DECLARE_TESTS_FOR_KEY_LENGTHS(1, 1, 25, 200)
+//DECLARE_TESTS_FOR_KEY_LENGTHS(25, 200, 25, 200)
+DECLARE_TESTS_FOR_KEY_LENGTHS(1, 1, 1, 1)
+DECLARE_TESTS_FOR_KEY_LENGTHS(1, 200, 1, 1)
+DECLARE_TESTS_FOR_KEY_LENGTHS(1, 1, 1, 200)
+DECLARE_TESTS_FOR_KEY_LENGTHS(1, 200, 1, 200)
 
 }  // namespace
 

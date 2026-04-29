@@ -21,6 +21,7 @@ class IndexType(Enum):
     gpu_blink_tree = auto()
     gpu_dycuckoo = auto()
     cpu_libcuckoo = auto()
+    cpu_onetbb = auto()
     cpu_masstree = auto()
     cpu_art = auto()
 
@@ -30,6 +31,9 @@ class ConfigType(Enum):
     keylen_min = auto()
     keylen_max = auto()
     keylen_theta = auto()
+    valuelen_min = auto()
+    valuelen_max = auto()
+    valuelen_theta = auto()
     num_lookups = auto()
     lookup_theta = auto()
     num_scans = auto()
@@ -54,7 +58,6 @@ class OptionalConfigType(Enum):
     lookup_concurrent = auto()
     enable_suffix = auto()
     merge_level = auto()
-    reuse_root = auto()
     initial_array_fill_factor = auto()
     use_hash_tag = auto()
     merge_chains = auto()
@@ -62,7 +65,6 @@ class OptionalConfigType(Enum):
     resize_policy = auto()
     load_factor_threshold = auto()
     hash_tag_level = auto()
-    reuse_dirsize = auto()
     erase_concurrent = auto()
     use_lock = auto()
     initial_capacity = auto()
@@ -97,6 +99,7 @@ EXECUTABLE_INFO = {
         'path': 'bin/universal_bench_with_cpu_baseline',
         'indexes': [
             IndexType.cpu_libcuckoo,
+            IndexType.cpu_onetbb,
             IndexType.cpu_masstree,
             IndexType.cpu_art,
         ]
@@ -110,7 +113,6 @@ INDEX_INFO = {
         OptionalConfigType.lookup_concurrent,
         OptionalConfigType.enable_suffix,
         OptionalConfigType.merge_level,
-        OptionalConfigType.reuse_root,
         OptionalConfigType.use_shmem_key,
     ],
     IndexType.gpu_chainhashtable: [
@@ -139,7 +141,6 @@ INDEX_INFO = {
         OptionalConfigType.load_factor_threshold,
         OptionalConfigType.hash_tag_level,
         OptionalConfigType.merge_level,
-        OptionalConfigType.reuse_dirsize,
         OptionalConfigType.use_shmem_key,
     ],
     IndexType.gpu_blink_tree: [
@@ -151,6 +152,9 @@ INDEX_INFO = {
         OptionalConfigType.initial_capacity
     ],
     IndexType.cpu_libcuckoo: [
+        OptionalConfigType.initial_capacity
+    ],
+    IndexType.cpu_onetbb: [
         OptionalConfigType.initial_capacity
     ],
     IndexType.cpu_masstree: [],

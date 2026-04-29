@@ -22,7 +22,7 @@
 #include <typeinfo>
 #include <vector>
 
-std::string str_tolower(const std::string_view s) {
+inline std::string str_tolower(const std::string_view s) {
   std::string output(s.length(), ' ');
   std::transform(
       s.begin(), s.end(), output.begin(), [](unsigned char c) { return std::tolower(c); });

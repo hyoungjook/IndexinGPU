@@ -2,11 +2,136 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
 CXX_BIN="${CXX:-c++}"
 CC_BIN="${CC:-cc}"
 OUTPUT_PATH="${OUTPUT:-${ROOT_DIR}/build/bin/universal_bench_with_cpu_baseline}"
+
 MASSTREE_DIR="${ROOT_DIR}/baselines/masstree-beta"
 ARTSYNC_DIR="${ROOT_DIR}/baselines/ARTSynchronized"
+
+ONETBB_DIR="${ROOT_DIR}/baselines/oneTBB"
+ONETBB_BUILD_DIR="${ROOT_DIR}/build/onetbb"
+ONETBB_INSTALL_DIR="${ONETBB_BUILD_DIR}/install"
+ONETBB_MANUAL_BUILD_DIR="${ONETBB_BUILD_DIR}/manual"
+ONETBB_MANUAL_LIB_DIR="${ONETBB_MANUAL_BUILD_DIR}/lib"
+ONETBB_MANUAL_OBJ_DIR="${ONETBB_MANUAL_BUILD_DIR}/obj"
+ONETBB_INCLUDE_DIR="${ONETBB_INSTALL_DIR}/include"
+ONETBB_CMAKE_BIN="${CMAKE:-cmake}"
+ONETBB_LIB_DIRS=()
+
+JEMALLOC_LINK_FLAGS=()
+
+COMMON_OPT_FLAGS=(-O3 -DNDEBUG -march=native -mtune=native)
+COMMON_CXX_FLAGS=(-std=c++20 "${COMMON_OPT_FLAGS[@]}" -pthread)
+COMMON_C_FLAGS=("${COMMON_OPT_FLAGS[@]}")
+
+join_flags() {
+  local IFS=' '
+  printf '%s' "$*"
+}
+
+COMMON_CXX_FLAGS_STR="$(join_flags "${COMMON_CXX_FLAGS[@]}")"
+COMMON_C_FLAGS_STR="$(join_flags "${COMMON_C_FLAGS[@]}")"
+
+TBBMALLOC_BUILD=ON
+TBBMALLOC_PROXY_BUILD=OFF
+
+detect_jemalloc() {
+  local tmp_src tmp_bin
+  tmp_src="$(mktemp /tmp/jemalloc_check.XXXXXX.cc)"
+  tmp_bin="$(mktemp /tmp/jemalloc_check.XXXXXX)"
+
+  cat > "${tmp_src}" <<'JEMALLOC_CHECK_EOF'
+extern "C" void malloc_stats_print(void (*write_cb)(void *, const char *), void *cbopaque, const char *opts);
+int main() {
+  malloc_stats_print(nullptr, nullptr, "");
+  return 0;
+}
+JEMALLOC_CHECK_EOF
+
+  if [[ -n "${JEMALLOC_LDFLAGS:-}" ]]; then
+    # Optional override, e.g. JEMALLOC_LDFLAGS="-L/opt/jemalloc/lib -ljemalloc".
+    read -r -a JEMALLOC_LINK_FLAGS <<< "${JEMALLOC_LDFLAGS}"
+  elif [[ -n "${JEMALLOC_LIB:-}" ]]; then
+    # Optional override, e.g. JEMALLOC_LIB=/opt/jemalloc/lib/libjemalloc.so.
+    JEMALLOC_LINK_FLAGS=("${JEMALLOC_LIB}")
+  elif command -v pkg-config >/dev/null 2>&1 && pkg-config --exists jemalloc; then
+    read -r -a JEMALLOC_LINK_FLAGS <<< "$(pkg-config --libs jemalloc)"
+  else
+    JEMALLOC_LINK_FLAGS=(-ljemalloc)
+  fi
+
+  if ! "${CXX_BIN}" -std=c++17 "${tmp_src}" -o "${tmp_bin}" "${JEMALLOC_LINK_FLAGS[@]}" >/dev/null 2>&1; then
+    rm -f "${tmp_src}" "${tmp_bin}"
+    echo "ERROR: jemalloc was not found or is not linkable." >&2
+    echo "Install jemalloc development/runtime libraries, or set JEMALLOC_LDFLAGS / JEMALLOC_LIB." >&2
+    echo "Examples:" >&2
+    echo "  JEMALLOC_LDFLAGS='-L/path/to/jemalloc/lib -ljemalloc' $0" >&2
+    echo "  JEMALLOC_LIB=/path/to/libjemalloc.so $0" >&2
+    exit 1
+  fi
+
+  rm -f "${tmp_src}" "${tmp_bin}"
+  echo "Using jemalloc link flags: ${JEMALLOC_LINK_FLAGS[*]}"
+}
+
+ensure_onetbb() {
+  if ! command -v "${ONETBB_CMAKE_BIN}" >/dev/null 2>&1; then
+    echo "ERROR: cmake not found." >&2
+    exit 1
+  fi
+
+  "${ONETBB_CMAKE_BIN}" \
+    -S "${ONETBB_DIR}" \
+    -B "${ONETBB_BUILD_DIR}" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX="${ONETBB_INSTALL_DIR}" \
+    -DCMAKE_CXX_COMPILER="${CXX_BIN}" \
+    -DCMAKE_C_COMPILER="${CC_BIN}" \
+    -DCMAKE_CXX_FLAGS_RELEASE="${COMMON_CXX_FLAGS_STR}" \
+    -DCMAKE_C_FLAGS_RELEASE="${COMMON_C_FLAGS_STR}" \
+    -DTBB_TEST=OFF \
+    -DTBB_EXAMPLES=OFF \
+    -DTBB_STRICT=OFF \
+    -DTBBMALLOC_BUILD="${TBBMALLOC_BUILD}" \
+    -DTBBMALLOC_PROXY_BUILD="${TBBMALLOC_PROXY_BUILD}"
+
+  local build_parallelism
+  build_parallelism="${BUILD_PARALLELISM:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1')}"
+
+  "${ONETBB_CMAKE_BIN}" --build "${ONETBB_BUILD_DIR}" --config Release --target install --parallel "${build_parallelism}"
+
+  ONETBB_INCLUDE_DIR="${ONETBB_INSTALL_DIR}/include"
+  ONETBB_LIB_DIRS=("${ONETBB_INSTALL_DIR}/lib" "${ONETBB_INSTALL_DIR}/lib64")
+}
+
+find_onetbb_libs() {
+  local lib_dir
+  if [[ "${#ONETBB_LIB_DIRS[@]}" -eq 0 ]]; then
+    ONETBB_LIB_DIRS=("${ONETBB_MANUAL_LIB_DIR}" "${ONETBB_INSTALL_DIR}/lib" "${ONETBB_INSTALL_DIR}/lib64")
+  fi
+
+  for lib_dir in "${ONETBB_LIB_DIRS[@]}"; do
+    if [[ -e "${lib_dir}/libtbb.so" || -e "${lib_dir}/libtbb.dylib" ]]; then
+      ONETBB_LIB_DIR="${lib_dir}"
+      break
+    fi
+  done
+
+  if [[ -z "${ONETBB_LIB_DIR:-}" ]]; then
+    echo "Unable to find vendored oneTBB libraries under ${ONETBB_INSTALL_DIR}." >&2
+    return 1
+  fi
+
+  if [[ -e "${ONETBB_LIB_DIR}/libtbb.so" ]]; then
+    ONETBB_TBB_LIB="${ONETBB_LIB_DIR}/libtbb.so"
+    ONETBB_MALLOC_LIB="${ONETBB_LIB_DIR}/libtbbmalloc.so"
+  else
+    ONETBB_TBB_LIB="${ONETBB_LIB_DIR}/libtbb.dylib"
+    ONETBB_MALLOC_LIB="${ONETBB_LIB_DIR}/libtbbmalloc.dylib"
+  fi
+}
 
 MASSTREE_SOURCES=(
   "${ROOT_DIR}/evaluation/cpu_masstree_support.cpp"
@@ -29,27 +154,50 @@ ROWEX_SOURCES=(
 
 mkdir -p "$(dirname "${OUTPUT_PATH}")"
 
-if [[ ! -f "${MASSTREE_DIR}/config.h" ]]; then
-  if [[ ! -x "${MASSTREE_DIR}/configure" ]]; then
-    (
-      cd "${MASSTREE_DIR}"
-      ./bootstrap.sh
-    )
-  fi
-  (
-    cd "${MASSTREE_DIR}"
-    ./configure CXX="${CXX_BIN}" CC="${CC_BIN}"
-  )
+detect_jemalloc
+ensure_onetbb
+find_onetbb_libs
+
+if [[ ! -x "${MASSTREE_DIR}/configure" ]]; then
+  ( cd "${MASSTREE_DIR}" && ./bootstrap.sh )
 fi
 
+(
+  cd "${MASSTREE_DIR}"
+  CFLAGS="${COMMON_C_FLAGS_STR}" \
+  CXXFLAGS="${COMMON_CXX_FLAGS_STR}" \
+  LDFLAGS="${JEMALLOC_LINK_FLAGS[*]}" \
+  ./configure \
+    CXX="${CXX_BIN}" \
+    CC="${CC_BIN}" \
+    --with-malloc=jemalloc \
+    --disable-assertions
+)
+
+if [[ ! -e "${ONETBB_MALLOC_LIB}" ]]; then
+  echo "ERROR: oneTBB malloc library was not built/found at ${ONETBB_MALLOC_LIB}." >&2
+  exit 1
+fi
+
+LINK_LIBS=(
+  -lm
+  -Wl,--no-as-needed
+  "${JEMALLOC_LINK_FLAGS[@]}"
+  "${ONETBB_TBB_LIB}"
+  "${ONETBB_MALLOC_LIB}"
+  -Wl,--as-needed
+  -Wl,-rpath,"${ONETBB_LIB_DIR}"
+  -Wl,-rpath-link,"${ONETBB_LIB_DIR}"
+)
+
 "${CXX_BIN}" \
-  -std=c++17 \
-  -O3 \
-  -pthread \
+  "${COMMON_CXX_FLAGS[@]}" \
   -include "${MASSTREE_DIR}/config.h" \
+  -include cstring \
   -I"${ROOT_DIR}/evaluation" \
   -I"${ROOT_DIR}/include" \
   -I"${ROOT_DIR}/baselines/libcuckoo" \
+  -I"${ONETBB_INCLUDE_DIR}" \
   -I"${MASSTREE_DIR}" \
   -I"${ARTSYNC_DIR}" \
   -DUNIVERSAL_BENCH_WITH_CPU_BASELINE \
@@ -59,7 +207,7 @@ fi
   "${MASSTREE_SOURCES[@]}" \
   "${ROWEX_SOURCES[@]}" \
   -o "${OUTPUT_PATH}" \
-  -lm \
+  "${LINK_LIBS[@]}" \
   "$@"
 
 echo "Built ${OUTPUT_PATH}"

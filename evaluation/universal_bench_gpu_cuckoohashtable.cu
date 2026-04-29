@@ -1,0 +1,3 @@
+#define UNIVERSAL_BENCH_SKIP_MAIN
+#define UNIVERSAL_BENCH_INSTANTIATE_GPU_CUCKOOHASHTABLE
+#include "universal_bench.cu"
