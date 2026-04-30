@@ -31,6 +31,7 @@ class ConfigType(Enum):
     keylen_min = auto()
     keylen_max = auto()
     keylen_theta = auto()
+    dataset_file = auto()
     valuelen_min = auto()
     valuelen_max = auto()
     valuelen_theta = auto()
@@ -181,6 +182,8 @@ def parse_args_for_measure():
         help='Path of directory to add the result JSON file.')
     parser.add_argument('--start-from', type=int, default=0,
         help='Skip n configs at the beginning, used for debugging')
+    parser.add_argument('--skip-meme', action='store_true',
+        help='Skip evaluating/plotting meme workload.')
     args = parser.parse_args()
     return args
 
@@ -280,6 +283,8 @@ def parse_args_for_plot():
     parser = argparse.ArgumentParser()
     parser.add_argument('--result-dir', type=str, required=True,
         help='Path of directory with JSON files with the result.')
+    parser.add_argument('--skip-meme', type=bool, action='store_true',
+        help='Skip evaluating/plotting meme workload.')
     args = parser.parse_args()
     return args
 

@@ -137,6 +137,32 @@ static bool varlen_key_big_endian = true;
 static bool varlen_key_big_endian = false;
 #endif
 
+template <typename T>
+void override_argument_value(std::vector<std::string>& arg_strings,
+                             const std::string& arg_name,
+                             const T& value) {
+  const std::string short_prefix = "-" + arg_name + "=";
+  const std::string long_prefix = "--" + arg_name + "=";
+  const std::string replacement = "--" + arg_name + "=" + std::to_string(value);
+  for (std::size_t i = 1; i < arg_strings.size(); i++) {
+    if (arg_strings[i].rfind(short_prefix, 0) == 0 ||
+        arg_strings[i].rfind(long_prefix, 0) == 0) {
+      arg_strings[i] = replacement;
+      return;
+    }
+  }
+  arg_strings.push_back(replacement);
+}
+
+inline void sync_dataset_backed_arguments(std::vector<std::string>& arg_strings,
+                                          const args_type& args) {
+  override_argument_value(arg_strings, "max_keys", args.max_keys);
+  override_argument_value(arg_strings, "keylen_prefix", args.keylen_prefix);
+  override_argument_value(arg_strings, "keylen_min", args.keylen_min);
+  override_argument_value(arg_strings, "keylen_max", args.keylen_max);
+  override_argument_value(arg_strings, "keylen_theta", args.keylen_theta);
+}
+
 template <typename adapter_type>
 struct bench_runner {
 static void prefill(adapter_type& adapter,
@@ -466,6 +492,40 @@ int main(int argc, char** argv) {
   #define ADAPTER_DECLARE(index) index##_adapter index##_adapter_;
   FORALL_INDEXES(ADAPTER_DECLARE)
   #undef ADAPTER_DECLARE
+
+  std::vector<key_slice_type> h_keys;
+  std::vector<size_type> h_key_lengths;
+  std::vector<value_slice_type> h_values;
+  std::vector<size_type> h_value_lengths;
+  std::vector<key_slice_type> h_lookup_keys;
+  std::vector<size_type> h_lookup_key_lengths;
+  std::vector<key_slice_type> h_scan_upper_keys_if_btree;
+  std::vector<kernels::request_type> h_mix_types;
+  std::vector<key_slice_type> h_mix_keys;
+  std::vector<size_type> h_mix_key_lengths;
+  std::vector<value_slice_type> h_mix_values;
+  std::vector<size_type> h_mix_value_lengths;
+  std::vector<std::size_t> h_mix_key_tuple_ids;
+  if (args.dataset_file != "") {
+    universal::load_keys_from_dataset(
+      h_keys, h_key_lengths, args.max_keys, args.keylen_min, args.keylen_max,
+      args.dataset_file, universal::varlen_key_big_endian,
+      args.index_type == "cpu_art");
+    universal::generate_values_from_keys(
+      h_values, h_value_lengths, h_keys, h_key_lengths,
+      args.max_keys, args.keylen_max,
+      args.valuelen_min, args.valuelen_max, args.valuelen_theta);
+    args.keylen_prefix = 0;
+    args.keylen_theta = 0.0;
+    universal::sync_dataset_backed_arguments(arg_strings, args);
+  }
+  else {
+    if (args.index_type == "cpu_art") {
+      // ART does not support a key being prefix of another, so just support fixlen key for now
+      check_argument(args.keylen_min == args.keylen_max);
+    }
+  }
+
   #define ADAPTER_PARSE_ARGS(index) \
   if (args.index_type == #index) { index##_adapter_.parse(arg_strings); }
   FORALL_INDEXES(ADAPTER_PARSE_ARGS)
@@ -495,25 +555,14 @@ int main(int argc, char** argv) {
 
   // generate keys and queries
   if (verbose) { std::cout << "Generating workload..." << std::endl; }
-  std::vector<key_slice_type> h_keys;
-  std::vector<size_type> h_key_lengths;
-  std::vector<value_slice_type> h_values;
-  std::vector<size_type> h_value_lengths;
-  std::vector<key_slice_type> h_lookup_keys;
-  std::vector<size_type> h_lookup_key_lengths;
-  std::vector<key_slice_type> h_scan_upper_keys_if_btree;
-  std::vector<kernels::request_type> h_mix_types;
-  std::vector<key_slice_type> h_mix_keys;
-  std::vector<size_type> h_mix_key_lengths;
-  std::vector<value_slice_type> h_mix_values;
-  std::vector<size_type> h_mix_value_lengths;
-  std::vector<std::size_t> h_mix_key_tuple_ids;
   // 1. generate keys: max_keys
-  universal::generate_key_values(
-    h_keys, h_key_lengths, h_values, h_value_lengths,
-    args.max_keys, args.keylen_prefix, args.keylen_min, args.keylen_max, args.keylen_theta,
-    args.valuelen_min, args.valuelen_max, args.valuelen_theta,
-    universal::varlen_key_big_endian);
+  if (args.dataset_file == "") {
+    universal::generate_key_values(
+      h_keys, h_key_lengths, h_values, h_value_lengths,
+      args.max_keys, args.keylen_prefix, args.keylen_min, args.keylen_max, args.keylen_theta,
+      args.valuelen_min, args.valuelen_max, args.valuelen_theta,
+      universal::varlen_key_big_endian);
+  }
   // 2. generate lookup keys: max(num_lookups, num_scans)
   std::size_t num_lookups_keys = std::max<std::size_t>(
     (args.rep_lookup > 0) ? args.num_lookups : 0,

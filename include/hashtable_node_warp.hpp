@@ -170,6 +170,39 @@ struct hashtable_node_warp {
     metadata_ |= garbage_bit_mask_;
     write_metadata_to_registers();
   }
+  template <utils::memory_order order>
+  static DEVICE_QUALIFIER bool is_garbage(size_type node_index, const tile_type& tile, allocator_type& allocator) {
+    auto bucket_ptr = reinterpret_cast<elem_type*>(allocator.address(node_index));
+    elem_type metadata;
+    if (tile.thread_rank() == metadata_lane_) {
+      if constexpr (order == utils::memory_order::acq_rel ||
+                    order == utils::memory_order::relaxed) {
+        cuda::atomic_ref<elem_type, cuda::thread_scope_device> metadata_ref(bucket_ptr[metadata_lane_]);
+        metadata = metadata_ref.load(order == utils::memory_order::acq_rel ? 
+          cuda::memory_order_acquire : cuda::memory_order_relaxed);
+      }
+      else {
+        metadata = bucket_ptr[metadata_lane_];
+      }
+    }
+    return static_cast<bool>(tile.shfl(metadata, metadata_lane_) & garbage_bit_mask_);
+  }
+  template <utils::memory_order order>
+  static DEVICE_QUALIFIER void make_garbage(size_type node_index, const tile_type& tile, allocator_type& allocator) {
+    auto bucket_ptr = reinterpret_cast<elem_type*>(allocator.address(node_index));
+    if (tile.thread_rank() == metadata_lane_) {
+      if constexpr (order == utils::memory_order::acq_rel ||
+                    order == utils::memory_order::relaxed) {
+        cuda::atomic_ref<elem_type, cuda::thread_scope_device> metadata_ref(bucket_ptr[metadata_lane_]);
+        metadata_ref.fetch_or(garbage_bit_mask_,
+          order == utils::memory_order::acq_rel ? cuda::memory_order_release :
+                                                  cuda::memory_order_relaxed);
+      }
+      else {
+        bucket_ptr[metadata_lane_] |= garbage_bit_mask_;
+      }
+    }
+  }
   DEVICE_QUALIFIER size_type get_local_depth() const {
     return ((metadata_ & local_depth_bits_mask_) >> local_depth_bits_offset_);
   }
