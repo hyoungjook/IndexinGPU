@@ -31,6 +31,7 @@ class ConfigType(Enum):
     keylen_min = auto()
     keylen_max = auto()
     keylen_theta = auto()
+    dataset_file = auto()
     valuelen_min = auto()
     valuelen_max = auto()
     valuelen_theta = auto()

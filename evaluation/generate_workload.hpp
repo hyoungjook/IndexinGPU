@@ -14,11 +14,13 @@
  *   limitations under the License.
  */
 #pragma once
+#include <fstream>
 #include <iostream>
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <numeric>
 #include <random>
 #include <string>
@@ -124,6 +126,91 @@ std::size_t key_hasher(const key_slice_type* key, size_type length) {
     hash ^= std::hash<uint32_t>{}(key[i]) + 0x9e3779b9 + (hash<<6) + (hash>>2);
   }
   return hash;
+}
+
+inline
+void load_keys_from_dataset(std::vector<key_slice_type>& keys,
+                            std::vector<size_type>& key_lengths,
+                            std::size_t& num_keys,
+                            uint32_t& keylen_min,
+                            uint32_t& keylen_max,
+                            const std::string& dataset_file,
+                            bool big_endian) {
+  std::ifstream ifs(dataset_file);
+  if (!ifs.is_open()) {
+    std::cerr << "Failed opening " << dataset_file << "..." << std::endl;
+    std::abort();
+  }
+  std::vector<std::string> string_keys;
+  std::string line;
+  keylen_min = std::numeric_limits<uint32_t>::max();
+  keylen_max = 0;
+  while (std::getline(ifs, line)) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    if (line.empty()) {
+      continue;
+    }
+    auto key_length = static_cast<uint32_t>((line.size() + sizeof(key_slice_type) - 1) / sizeof(key_slice_type));
+    string_keys.push_back(line);
+    keylen_min = std::min(keylen_min, key_length);
+    keylen_max = std::max(keylen_max, key_length);
+  }
+  num_keys = string_keys.size();
+  check_argument(num_keys > 0);
+  keys = std::vector<key_slice_type>(num_keys * keylen_max, 0);
+  key_lengths = std::vector<size_type>(num_keys, 0);
+  helper_multithread([&](std::size_t key_idx, [[maybe_unused]] unsigned thread_id) {
+      const auto& string_key = string_keys[key_idx];
+      auto* key = &keys[key_idx * keylen_max];
+      uint32_t length = static_cast<uint32_t>((string_key.size() + sizeof(key_slice_type) - 1) / sizeof(key_slice_type));
+      key_lengths[key_idx] = length;
+      for (uint32_t slice = 0; slice < length; slice++) {
+        key_slice_type key_slice = 0;
+        for (uint32_t byte = 0; byte < sizeof(key_slice_type); byte++) {
+          key_slice <<= 8;
+          auto byte_idx = static_cast<std::size_t>(slice) * sizeof(key_slice_type) + byte;
+          if (byte_idx < string_key.size()) {
+            key_slice |= static_cast<key_slice_type>(static_cast<uint8_t>(string_key[byte_idx]));
+          }
+        }
+        if (big_endian) {
+          key_slice = __builtin_bswap32(key_slice);
+        }
+        key[slice] = key_slice;
+      }
+    }, num_keys, [](unsigned){}, [](unsigned){});
+}
+
+inline
+void generate_values_from_keys(std::vector<value_slice_type>& values,
+                               std::vector<size_type>& value_lengths,
+                               const std::vector<key_slice_type>& keys,
+                               const std::vector<size_type>& key_lengths,
+                               std::size_t num_keys,
+                               uint32_t keylen_max,
+                               uint32_t valuelen_min,
+                               uint32_t valuelen_max,
+                               double valuelen_theta) {
+  values = std::vector<value_slice_type>(num_keys * valuelen_max);
+  value_lengths = std::vector<size_type>(num_keys);
+  zipfian_int_distribution<key_slice_type> value_length_dist(valuelen_min, valuelen_max, valuelen_theta);
+  const unsigned num_workers = std::max(1u, std::thread::hardware_concurrency());
+  std::vector<std::mt19937> per_thd_rng;
+  for (unsigned tid = 0; tid < num_workers; tid++) {
+    per_thd_rng.emplace_back(tid + 1);
+  }
+  helper_multithread([&](std::size_t key_idx, unsigned thread_id) {
+      auto& rng = per_thd_rng[thread_id];
+      uint32_t value_length = value_length_dist(rng);
+      value_lengths[key_idx] = value_length;
+      value_slice_type value_slice = key_hasher(&keys[key_idx * keylen_max], key_lengths[key_idx]);
+      auto* value = &values[key_idx * valuelen_max];
+      for (uint32_t slice = 0; slice < value_length; slice++) {
+        value[slice] = value_slice;
+      }
+    }, num_keys, [](unsigned){}, [](unsigned){});
 }
 
 inline
@@ -325,6 +412,7 @@ void generate_mixed_keys(std::vector<kernels::request_type>& mix_types,
   x(keylen_min, uint32_t, 1) \
   x(keylen_max, uint32_t, 1) \
   x(keylen_theta, double, 0.0) \
+  x(dataset_file, std::string, "") \
   /* value distribution */ \
   x(valuelen_min, uint32_t, 1) \
   x(valuelen_max, uint32_t, 1) \
