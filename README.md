@@ -20,7 +20,7 @@ This builds unit tests `bin/unittest_*` and simple benchmarks `bin/*_bench`.
 
 ## Reproducing Experiment Results
 
-Each evaluation takes ~1 day, so we recommend using `tmux new -s longjob`.
+Each evaluation takes 1-2 days, so we recommend using `tmux new -s longjob`.
 
 To evaluate GPU indexes (IndexinGPU + GPU baselines):
 
