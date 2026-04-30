@@ -401,100 +401,88 @@ def key_length_cpu_plots(configs_and_results, plot_file_prefix):
     tree_indexes = [i for i in all_index_types if i in IS_INDEX_TYPE_ORDERED]
     hashtable_indexes = [i for i in all_index_types if i not in IS_INDEX_TYPE_ORDERED]
     plot_spec = [
-        [
-            (tree_indexes, ResultType.lookup),
-            (tree_indexes, ResultType.scan),
-            (tree_indexes, ResultType.insert),
-            (tree_indexes, ResultType.delete),
-            (tree_indexes, ResultType.mixed),
-        ],
-        [
-            (hashtable_indexes, ResultType.lookup),
-            (hashtable_indexes, ResultType.insert),
-            (hashtable_indexes, ResultType.delete),
-            (hashtable_indexes, ResultType.mixed),
-        ],
+        (tree_indexes, ResultType.lookup, False, True),
+        (tree_indexes, ResultType.insert, False, False),
+        (tree_indexes, ResultType.delete, False, False),
+        (tree_indexes, ResultType.mixed, False, False),
+        (tree_indexes, ResultType.scan, False, False),
+        (hashtable_indexes, ResultType.lookup, True, True),
+        (hashtable_indexes, ResultType.insert, True, False),
+        (hashtable_indexes, ResultType.delete, True, False),
+        (hashtable_indexes, ResultType.mixed, True, False),
     ]
-    plot_names = ['tree', 'ht']
-    legend_indexes = set()
-    legend_handles = []
-    legend_labels = []
-    for idx, plots in enumerate(plot_spec):
-        figwidth = 6
-        figheight = 1.8 if idx == 0 else 2.0
-        fig, axes = plt.subplots(1, len(plots), figsize=(figwidth, figheight), constrained_layout=True)
-        for subplot_idx, (index_types, result_type) in enumerate(plots):
-            ymax = 0
-            our_max = [None for _ in range(len(EXP_KEY_LENGTHS))]
-            gpu_baseline_max = [None for _ in range(len(EXP_KEY_LENGTHS))]
-            cpu_baseline_max = [None for _ in range(len(EXP_KEY_LENGTHS))]
-            for index_type in index_types:
-                if result_type not in tputs[index_type]:
-                    continue
-                avg_values = _convert_mops_to_bops(tputs[index_type][result_type]['avg'], index_type)
-                min_values = _convert_mops_to_bops(tputs[index_type][result_type]['min'], index_type)
-                max_values = _convert_mops_to_bops(tputs[index_type][result_type]['max'], index_type)
-                if index_type in INDEX_TYPES_ROBUST:
-                    _record_max_tput(index_type, avg_values, our_max)
-                elif index_type in INDEX_TYPES_GPU_BASELINE:
-                    _record_max_tput(index_type, avg_values, gpu_baseline_max)
-                else:
-                    _record_max_tput(index_type, avg_values, cpu_baseline_max)
-                ydata = avg_values.copy()
-                ymax = max(ymax, max(max_values))
-                markevery = range(len(ydata))
-                if len(markevery) == 1:
-                    ydata.append(0)
-                xdata = key_lengths_bytes[0:len(ydata)]
-                line, = axes[subplot_idx].plot(
-                    xdata, ydata,
-                    label=INDEX_LABELS[index_type],
-                    markevery=markevery,
-                    linewidth=2, markersize=6,
-                    **INDEX_STYLES[index_type]
-                )
-                _add_throughput_error_bars(
-                    axes[subplot_idx], key_lengths_bytes, avg_values, min_values, max_values, color=INDEX_STYLES[index_type]['color']
-                )
-                if len(markevery) == 1:
-                    axes[subplot_idx].text(xdata[1], ydata[1], "X", fontsize=10, color='red', fontweight='bold', ha='center', va='center', zorder=10)
-                if index_type not in legend_indexes:
-                    legend_indexes.add(index_type)
-                    legend_labels.append(INDEX_LABELS[index_type])
-                    legend_handles.append(line)
-            axes[subplot_idx].set_ylim(bottom=0, top=ymax * 1.1)
-            axes[subplot_idx].set_xlim(left=0)
-            _, ymax = axes[subplot_idx].get_ylim()
-            ytick_candidates = [0.1, 0.2, 0.5, 1.0]
-            for ytick in ytick_candidates:
-                num_ticks = int(ymax // ytick)
-                if 1 <= num_ticks and num_ticks < 4:
-                    yticks = [ytick * x for x in range(num_ticks + 1)]
-                    break
-            axes[subplot_idx].set_yticks(yticks)
-            axes[subplot_idx].yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
-            axes[subplot_idx].grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
-            axes[subplot_idx].set_title(result_type.name, fontsize=10)
-            if subplot_idx == 0:
-                if idx == 0:
-                    axes[subplot_idx].set_ylabel('Tree Indexes\n' + r'Throughput ($10^9$/s)')
-                else:
-                    axes[subplot_idx].set_ylabel('Hash Table Indexes\n' + r'Throughput ($10^9$/s)')
-            for i in range(len(EXP_KEY_LENGTHS)):
-                speedup_over_cpu = our_max[i][0] / cpu_baseline_max[i][0]
-                speedup_over_gpu = our_max[i][0] / gpu_baseline_max[i][0] if gpu_baseline_max[i] is not None else 0
-                print(f'{plot_names[idx]}-{result_type.name}-cpu: key={EXP_KEY_LENGTHS[i]} ' + \
-                      f'over cpu: {speedup_over_cpu:.1f} ({our_max[i][1]}, {cpu_baseline_max[i][1]})' + \
-                      f'over gpu: {speedup_over_gpu:.1f}')
-        if idx == 1:
-            fig.supxlabel('Key Length (B)', fontsize=10)
+    plot_names = [
+        'tree-lookup', 'tree-insert', 'tree-delete', 'tree-mixed', 'tree-scan',
+        'ht-lookup', 'ht-insert', 'ht-delete', 'ht-mixed'
+    ]
+    for idx, (index_types, result_type, set_xlabel, set_ylabel) in enumerate(plot_spec):
+        fig, ax = _make_fixed_plot_area_figure(2, 1.3,
+            include_xlabel=set_xlabel,
+            include_ylabel=set_ylabel,
+        )
+        our_max = [None for _ in range(len(EXP_KEY_LENGTHS))]
+        gpu_baseline_max = [None for _ in range(len(EXP_KEY_LENGTHS))]
+        cpu_baseline_max = [None for _ in range(len(EXP_KEY_LENGTHS))]
+        for index_type in index_types:
+            if result_type not in tputs[index_type]:
+                continue
+            avg_values = _convert_mops_to_bops(tputs[index_type][result_type]['avg'], index_type)
+            min_values = _convert_mops_to_bops(tputs[index_type][result_type]['min'], index_type)
+            max_values = _convert_mops_to_bops(tputs[index_type][result_type]['max'], index_type)
+            if index_type in INDEX_TYPES_ROBUST:
+                _record_max_tput(index_type, avg_values, our_max)
+            elif index_type in INDEX_TYPES_GPU_BASELINE:
+                _record_max_tput(index_type, avg_values, gpu_baseline_max)
+            else:
+                _record_max_tput(index_type, avg_values, cpu_baseline_max)
+            ydata = avg_values.copy()
+            markevery = range(len(ydata))
+            if len(markevery) == 1:
+                ydata.append(0)
+            xdata = key_lengths_bytes[0:len(ydata)]
+            index_label = INDEX_LABELS[index_type]
+            line, = ax.plot(
+                xdata, ydata,
+                label=index_label,
+                markevery=markevery,
+                linewidth=2, markersize=6,
+                **INDEX_STYLES[index_type]
+            )
+            _add_throughput_error_bars(
+                ax,
+                xdata[0:len(avg_values)],
+                avg_values,
+                min_values,
+                max_values,
+                color=INDEX_STYLES[index_type]['color']
+            )
+            if len(markevery) == 1:
+                ax.text(xdata[1], ydata[1], "X", fontsize=10, color='red', fontweight='bold', ha='center', va='center', zorder=10)
+        ax.set_ylim(bottom = 0)
+        ax.set_xlim(left = 0)
+        _, ymax = ax.get_ylim()
+        ytick_candidates = [0.2, 0.5, 1.0]
+        for ytick in ytick_candidates:
+            num_ticks = int(ymax // ytick)
+            if 2 <= num_ticks and num_ticks <= 4:
+                yticks = [ytick * x for x in range(num_ticks + 1)]
+                break
+        ax.set_yticks(yticks)
+        ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
+        ax.set_xticks([0, 20, 40, 60])
+        ax.grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
+        if set_xlabel:
+            ax.set_xlabel('Key Length (B)')
+        if set_ylabel:
+            ax.set_ylabel(r'Throughput ($10^9$/s)')
         fig.savefig(f'{plot_file_prefix}-{plot_names[idx]}.pdf', bbox_inches='tight')
         plt.close(fig)
-    fig, ax = plt.subplots(1, 1, figsize=(7, 0.5), constrained_layout=True)
-    ax.legend(legend_handles, legend_labels, loc='center', ncol=len(legend_labels) / 2, handlelength=2.5)
-    ax.axis("off")
-    plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
-    plt.close(fig)
+        for i in range(len(EXP_KEY_LENGTHS)):
+            speedup_over_cpu = our_max[i][0] / cpu_baseline_max[i][0]
+            speedup_over_gpu = our_max[i][0] / gpu_baseline_max[i][0] if gpu_baseline_max[i] is not None else 0
+            print(f'{plot_names[idx]}-cpu: key={EXP_KEY_LENGTHS[i]} ' + \
+                  f'over cpu: {speedup_over_cpu:.1f} ({our_max[i][1]}, {cpu_baseline_max[i][1]})' + \
+                  f'over gpu: {speedup_over_gpu:.1f}')
 
 def average_slowdown_cpu(configs_and_results):
     slowdowns = []
