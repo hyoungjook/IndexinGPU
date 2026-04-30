@@ -152,7 +152,7 @@ def generate_configs():
     for index_type in INDEX_TYPES_ROBUST:
         common_config = {
             ConfigType.index_type: index_type,
-            ConfigType.dataset_file: 'dataset/meme.txt',
+            ConfigType.dataset_file: MEME_DATASET_PATH,
             ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH_OVERVIEW,
             ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH_OVERVIEW,
             ConfigType.num_lookups: BATCH_SIZE_MEME,

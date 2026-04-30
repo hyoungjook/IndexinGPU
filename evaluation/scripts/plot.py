@@ -1038,6 +1038,42 @@ def intro_plots(configs_and_results, plot_file_prefix):
     plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
     plt.close(fig)
 
+def meme_plots(configs_and_results, plot_file_prefix):
+    tputs = {}
+    tree_indexes = [IndexType.cpu_art, IndexType.cpu_masstree, IndexType.gpu_masstree,]
+    hashtable_indexes = [IndexType.cpu_libcuckoo, IndexType.cpu_onetbb, IndexType.gpu_extendhashtable,]
+    for index_type in tree_indexes + hashtable_indexes:
+        tputs[index_type] = {}
+        result_types = [ResultType.lookup, ResultType.insert, ResultType.delete, ResultType.mixed]
+        if index_type in IS_INDEX_TYPE_ORDERED:
+            result_types.append(ResultType.scan)
+        for result_type in result_types:
+            tputs[index_type][result_type] = {
+                'avg': [], 'min': [], 'max': []
+            }
+            desired_config = {
+                ConfigType.index_type: index_type,
+                ConfigType.dataset_file: MEME_DATASET_PATH,
+                ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH_OVERVIEW,
+                ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH_OVERVIEW,
+            }
+            if result_type == ResultType.lookup:
+                desired_config[ConfigType.num_lookups] = DEFAULT_BATCH_SIZE
+            elif result_type in [ResultType.insert, ResultType.delete]:
+                desired_config[ConfigType.num_insdel] = DEFAULT_BATCH_SIZE
+            elif result_type == ResultType.mixed:
+                desired_config[ConfigType.num_mixed] = DEFAULT_BATCH_SIZE
+                desired_config[ConfigType.mix_read_ratio] = DEFAULT_MIX_READ_RATIO
+            elif result_type == ResultType.scan:
+                desired_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
+                desired_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
+            result = filter(configs_and_results, desired_config, result_type)
+            processed_result = _compute_avg_min_max_from_raw(result[result_type.name]['raw'])
+            for metric_type in ['avg', 'min', 'max']:
+                tputs[index_type][result_type][metric_type].append(processed_result[metric_type])
+    # plot TODO
+
+
 def generate_plots(args, configs_and_results):
     key_length_plots(configs_and_results, Path(args.result_dir) / 'plot_keylength')
     key_length_cpu_plots(configs_and_results, Path(args.result_dir) / 'plot_keylength_cpu')
@@ -1047,6 +1083,7 @@ def generate_plots(args, configs_and_results):
     tile_plots(configs_and_results, Path(args.result_dir) / 'plot_tile')
     merge_plots(configs_and_results, Path(args.result_dir) / 'plot_merge')
     intro_plots(configs_and_results, Path(args.result_dir) / 'plot_intro')
+    meme_plots(configs_and_results, Path(args.result_dir) / 'plot_meme')
 
 if __name__ == "__main__":
     args = parse_args_for_plot()
