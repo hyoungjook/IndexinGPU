@@ -1081,8 +1081,10 @@ def meme_plots(configs_and_results, plot_file_prefix):
     plot_names = ['tree', 'ht']
     legend_handles = []
     legend_labels = []
-    for index_type in [IndexType.cpu_art, IndexType.cpu_masstree, IndexType.cpu_libcuckoo, IndexType.cpu_onetbb,
-                       IndexType.gpu_masstree, IndexType.gpu_cuckoohashtable, IndexType.gpu_chainhashtable, IndexType.gpu_extendhashtable]:
+    for index_type in [IndexType.cpu_art, IndexType.gpu_masstree,
+                       IndexType.cpu_masstree, IndexType.gpu_cuckoohashtable,
+                       IndexType.cpu_libcuckoo, IndexType.gpu_chainhashtable,
+                       IndexType.cpu_onetbb, IndexType.gpu_extendhashtable]:
         index_label = INDEX_LABELS[index_type]
         if index_label in legend_labels:
             continue
@@ -1148,7 +1150,7 @@ def meme_plots(configs_and_results, plot_file_prefix):
             ax.set_ylabel(r'Throughput ($10^9$/s)')
         plt.savefig(f'{plot_file_prefix}-{plot_names[idx]}.pdf', bbox_inches='tight')
         plt.close(fig)
-    fig, ax = plt.subplots(1, 1, figsize=(5, 0.5), constrained_layout=True)
+    fig, ax = plt.subplots(1, 1, figsize=(6, 0.5), constrained_layout=True)
     ax.legend(legend_handles, legend_labels, loc='center', ncol=len(legend_labels)/2,
               handlelength=2, handletextpad=0.5)
     ax.axis('off')

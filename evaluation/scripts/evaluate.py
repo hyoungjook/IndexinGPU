@@ -283,7 +283,7 @@ def parse_args_for_plot():
     parser = argparse.ArgumentParser()
     parser.add_argument('--result-dir', type=str, required=True,
         help='Path of directory with JSON files with the result.')
-    parser.add_argument('--skip-meme', type=bool, action='store_true',
+    parser.add_argument('--skip-meme', action='store_true',
         help='Skip evaluating/plotting meme workload.')
     args = parser.parse_args()
     return args
