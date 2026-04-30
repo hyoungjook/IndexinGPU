@@ -102,8 +102,6 @@ struct cpu_art_adapter {
       FORALL_ARGUMENTS(PARSE_DEFAULT_ARGUMENTS)
       #undef PARSE_DEFAULT_ARGUMENTS
       keylen_max = tmp_keylen_max;
-      // ART does not support a key being prefix of another, so only support fixed length keys effectively
-      check_argument(tmp_keylen_min == tmp_keylen_max);
     }
     void print() const {}
   };

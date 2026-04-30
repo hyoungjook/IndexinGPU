@@ -509,7 +509,8 @@ int main(int argc, char** argv) {
   if (args.dataset_file != "") {
     universal::load_keys_from_dataset(
       h_keys, h_key_lengths, args.max_keys, args.keylen_min, args.keylen_max,
-      args.dataset_file, universal::varlen_key_big_endian);
+      args.dataset_file, universal::varlen_key_big_endian,
+      args.index_type == "cpu_art");
     universal::generate_values_from_keys(
       h_values, h_value_lengths, h_keys, h_key_lengths,
       args.max_keys, args.keylen_max,
@@ -517,6 +518,12 @@ int main(int argc, char** argv) {
     args.keylen_prefix = 0;
     args.keylen_theta = 0.0;
     universal::sync_dataset_backed_arguments(arg_strings, args);
+  }
+  else {
+    if (args.index_type == "cpu_art") {
+      // ART does not support a key being prefix of another, so just support fixlen key for now
+      check_argument(args.keylen_min == args.keylen_max);
+    }
   }
 
   #define ADAPTER_PARSE_ARGS(index) \

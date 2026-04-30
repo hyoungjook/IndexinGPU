@@ -135,7 +135,8 @@ void load_keys_from_dataset(std::vector<key_slice_type>& keys,
                             uint32_t& keylen_min,
                             uint32_t& keylen_max,
                             const std::string& dataset_file,
-                            bool big_endian) {
+                            bool big_endian,
+                            bool append_zero_at_end) {
   std::ifstream ifs(dataset_file);
   if (!ifs.is_open()) {
     std::cerr << "Failed opening " << dataset_file << "..." << std::endl;
@@ -179,6 +180,11 @@ void load_keys_from_dataset(std::vector<key_slice_type>& keys,
           key_slice = __builtin_bswap32(key_slice);
         }
         key[slice] = key_slice;
+      }
+      if (append_zero_at_end && length < keylen_max && string_key.size() == length * sizeof(key_slice_type)) {
+        // keylen_min might be wrong, but whatever
+        key_lengths[key_idx]++;
+        key[length] = 0;
       }
     }, num_keys, [](unsigned){}, [](unsigned){});
 }
