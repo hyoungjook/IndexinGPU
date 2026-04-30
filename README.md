@@ -1,4 +1,4 @@
-# IndexinGPU: Concurrent, Dynamic, Var-len Key/Value GPU Indexes
+# IndexinGPU
 
 IndexinGPU is a series of GPU indexes that support variable-length key/values at runtime, fully GPU-managed dynamic insert/deletes, and concurrent mixes of different operation types.
 
@@ -25,9 +25,9 @@ Each evaluation takes ~1 day, so we recommend using `tmux new -s longjob`.
 To evaluate GPU indexes (IndexinGPU + GPU baselines):
 
 ```shell
+# EXPERIMENTS TUNED FOR GPU WITH MEMORY >= 80GiB
 # Uses the first GPU (device_id=0)
-# The GPU must have memory >= 80GiB
-# Tested with docker image nvidia/cuda:13.2.1-devel-ubuntu24.04 and A100 GPU
+# Assume Ubuntu 24.04 and CUDA 13.2
 apt update
 apt install -y build-essential cmake git
 git clone https://github.com/hyoungjook/IndexinGPU
@@ -41,7 +41,7 @@ python3 evaluation/scripts/measure_gpu.py --result-dir my-results
 To evaluate CPU indexes (CPU baselines):
 
 ```shell
-# Tested with docker image ubuntu:24.04
+# Assume Ubuntu 24.04, no CUDA required
 apt update
 apt install -y build-essential cmake git autoconf libboost-all-dev libjemalloc-dev
 git clone https://github.com/hyoungjook/IndexinGPU
@@ -58,3 +58,9 @@ To draw plots:
 # Move both result_gpu.json and result_cpu.json to my-results/
 python3 evaluation/scripts/plot.py --result-dir my-results
 ```
+
+## Verifying Cache Line Atomicity
+
+IndexinGPU relies on Nvidia GPU's cache line atomicity behavior.
+Use this [cuda_cacheline_atomicity_tester](https://github.com/hyoungjook/cuda_cacheline_atomicity_tester) to test your GPU shows cache line atomicity.
+Verified on A100, H100, H200, and B200 GPUs.
