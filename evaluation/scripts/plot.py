@@ -1165,7 +1165,8 @@ def generate_plots(args, configs_and_results):
     tile_plots(configs_and_results, Path(args.result_dir) / 'plot_tile')
     merge_plots(configs_and_results, Path(args.result_dir) / 'plot_merge')
     intro_plots(configs_and_results, Path(args.result_dir) / 'plot_intro')
-    meme_plots(configs_and_results, Path(args.result_dir) / 'plot_meme')
+    if not args.skip_meme:
+        meme_plots(configs_and_results, Path(args.result_dir) / 'plot_meme')
 
 if __name__ == "__main__":
     args = parse_args_for_plot()

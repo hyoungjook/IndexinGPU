@@ -22,6 +22,11 @@ This builds unit tests `bin/unittest_*` and simple benchmarks `bin/*_bench`.
 
 Each evaluation takes 1-2 days, so we recommend using `tmux new -s longjob`.
 
+Before evaluation, download the [Memetracker dataset](https://snap.stanford.edu/memetracker/data.html), extract P entries (URLs), filter out URLs longer than 128B, and store it into an ascii txt file with the string URLs separated by line breaks.
+The result file should have 91114167 entries.
+
+If you want to evaluate only with synthetic workloads, add `--skip-meme` command line option to all `python3` commands below.
+
 To evaluate GPU indexes (IndexinGPU + GPU baselines):
 
 ```shell
@@ -32,6 +37,10 @@ apt update
 apt install -y build-essential cmake git
 git clone https://github.com/hyoungjook/IndexinGPU
 cd IndexinGPU
+# copy memetracker dataset
+mkdir dataset
+cp path/to/memetracker/dataset dataset/meme.txt
+# evaluate
 bash evaluation/scripts/prepare_baselines.sh
 bash evaluation/scripts/build_universal_bench_with_gpu.sh
 python3 evaluation/scripts/measure_gpu.py --result-dir my-results
@@ -46,6 +55,10 @@ apt update
 apt install -y build-essential cmake git autoconf libboost-all-dev libjemalloc-dev
 git clone https://github.com/hyoungjook/IndexinGPU
 cd IndexinGPU
+# copy memetracker dataset
+mkdir dataset
+cp path/to/memetracker/dataset dataset/meme.txt
+# evaluate
 bash evaluation/scripts/prepare_baselines.sh
 bash evaluation/scripts/build_universal_bench_with_cpu_baseline.sh
 python3 evaluation/scripts/measure_cpu.py --result-dir my-results
