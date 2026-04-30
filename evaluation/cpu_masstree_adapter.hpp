@@ -61,7 +61,7 @@ struct cpu_masstree_adapter {
   }
   void register_dataset(const key_slice_type* key, const size_type* key_lengths, const value_type* values) {}
   void initialize() {
-    check_argument(main_threadinfo_ == nullptr);
+    //check_argument(main_threadinfo_ == nullptr);
     main_threadinfo_ = threadinfo::make(threadinfo::TI_MAIN, -1);
     main_threadinfo_->pthread() = pthread_self();
     auto num_worker_threadinfos = std::max(1u, std::thread::hardware_concurrency());

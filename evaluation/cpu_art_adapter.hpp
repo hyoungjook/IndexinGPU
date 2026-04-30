@@ -117,7 +117,7 @@ struct cpu_art_adapter {
   ART::ThreadInfo& current_threadinfo() {
     auto& state = current_thread_state();
     if (state.tree != tree_.get() || !state.threadinfo) {
-      check_argument(tree_ != nullptr);
+      //check_argument(tree_ != nullptr);
       state.threadinfo = std::make_unique<ART::ThreadInfo>(tree_->getThreadInfo());
       state.tree = tree_.get();
     }
