@@ -316,7 +316,7 @@ struct hashtable_node_subwarp {
     }
   }
 
-  DEVICE_QUALIFIER void merge(const hashtable_node_subwarp<tile_type, allocator_type>& next_node) {
+  DEVICE_QUALIFIER void merge(hashtable_node_subwarp<tile_type, allocator_type>& next_node) {
     assert(is_mergeable(next_node));
     // copy elements from next node
     elem_type shifted_elem;
@@ -334,14 +334,19 @@ struct hashtable_node_subwarp {
       lane_elem_.value |= ((next_node.lane_elem_.value << num_keys_x2) & ~num_keys_x2_mask);
     }
     set_num_keys(new_num_keys);
-    // copy next node's next index
+    // this node's next is next node's next
+    // next node's next is this node
     if (tile_.thread_rank() == next_ptr_lane_) {
       lane_elem_.value = next_node.lane_elem_.value;
+      next_node.lane_elem_.value = node_index_;
     }
     // has_next = next.has_next
+    // next.has_next = true; next.make_garbage()
     metadata_ &= ~next_bit_mask_;
     metadata_ |= (next_node.metadata_ & next_bit_mask_);
+    next_node.metadata_ |= (next_bit_mask_ | garbage_bit_mask_);
     write_metadata_to_registers();
+    next_node.write_metadata_to_registers();
   }
 
   DEVICE_QUALIFIER void erase(int location) {

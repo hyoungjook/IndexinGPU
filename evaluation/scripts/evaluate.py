@@ -62,6 +62,7 @@ class OptionalConfigType(Enum):
     initial_array_fill_factor = auto()
     use_hash_tag = auto()
     merge_chains = auto()
+    initial_slab_ratio = auto()
     initial_directory_size = auto()
     resize_policy = auto()
     load_factor_threshold = auto()

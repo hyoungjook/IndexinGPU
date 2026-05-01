@@ -41,7 +41,7 @@ struct gpu_extendhashtable_adapter {
     configs_.print();
   }
   void initialize() {
-    allocator_ = new allocator_type(configs_.allocator_pool_ratio);
+    allocator_ = new allocator_type(configs_.allocator_pool_ratio, configs_.initial_slab_ratio);
     reclaimer_ = new reclaimer_type();
     if (configs_.tile_size == 32) {
       index_ = reinterpret_cast<void*>(new index32_type(*allocator_, *reclaimer_,
@@ -141,6 +141,7 @@ struct gpu_extendhashtable_adapter {
  private:
   #define FORALL_ARGUMENTS_GPU_EXTENDHASHTABLE(x) \
     x(allocator_pool_ratio, float, 0.9f) \
+    x(initial_slab_ratio, float, 0.95f) \
     x(tile_size, uint32_t, 16) \
     x(lookup_concurrent, bool, false) \
     x(initial_directory_size, uint32_t, 1024) \

@@ -822,37 +822,39 @@ struct gpu_extendhashtable {
     using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     while (true) {
-      if constexpr (count_keys) { num_total_keys += node.num_keys(); }
-      uint32_t to_check = node.match_key_in_node(first_slice, more_key);
-      if (more_key) {
-        // if length > 1, compare suffixes
-        while (to_check != 0) {
-          auto cur_location = __ffs(to_check) - 1;
-          auto suffix_index = node.get_value_from_location(cur_location);
-          auto suffix = suffix_type(suffix_index, tile, allocator);
-          suffix.load_head();
-          static constexpr uint32_t suffix_offset = use_hash_tag ? 0 : 1;
-          if (suffix.streq(key + suffix_offset, key_length - suffix_offset)) {
+      if (node.is_head() || !node.is_garbage()) {
+        if constexpr (count_keys) { num_total_keys += node.num_keys(); }
+        uint32_t to_check = node.match_key_in_node(first_slice, more_key);
+        if (more_key) {
+          // if length > 1, compare suffixes
+          while (to_check != 0) {
+            auto cur_location = __ffs(to_check) - 1;
+            auto suffix_index = node.get_value_from_location(cur_location);
+            auto suffix = suffix_type(suffix_index, tile, allocator);
+            suffix.load_head();
+            static constexpr uint32_t suffix_offset = use_hash_tag ? 0 : 1;
+            if (suffix.streq(key + suffix_offset, key_length - suffix_offset)) {
+              // found
+              suffix_if_found = suffix;
+              return cur_location;
+            }
+            to_check &= ~(1u << cur_location);
+          }
+        }
+        else {
+          // if length == 1, match means match
+          if (to_check != 0) {
             // found
-            suffix_if_found = suffix;
-            return cur_location;
+            const int location = __ffs(to_check) - 1;
+            if (node.get_keystate_from_location(location) == node_type::KEYSTATE_LONGVAL) {
+              suffix_if_found = suffix_type(node.get_value_from_location(location), tile, allocator);
+              suffix_if_found.load_head();
+            }
+            return location;
           }
-          to_check &= ~(1u << cur_location);
         }
+        // done searching this node, move on to next
       }
-      else {
-        // if length == 1, match means match
-        if (to_check != 0) {
-          // found
-          const int location = __ffs(to_check) - 1;
-          if (node.get_keystate_from_location(location) == node_type::KEYSTATE_LONGVAL) {
-            suffix_if_found = suffix_type(node.get_value_from_location(location), tile, allocator);
-            suffix_if_found.load_head();
-          }
-          return location;
-        }
-      }
-      // done searching this node, move on to next
       if (!node.has_next()) { break; }
       auto next_index = node.get_next_index();
       node = node_type(next_index, tile, allocator);
@@ -876,37 +878,39 @@ struct gpu_extendhashtable {
     using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     while (true) {
-      if constexpr (count_keys) { num_total_keys += node.num_keys(); }
-      uint32_t to_check = node.match_key_in_node(first_slice, more_key);
-      if (more_key) {
-        // if length > 1, compare suffixes
-        while (to_check != 0) {
-          auto cur_location = __ffs(to_check) - 1;
-          auto suffix_index = node.get_value_from_location(cur_location);
-          auto suffix = suffix_type(suffix_index, tile, allocator);
-          suffix.load_head();
-          static constexpr uint32_t suffix_offset = use_hash_tag ? 0 : 1;
-          if (suffix.streq(key + suffix_offset, key_length - suffix_offset)) {
+      if (node.is_head() || !node.is_garbage()) {
+        if constexpr (count_keys) { num_total_keys += node.num_keys(); }
+        uint32_t to_check = node.match_key_in_node(first_slice, more_key);
+        if (more_key) {
+          // if length > 1, compare suffixes
+          while (to_check != 0) {
+            auto cur_location = __ffs(to_check) - 1;
+            auto suffix_index = node.get_value_from_location(cur_location);
+            auto suffix = suffix_type(suffix_index, tile, allocator);
+            suffix.load_head();
+            static constexpr uint32_t suffix_offset = use_hash_tag ? 0 : 1;
+            if (suffix.streq(key + suffix_offset, key_length - suffix_offset)) {
+              // found
+              suffix_if_found = suffix;
+              return cur_location;
+            }
+            to_check &= ~(1u << cur_location);
+          }
+        }
+        else {
+          // if length == 1, match means match
+          if (to_check != 0) {
             // found
-            suffix_if_found = suffix;
-            return cur_location;
+            const int location = __ffs(to_check) - 1;
+            if (node.get_keystate_from_location(location) == node_type::KEYSTATE_LONGVAL) {
+              suffix_if_found = suffix_type(node.get_value_from_location(location), tile, allocator);
+              suffix_if_found.load_head();
+            }
+            return location;
           }
-          to_check &= ~(1u << cur_location);
         }
+        // done searching this node, move on to next
       }
-      else {
-        // if length == 1, match means match
-        if (to_check != 0) {
-          // found
-          const int location = __ffs(to_check) - 1;
-          if (node.get_keystate_from_location(location) == node_type::KEYSTATE_LONGVAL) {
-            suffix_if_found = suffix_type(node.get_value_from_location(location), tile, allocator);
-            suffix_if_found.load_head();
-          }
-          return location;
-        }
-      }
-      // done searching this node, move on to next
       if (!node.has_next()) { break; }
       auto next_index = node.get_next_index();
       auto next_node = node_type(next_index, tile, allocator);
@@ -914,8 +918,9 @@ struct gpu_extendhashtable {
       next_node.template load_from_allocator<utils::memory_order::weak_tilesync>();
       if (node.is_mergeable(next_node)) {
         node.merge(next_node);
-        // weak_tilesync b/c future unlock will do memory_order_release
+        // store node -> next_node
         node.template store_to_allocator<utils::memory_order::weak_tilesync>();
+        next_node.template store_to_allocator<utils::memory_order::acq_rel>();
         reclaimer.retire(next_index, tile);
       }
       else {

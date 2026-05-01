@@ -39,7 +39,6 @@ struct simple_slab_linear_allocator {
   static constexpr uint32_t blocks_delta_ = 8 * 1024;
   static constexpr float load_factor_threshold_ = 0.98f;
   static constexpr uint32_t check_load_factor_every_ = 128;
-  static constexpr float initial_slab_ratio = 0.95f;
   struct global_counters {
     size_type slab_block_count_;  // grows upward from the bottom
     size_type linear_count_;      // grows downward from the top
@@ -57,7 +56,7 @@ struct simple_slab_linear_allocator {
     pointer_type total_blocks_;
   };
 
-  simple_slab_linear_allocator(float pool_ratio = 0.9f) {
+  simple_slab_linear_allocator(float pool_ratio = 0.9f, float initial_slab_ratio=0.7f) {
     auto meminfo = utils::compute_device_memory_usage();
     auto max_bytes = static_cast<std::size_t>(static_cast<double>(meminfo.total_bytes) * pool_ratio);
     total_blocks_ = static_cast<pointer_type>(max_bytes / block_size_);
