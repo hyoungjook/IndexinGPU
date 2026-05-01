@@ -16,7 +16,7 @@ add_executable(universal_bench
 )
 set_target_properties(universal_bench PROPERTIES FOLDER "evaluation")
 target_include_directories(universal_bench PRIVATE ${EVALUATION_INCLUDE_DIRS})
-target_link_libraries(universal_bench PRIVATE robust_gpu_indexing)
+target_link_libraries(universal_bench PRIVATE indexingpu)
 
 set(UNIVERSAL_BENCH_WITH_GPU_BASELINE_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/gpu_dycuckoo_dynamic.cu
@@ -51,7 +51,7 @@ if(UNIVERSAL_BENCH_WITH_GPU_BASELINE_MISSING_COUNT EQUAL 0)
     ${UNIVERSAL_BENCH_WITH_GPU_BASELINE_SOURCES}
   )
   target_compile_definitions(universal_bench_with_gpu_baseline PRIVATE UNIVERSAL_BENCH_WITH_GPU_BASELINE)
-  target_link_libraries(universal_bench_with_gpu_baseline PRIVATE robust_gpu_indexing)
+  target_link_libraries(universal_bench_with_gpu_baseline PRIVATE indexingpu)
 else()
   string(JOIN "\n  " UNIVERSAL_BENCH_WITH_GPU_BASELINE_MISSING_PATHS_TEXT
     ${UNIVERSAL_BENCH_WITH_GPU_BASELINE_MISSING_PATHS})

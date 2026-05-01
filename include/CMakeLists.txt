@@ -1,10 +1,10 @@
-add_library(robust_gpu_indexing_src INTERFACE)
+add_library(indexingpu_src INTERFACE)
 
-file(GLOB_RECURSE   robust_gpu_indexing_src
+file(GLOB_RECURSE   indexingpu_src
                     "*.h"
                     "*.hpp"
                     "*.cuh"
                     "*.cu")
-set(SOURCE_LIST ${robust_gpu_indexing_src})
-target_sources(robust_gpu_indexing INTERFACE ${robust_gpu_indexing_src})
-target_include_directories(robust_gpu_indexing INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")
+set(SOURCE_LIST ${indexingpu_src})
+target_sources(indexingpu INTERFACE ${indexingpu_src})
+target_include_directories(indexingpu INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")

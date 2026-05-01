@@ -29,7 +29,7 @@ set(json_output_directory "${CMAKE_CURRENT_SOURCE_DIR}/outputs")
 
 
 # library
-add_library(robust_gpu_indexing INTERFACE)
+add_library(indexingpu INTERFACE)
 
 # CUDA and C++ compiler flags
 set(CXX_FLAGS
@@ -57,14 +57,14 @@ set(CUDA_FLAGS
     )
 
 
-set(btree_includes "${CMAKE_CURRENT_SOURCE_DIR}/include")
+set(indexingpu_includes "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 add_library(developer_flags INTERFACE)
 target_compile_options(developer_flags INTERFACE
     $<$<COMPILE_LANGUAGE:CXX>:${CXX_FLAGS}>
     $<$<COMPILE_LANGUAGE:CUDA>:${CUDA_FLAGS}>)
 
-target_link_libraries(robust_gpu_indexing
+target_link_libraries(indexingpu
     INTERFACE $<BUILD_INTERFACE:developer_flags>
     INTERFACE $<IF:$<CXX_COMPILER_ID:MSVC>,,-lstdc++fs>)
 
@@ -72,22 +72,11 @@ target_link_libraries(robust_gpu_indexing
 
 # Visual studio setup
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
-## Fix includes in visual studio for intellisense
-# set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT insert_blink_custom_alloc)
-# set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT insert_versioned_test)
-# set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT find_versioned_test)
-# set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT find_versioned_bench)
-# set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT concurrent_blink_custom_alloc)
-set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT concurrent_insert_rq_vtree)
-# set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT reclaimation_test)
-#set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT test_slab_alloc)
-
-file(TO_NATIVE_PATH ${btree_includes} btree_includes_native)
-
+file(TO_NATIVE_PATH ${indexingpu_includes} indexingpu_includes_native)
 set(CMAKE_VS_SDK_INCLUDE_DIRECTORIES
     $(VC_IncludePath)
     $(WindowsSDK_IncludePath)
-    ${btree_includes_native}
+    ${indexingpu_includes_native}
     )
 
 
