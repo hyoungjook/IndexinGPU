@@ -78,7 +78,7 @@ struct dynamic_stack_u32_warp {
     top_--;
   }
 
-  DEVICE_QUALIFIER void destroy() {
+  DEVICE_QUALIFIER ~dynamic_stack_u32_warp() {
     for (int i = 0; i < N; i++) {
       auto head = get_head(i);
       while (head != invalid_index) {
@@ -219,7 +219,7 @@ struct dynamic_stack_u32_subwarp {
     top_--;
   }
 
-  DEVICE_QUALIFIER void destroy() {
+  DEVICE_QUALIFIER ~dynamic_stack_u32_subwarp() {
     for (int i = 0; i < N; i++) {
       auto head = get_head(i);
       while (head != invalid_index) {

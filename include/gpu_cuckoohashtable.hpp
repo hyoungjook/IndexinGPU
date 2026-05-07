@@ -54,7 +54,7 @@ struct gpu_cuckoohashtable {
   static auto constexpr bucket_size = 32;
   static std::size_t constexpr bucket_bytes = sizeof(elem_type) * bucket_size;
   static auto constexpr num_hfs = 4;
-  static auto constexpr max_fill_factor = 0.9f;
+  static auto constexpr max_fill_factor = 0.98f;
   static uint32_t constexpr version_counter_size = 8192;
 
   using host_allocator_type = Allocator;
@@ -342,55 +342,53 @@ struct gpu_cuckoohashtable {
         node_type::unlock(d_table_, node1.get_node_index(), tile);
       }
       // === Phase 3. Try make space with cuckoo, BFS depth=1 ===
+      utils::dynamic_stack_u32<1, tile_type, device_allocator_context_type> cuckoo_candidates(allocator, tile);
       bool cuckoo_succeed = false; // if we made the empty slot
       bool cuckoo_early_exit = false; // if we reloaded the node during searching
-      #define TRY_MAKE_SPACE_WITH_CUCKOO_FROM_NODE(node, current_table_i) \
+      #define TRY_MAKE_SPACE_WITH_CUCKOO_FROM_NODE(node) \
       assert(node.is_full()); \
-      for (uint32_t loc = 0; loc < node.capacity; loc++) { \
-        auto other_node = coop_get_other_bucket_of_key_in<use_hash_tag>( \
-            node, loc, current_table_i, tile, allocator); \
+      for (uint32_t loc = 0; loc < node_type::capacity; loc++) { \
+        auto other_node = coop_get_other_bucket_of_key_in<use_hash_tag>(node, loc, tile, allocator); \
         if (!other_node.is_full()) { \
           /*found the space*/ \
-          key_slice_type target_key = node.get_key_from_location(loc); \
-          value_slice_type target_value = node.get_value_from_location(loc); \
-          auto target_keystate = node.get_keystate_from_location(loc); \
-          lock_two_nodes_in_order(node, other_node, tile); \
-          node.template load_from_array<utils::memory_order::acq_rel>(d_table_); /*first load use acquire*/ \
-          other_node.template load_from_array<utils::memory_order::weak_tilesync>(d_table_); \
-          if (!other_node.is_full()) { \
-            /*check the key still exists in node*/ \
-            uint32_t to_check = node.match_key_value_in_node(target_key, target_value, target_keystate); \
-            if (to_check != 0) { \
-              assert(__popc(to_check) == 1); \
-              /*move the element*/ \
-              other_node.insert(target_key, target_value, target_keystate); \
-              node.erase(__ffs(to_check) - 1); \
-              if (tile.thread_rank() == 0) { \
-                cuda::atomic_ref<size_type, cuda::thread_scope_device> version_ref(d_versions_[(target_key * utils::PRIME2) % version_counter_size]); \
-                version_ref.fetch_add(1, cuda::memory_order_release); \
-              } \
-              other_node.template store_to_array<utils::memory_order::weak_tilesync>(d_table_); \
-              node.template store_to_array<utils::memory_order::weak_tilesync>(d_table_); \
-              if (tile.thread_rank() == 0) { \
-                cuda::atomic_ref<size_type, cuda::thread_scope_device> version_ref(d_versions_[(target_key * utils::PRIME2) % version_counter_size]); \
-                version_ref.fetch_add(1, cuda::memory_order_release); \
-              } \
-              cuckoo_succeed = true; \
-            } \
-          } \
-          node_type::unlock(d_table_, node.get_node_index(), tile); \
-          node_type::unlock(d_table_, other_node.get_node_index(), tile); \
+          const bool displaced = cuckoo_displace_key(node, loc, other_node, tile, allocator); \
+          cuckoo_succeed = cuckoo_succeed || displaced; \
           cuckoo_early_exit = true; \
           break; \
         } \
+        else { \
+          auto other_node_index = other_node.get_node_index(); \
+          cuckoo_candidates.push(other_node_index); \
+        } \
       }
-      TRY_MAKE_SPACE_WITH_CUCKOO_FROM_NODE(node0, table_i)
+      TRY_MAKE_SPACE_WITH_CUCKOO_FROM_NODE(node0)
       if (cuckoo_succeed) { continue; }
-      TRY_MAKE_SPACE_WITH_CUCKOO_FROM_NODE(node1, ((table_i + 1) % num_hfs))
+      TRY_MAKE_SPACE_WITH_CUCKOO_FROM_NODE(node1)
       if (cuckoo_succeed || cuckoo_early_exit) { continue; }
       // passing here means all two buckets were full and all other buckets are all full
       #undef TRY_MAKE_SPACE_WITH_CUCKOO_FROM_NODE
-      // Phase 4: Cuckoo failed on depth=1, TODO
+      // Phase 4: Cuckoo failed on depth=1, try depth=2
+      // the stack has 2*node::capacity entries
+      cuckoo_succeed = false;
+      cuckoo_early_exit = false;
+      for (uint32_t trial = 0; trial < 2 * node_type::capacity; trial++) {
+        size_type node_index;
+        cuckoo_candidates.pop(node_index);
+        auto node = node_type(node_index, tile, allocator);
+        node.template load_from_array<utils::memory_order::acq_rel>(d_table_);
+        for (uint32_t loc = 0; loc < node_type::capacity; loc++) {
+          if (loc >= node.num_keys()) { break; }
+          auto other_node = coop_get_other_bucket_of_key_in<use_hash_tag>(node, loc, tile, allocator);
+          if (!other_node.is_full()) {
+            const bool displaced = cuckoo_displace_key(node, loc, other_node, tile, allocator);
+            cuckoo_succeed = cuckoo_succeed || displaced;
+            cuckoo_early_exit = true;
+            break;
+          }
+        }
+      }
+      if (cuckoo_succeed || cuckoo_early_exit) { continue; }
+      // Phase 5: Cuckoo failed on depth=2, abort
       assert(false);
       return false;
     }
@@ -493,7 +491,6 @@ struct gpu_cuckoohashtable {
   DEVICE_QUALIFIER hashtable_node<tile_type, device_allocator_context_type>
         coop_get_other_bucket_of_key_in(hashtable_node<tile_type, device_allocator_context_type>& node,
                                         uint32_t location,
-                                        uint32_t current_table_i,
                                         const tile_type& tile,
                                         allocator_type& allocator) {
     using node_type = hashtable_node<tile_type, device_allocator_context_type>;
@@ -514,6 +511,7 @@ struct gpu_cuckoohashtable {
     // two hash buckets for the key are
     //    (target_table_i,                  hash.x % num_buckets_per_hf_) and
     //    ((target_table_i + 1) % num_hfs,  hash.y % num_buckets_per_hf_)
+    uint32_t current_table_i = node.get_node_index() / num_buckets_per_hf_;
     assert(current_table_i == target_table_i || current_table_i == (target_table_i + 1) % num_hfs);
     if (target_table_i == current_table_i) {
       target_table_i = (target_table_i + 1) % num_hfs;
@@ -522,6 +520,46 @@ struct gpu_cuckoohashtable {
     auto other_node = node_type(bucket_index_of(target_table_i, hash.x), tile, allocator);
     other_node.template load_from_array<utils::memory_order::acq_rel>(d_table_);
     return other_node;
+  }
+
+  template <typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER bool cuckoo_displace_key(hashtable_node<tile_type, device_allocator_context_type>& node,
+                                            uint32_t location,
+                                            hashtable_node<tile_type, device_allocator_context_type>& other_node,
+                                            const tile_type& tile,
+                                            allocator_type& allocator) {
+    using node_type = hashtable_node<tile_type, device_allocator_context_type>;
+    key_slice_type target_key = node.get_key_from_location(location);
+    value_slice_type target_value = node.get_value_from_location(location);
+    auto target_keystate = node.get_keystate_from_location(location);
+    lock_two_nodes_in_order(node, other_node, tile);
+    node.template load_from_array<utils::memory_order::acq_rel>(d_table_);
+    other_node.template load_from_array<utils::memory_order::weak_tilesync>(d_table_);
+    bool displaced = false;
+    if (!other_node.is_full()) {
+      // check the key still exists in node
+      uint32_t to_check = node.match_key_value_in_node(target_key, target_value, target_keystate);
+      if (to_check != 0) {
+        assert(__popc(to_check) == 1); \
+        // move the element
+        other_node.insert(target_key, target_value, target_keystate);
+        node.erase(__ffs(to_check) - 1);
+        if (tile.thread_rank() == 0) {
+          cuda::atomic_ref<size_type, cuda::thread_scope_device> version_ref(d_versions_[(target_key * utils::PRIME2) % version_counter_size]);
+          version_ref.fetch_add(1, cuda::memory_order_release);
+        }
+        other_node.template store_to_array<utils::memory_order::weak_tilesync>(d_table_);
+        node.template store_to_array<utils::memory_order::weak_tilesync>(d_table_);
+        if (tile.thread_rank() == 0) {
+          cuda::atomic_ref<size_type, cuda::thread_scope_device> version_ref(d_versions_[(target_key * utils::PRIME2) % version_counter_size]);
+          version_ref.fetch_add(1, cuda::memory_order_release);
+        }
+        displaced = true;
+      }
+    }
+    node_type::unlock(d_table_, node.get_node_index(), tile);
+    node_type::unlock(d_table_, other_node.get_node_index(), tile);
+    return displaced;
   }
 
   template <typename tile_type>

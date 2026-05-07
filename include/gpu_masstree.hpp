@@ -387,8 +387,6 @@ struct gpu_masstree {
         size_type next_node_index;
         while (true) {
           if (layer == 0) {
-            key_slice_and_node_index_stack.destroy();
-            if constexpr (use_upper_key) { ignore_upper_key_stack.destroy(); }
             return out_count;
           }
           layer--;
@@ -413,8 +411,6 @@ struct gpu_masstree {
       }
       else {
         assert(scan_op == -3);  // end scanning
-        key_slice_and_node_index_stack.destroy();
-        if constexpr (use_upper_key) { ignore_upper_key_stack.destroy(); }
         return out_count;
       }
     }
@@ -902,7 +898,6 @@ struct gpu_masstree {
           }
           slice--;
         }
-        per_layer_indexes.destroy();
       }
       return true;
     }
@@ -1340,7 +1335,6 @@ struct gpu_masstree {
         }
       }
     }
-    stack.destroy();
   }
 
   template <typename func>
