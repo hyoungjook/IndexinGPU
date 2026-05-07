@@ -386,6 +386,7 @@ struct gpu_cuckoohashtable {
             break;
           }
         }
+        if (cuckoo_succeed) { break; }
       }
       if (cuckoo_succeed || cuckoo_early_exit) { continue; }
       // Phase 5: Cuckoo failed on depth=2, abort
