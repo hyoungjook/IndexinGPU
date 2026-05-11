@@ -84,7 +84,6 @@ struct gpu_masstree {
   // host-side APIs
   // if key_lengths == NULL, we use max_key_length as a fixed length
   template <bool concurrent = false,
-            bool reuse_root = true,
             bool use_shmem_key = false>
   void find(const key_slice_type* keys,
             const size_type max_key_length,
@@ -94,13 +93,12 @@ struct gpu_masstree {
             size_type* value_lengths,
             const size_type num_keys,
             cudaStream_t stream = 0) {
-    kernels::GpuMasstree::find_device_func<gpu_masstree, concurrent, reuse_root>
+    kernels::GpuMasstree::find_device_func<gpu_masstree, concurrent>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths};
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
 
   template <bool enable_suffix = true,
-            bool reuse_root = true,
             bool use_shmem_key = false>
   void insert(const key_slice_type* keys,
               const size_type max_key_length,
@@ -111,7 +109,7 @@ struct gpu_masstree {
               const size_type num_keys,
               cudaStream_t stream = 0,
               bool update_if_exists = false) {
-    kernels::GpuMasstree::insert_device_func<gpu_masstree, enable_suffix, reuse_root>
+    kernels::GpuMasstree::insert_device_func<gpu_masstree, enable_suffix>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths, .update_if_exists = update_if_exists};
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
@@ -120,21 +118,19 @@ struct gpu_masstree {
             bool pessimistic_merge = true,
             bool do_merge = true,
             bool concurrent = true,
-            bool reuse_root = true,
             bool use_shmem_key = false>
   void erase(const key_slice_type* keys,
              const size_type max_key_length,
              const size_type* key_lengths,
              const size_type num_keys,
              cudaStream_t stream = 0) {
-    kernels::GpuMasstree::erase_device_func<gpu_masstree, concurrent, do_merge, pessimistic_merge, do_remove_empty_root, reuse_root>
+    kernels::GpuMasstree::erase_device_func<gpu_masstree, concurrent, do_merge, pessimistic_merge, do_remove_empty_root>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths};
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
 
   template <bool use_upper_key = true,
             bool concurrent = false,
-            bool reuse_root = true,
             bool use_shmem_key = false>
   void scan(const key_slice_type* lower_keys,
             const size_type* lower_key_lengths,
@@ -150,7 +146,7 @@ struct gpu_masstree {
             key_slice_type* out_keys = nullptr,
             size_type* out_key_lengths = nullptr,
             cudaStream_t stream = 0) {
-    kernels::GpuMasstree::scan_device_func<gpu_masstree, use_upper_key, concurrent, reuse_root>
+    kernels::GpuMasstree::scan_device_func<gpu_masstree, use_upper_key, concurrent>
       func{.d_lower_keys = lower_keys, .d_lower_key_lengths = lower_key_lengths,
            .max_key_length = max_key_length, .max_count_per_query = max_count_per_query,
            .d_upper_keys = upper_keys, .d_upper_key_lengths = upper_key_lengths,
@@ -163,7 +159,6 @@ struct gpu_masstree {
             bool erase_do_remove_empty_root = true,
             bool erase_pessimistic_merge = true,
             bool erase_do_merge = true,
-            bool reuse_root = true,
             bool use_shmem_key = false>
   void mixed_batch(const kernels::request_type* request_types,
                    const key_slice_type* keys,
@@ -176,45 +171,25 @@ struct gpu_masstree {
                    const size_type num_requests,
                    cudaStream_t stream = 0,
                    bool insert_update_if_exists = false) {
-    kernels::GpuMasstree::mixed_device_func<gpu_masstree, enable_suffix, erase_do_merge, erase_pessimistic_merge, erase_do_remove_empty_root, reuse_root>
+    kernels::GpuMasstree::mixed_device_func<gpu_masstree, enable_suffix, erase_do_merge, erase_pessimistic_merge, erase_do_remove_empty_root>
       func{.d_types = request_types, .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths, .d_results = results, .insert_update_if_exists = insert_update_if_exists};
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_requests, stream);
   }
 
   // device-side APIs
-  template <bool concurrent, typename tile_type>
-  DEVICE_QUALIFIER elem_type cooperative_fetch_root(const tile_type& tile,
-                                                    device_allocator_context_type& allocator) {
-    using node_type = masstree_node<tile_type, device_allocator_context_type>;
-    auto root_node = node_type(root_index_, tile, allocator);
-    root_node.template load_fetchonly<concurrent ? utils::memory_order::acq_rel : utils::memory_order::weak>();
-    return root_node.get_lane_elem();
-  }
-
-  template <bool concurrent, typename warp_type, typename tile_type>
-  DEVICE_QUALIFIER elem_type cooperative_fetch_root(const warp_type& warp_wide_tile,
-                                                    const tile_type& tile,
-                                                    device_allocator_context_type& allocator) {
-    using node_type = masstree_node<tile_type, device_allocator_context_type>;
-    auto root_node = node_type(root_index_, tile, allocator);
-    root_node.template load_warpwidesync<concurrent ? utils::memory_order::acq_rel : utils::memory_order::weak>(warp_wide_tile);
-    return root_node.get_lane_elem();
-  }
-
   template <bool concurrent, typename tile_type, typename keyptr_or_keystore, typename valptr_or_valstore>
-  DEVICE_QUALIFIER size_type cooperative_find_from_root(elem_type root_lane_elem,
-                                                        keyptr_or_keystore& key,
-                                                        size_type key_length,
-                                                        valptr_or_valstore& value,
-                                                        size_type max_value_length,
-                                                        const tile_type& tile,
-                                                        device_allocator_context_type& allocator) {
+  DEVICE_QUALIFIER size_type cooperative_find(keyptr_or_keystore& key,
+                                              size_type key_length,
+                                              valptr_or_valstore& value,
+                                              size_type max_value_length,
+                                              const tile_type& tile,
+                                              device_allocator_context_type& allocator) {
     using node_type = masstree_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     dummy_early_exit_check<node_type> dummy_early_exit;
     size_type slice = 0;
-    auto current_node = node_type(root_index_, root_lane_elem, tile, allocator);
-    current_node.read_metadata_from_registers();
+    auto current_node = node_type(root_index_, tile, allocator);
+    current_node.template load<concurrent ? utils::memory_order::acq_rel : utils::memory_order::weak>();
     while (slice < key_length) {
       const key_slice_type key_slice = key[slice];
       const bool more_key = (slice < key_length - 1);
@@ -258,32 +233,20 @@ struct gpu_masstree {
     return 0;
   }
 
-  template <bool concurrent, typename tile_type, typename keyptr_or_keystore, typename valptr_or_valstore>
-  DEVICE_QUALIFIER size_type cooperative_find(keyptr_or_keystore& key,
-                                              size_type key_length,
-                                              valptr_or_valstore& value,
-                                              size_type max_value_length,
-                                              const tile_type& tile,
-                                              device_allocator_context_type& allocator) {
-    auto root_lane_elem = cooperative_fetch_root<concurrent>(tile, allocator);
-    return cooperative_find_from_root<concurrent>(root_lane_elem, key, key_length, value, max_value_length, tile, allocator);
-  }
-
   template <bool use_upper_key, bool concurrent, typename tile_type, typename keyptr_or_keystore>
-  DEVICE_QUALIFIER size_type cooperative_scan_from_root(elem_type root_lane_elem,
-                                                        keyptr_or_keystore& lower_key,
-                                                        const size_type lower_key_length,
-                                                        const tile_type& tile,
-                                                        device_allocator_context_type& allocator,
-                                                        const key_slice_type* upper_key = nullptr,
-                                                        const size_type upper_key_length = 1,
-                                                        size_type out_max_count = 1,
-                                                        value_slice_type* out_values = nullptr,
-                                                        size_type* out_value_lengths = nullptr,
-                                                        const size_type out_value_max_length = 1,
-                                                        key_slice_type* out_keys = nullptr,
-                                                        size_type* out_key_lengths = nullptr,
-                                                        const size_type out_key_max_length = 1) {
+  DEVICE_QUALIFIER size_type cooperative_scan(keyptr_or_keystore& lower_key,
+                                              const size_type lower_key_length,
+                                              const tile_type& tile,
+                                              device_allocator_context_type& allocator,
+                                              const key_slice_type* upper_key = nullptr,
+                                              const size_type upper_key_length = 1,
+                                              size_type out_max_count = 1,
+                                              value_slice_type* out_values = nullptr,
+                                              size_type* out_value_lengths = nullptr,
+                                              const size_type out_value_max_length = 1,
+                                              key_slice_type* out_keys = nullptr,
+                                              size_type* out_key_lengths = nullptr,
+                                              const size_type out_key_max_length = 1) {
     using node_type = masstree_node<tile_type, device_allocator_context_type>;
     using dynamic_stack_type_x2 = utils::dynamic_stack_u32<2, tile_type, device_allocator_context_type>;
     using dynamic_stack_type_x1 = utils::dynamic_stack_u32<1, tile_type, device_allocator_context_type>;
@@ -307,8 +270,8 @@ struct gpu_masstree {
     bool passed_lower_key = false;
     dynamic_stack_type_x2 key_slice_and_node_index_stack(allocator, tile);
     [[maybe_unused]] dynamic_stack_type_x1 ignore_upper_key_stack(allocator, tile);
-    auto current_node = node_type(root_index_, root_lane_elem, tile, allocator);
-    current_node.read_metadata_from_registers();
+    auto current_node = node_type(root_index_, tile, allocator);
+    current_node.template load<concurrent ? utils::memory_order::acq_rel : utils::memory_order::weak>();
     while (true) {
       // traverse the btree: current_node can be root node or border node
       coop_traverse_until_border<concurrent, concurrent ? utils::memory_order::acq_rel : utils::memory_order::weak>(
@@ -417,38 +380,15 @@ struct gpu_masstree {
     assert(false);
   }
 
-  template <bool use_upper_key, bool concurrent, typename tile_type, typename keyptr_or_keystore>
-  DEVICE_QUALIFIER size_type cooperative_scan(keyptr_or_keystore& lower_key,
-                                              const size_type lower_key_length,
-                                              const tile_type& tile,
-                                              device_allocator_context_type& allocator,
-                                              const key_slice_type* upper_key = nullptr,
-                                              const size_type upper_key_length = 1,
-                                              size_type out_max_count = 1,
-                                              value_slice_type* out_values = nullptr,
-                                              size_type* out_value_lengths = nullptr,
-                                              const size_type out_value_max_length = 1,
-                                              key_slice_type* out_keys = nullptr,
-                                              size_type* out_key_lengths = nullptr,
-                                              const size_type out_key_max_length = 1) {
-    auto root_lane_elem = cooperative_fetch_root<concurrent>(tile, allocator);
-    return cooperative_scan_from_root<use_upper_key, concurrent>(
-      root_lane_elem,
-      lower_key, lower_key_length, tile, allocator, upper_key, upper_key_length,
-      out_max_count, out_values, out_value_lengths, out_value_max_length,
-      out_keys, out_key_lengths, out_key_max_length);
-  }
-
   template <bool enable_suffix, typename tile_type, typename keyptr_or_keystore, typename valptr_or_valstore>
-  DEVICE_QUALIFIER bool cooperative_insert_from_root(elem_type root_lane_elem,
-                                                     keyptr_or_keystore& key,
-                                                     const size_type key_length,
-                                                     valptr_or_valstore& value,
-                                                     const size_type value_length,
-                                                     const tile_type& tile,
-                                                     device_allocator_context_type& allocator,
-                                                     device_reclaimer_context_type& reclaimer,
-                                                     bool update_if_exists = false) {
+  DEVICE_QUALIFIER bool cooperative_insert(keyptr_or_keystore& key,
+                                           const size_type key_length,
+                                           valptr_or_valstore& value,
+                                           const size_type value_length,
+                                           const tile_type& tile,
+                                           device_allocator_context_type& allocator,
+                                           device_reclaimer_context_type& reclaimer,
+                                           bool update_if_exists = false) {
     using node_type = masstree_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     struct split_early_exit_check {
@@ -466,8 +406,8 @@ struct gpu_masstree {
     size_type prev_root_index = invalid_pointer;
     size_type slice = 0;
     size_type current_root_index = root_index_;
-    auto current_node = node_type(root_index_, root_lane_elem, tile, allocator);
-    current_node.read_metadata_from_registers();
+    auto current_node = node_type(root_index_, tile, allocator);
+    current_node.template load<utils::memory_order::acq_rel>();
     while (slice < key_length) {
       const key_slice_type key_slice = key[slice];
       const bool more_key = (slice < key_length - 1);
@@ -669,26 +609,12 @@ struct gpu_masstree {
     return false;
   }
 
-  template <bool enable_suffix, typename tile_type, typename keyptr_or_keystore, typename valptr_or_valstore>
-  DEVICE_QUALIFIER bool cooperative_insert(keyptr_or_keystore& key,
-                                           const size_type key_length,
-                                           valptr_or_valstore& value,
-                                           const size_type value_length,
-                                           const tile_type& tile,
-                                           device_allocator_context_type& allocator,
-                                           device_reclaimer_context_type& reclaimer,
-                                           bool update_if_exists = false) {
-    auto root_lane_elem = cooperative_fetch_root<true>(tile, allocator);
-    return cooperative_insert_from_root<enable_suffix>(root_lane_elem, key, key_length, value, value_length, tile, allocator, reclaimer, update_if_exists);
-  }
-
   template <bool concurrent, bool do_merge, bool pessimistic_merge, bool do_remove_empty_root, typename tile_type, typename keyptr_or_keystore>
-  DEVICE_QUALIFIER bool cooperative_erase_from_root(elem_type root_lane_elem,
-                                                    keyptr_or_keystore& key,
-                                                    const size_type key_length,
-                                                    const tile_type& tile,
-                                                    device_allocator_context_type& allocator,
-                                                    device_reclaimer_context_type& reclaimer) {
+  DEVICE_QUALIFIER bool cooperative_erase(keyptr_or_keystore& key,
+                                          const size_type key_length,
+                                          const tile_type& tile,
+                                          device_allocator_context_type& allocator,
+                                          device_reclaimer_context_type& reclaimer) {
     static_assert(concurrent || (!do_merge && !pessimistic_merge && !do_remove_empty_root));
     static_assert(do_merge || (!pessimistic_merge && !do_remove_empty_root));
     static_assert(pessimistic_merge || !do_remove_empty_root);
@@ -709,8 +635,8 @@ struct gpu_masstree {
     uint32_t slice = 0;
     bool retry_with_merge = false;
     size_type current_root_index = root_index_;
-    auto current_node = node_type(root_index_, root_lane_elem, tile, allocator);
-    current_node.read_metadata_from_registers();
+    auto current_node = node_type(root_index_, tile, allocator);
+    current_node.template load<utils::memory_order::acq_rel>();
     while (slice < key_length) {
       key_slice_type key_slice = key[slice];
       const bool more_key = (slice < key_length - 1);
@@ -903,17 +829,6 @@ struct gpu_masstree {
     }
     assert(false);
     return false;
-  }
-
-  template <bool concurrent, bool do_merge, bool pessimistic_merge, bool do_remove_empty_root, typename tile_type, typename keyptr_or_keystore>
-  DEVICE_QUALIFIER bool cooperative_erase(keyptr_or_keystore& key,
-                                          const size_type key_length,
-                                          const tile_type& tile,
-                                          device_allocator_context_type& allocator,
-                                          device_reclaimer_context_type& reclaimer) {
-    auto root_lane_elem = cooperative_fetch_root<concurrent>(tile, allocator);
-    return cooperative_erase_from_root<concurrent, do_merge, pessimistic_merge, do_remove_empty_root>(
-      root_lane_elem, key, key_length, tile, allocator, reclaimer);
   }
 
  private:

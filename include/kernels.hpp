@@ -62,7 +62,6 @@ __global__ void batch_kernel(index_type index,
     bool task_exists = (thread_id < num_requests);
     typename device_func::dev_regs regs;
     if constexpr (do_reclaim) { reclaimer.begin_critical_section(block_wide_tile, allocator); }
-    func.load_root(regs, index, warp_wide_tile, tile, allocator);
     auto work_queue = tile.ballot(task_exists);
     if (work_queue) {
       func.load(regs, index, tile, allocator, thread_id, task_exists);
@@ -114,7 +113,7 @@ __global__ void initialize_kernel(masstree tree, size_type* d_root_index) {
   tree.allocate_root_node(d_root_index, tile, allocator);
 }
 
-template <typename masstree, bool enable_suffix, bool reuse_root>
+template <typename masstree, bool enable_suffix>
 struct insert_device_func {
   using key_slice_type = typename masstree::key_slice_type;
   using size_type = typename masstree::size_type;
@@ -139,12 +138,6 @@ struct insert_device_func {
     elem_type root_lane_elem;
   };
   // device-side functions
-  template <typename warp_type, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void load_root(dev_regs& regs, masstree& tree, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
-    if constexpr (reuse_root) {
-      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(warp_tile, tile, allocator);
-    }
-  }
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
@@ -160,18 +153,13 @@ struct insert_device_func {
     auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
     auto cur_key = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
     auto cur_value = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value, cur_rank, tile), cur_value_length, max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size, tile);
-    if constexpr (reuse_root) {
-      tree.template cooperative_insert_from_root<enable_suffix>(regs.root_lane_elem, cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, update_if_exists);
-    }
-    else {
-      tree.template cooperative_insert<enable_suffix>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, update_if_exists);
-    }
+    tree.template cooperative_insert<enable_suffix>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, update_if_exists);
   }
   template <bool use_shmem_key>
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
 
-template <typename masstree, bool concurrent, bool reuse_root>
+template <typename masstree, bool concurrent>
 struct find_device_func {
   using key_slice_type = typename masstree::key_slice_type;
   using size_type = typename masstree::size_type;
@@ -195,12 +183,6 @@ struct find_device_func {
     elem_type root_lane_elem;
   };
   // device-side functions
-  template <typename warp_type, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void load_root(dev_regs& regs, masstree& tree, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
-    if constexpr (reuse_root) {
-      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(warp_tile, tile, allocator);
-    }
-  }
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
@@ -214,9 +196,7 @@ struct find_device_func {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_key = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
     auto cur_value = utils::varlenkv::wrapper_output<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value, cur_rank, tile), max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size);
-    auto cur_value_length = reuse_root ?
-      tree.template cooperative_find_from_root<concurrent>(regs.root_lane_elem, cur_key, cur_key_length, cur_value, max_value_length, tile, allocator) :
-      tree.template cooperative_find<concurrent>(cur_key, cur_key_length, cur_value, max_value_length, tile, allocator);
+    auto cur_value_length = tree.template cooperative_find<concurrent>(cur_key, cur_key_length, cur_value, max_value_length, tile, allocator);
     cur_value.flush(cur_value_length, tile, regs.value, cur_rank);
     if (tile.thread_rank() == cur_rank) {
       regs.value_length = cur_value_length;
@@ -229,7 +209,7 @@ struct find_device_func {
   }
 };
 
-template <typename masstree, bool concurrent, bool do_merge, bool pessimistic_merge, bool do_remove_empty_root, bool reuse_root>
+template <typename masstree, bool concurrent, bool do_merge, bool pessimistic_merge, bool do_remove_empty_root>
 struct erase_device_func {
   using key_slice_type = typename masstree::key_slice_type;
   using size_type = typename masstree::size_type;
@@ -248,12 +228,6 @@ struct erase_device_func {
     elem_type root_lane_elem;
   };
   // device-side functions
-  template <typename warp_type, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void load_root(dev_regs& regs, masstree& tree, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
-    if constexpr (reuse_root) {
-      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(warp_tile, tile, allocator);
-    }
-  }
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
@@ -265,18 +239,13 @@ struct erase_device_func {
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_key = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
-    if constexpr (reuse_root) {
-      tree.template cooperative_erase_from_root<concurrent, do_merge, pessimistic_merge, do_remove_empty_root>(regs.root_lane_elem, cur_key, cur_key_length, tile, allocator, reclaimer);
-    }
-    else {
-      tree.template cooperative_erase<concurrent, do_merge, pessimistic_merge, do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, reclaimer);
-    }
+    tree.template cooperative_erase<concurrent, do_merge, pessimistic_merge, do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, reclaimer);
   }
   template <bool use_shmem_key>
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
 
-template <typename masstree, bool use_upper_key, bool concurrent, bool reuse_root>
+template <typename masstree, bool use_upper_key, bool concurrent>
 struct scan_device_func {
   using key_slice_type = typename masstree::key_slice_type;
   using size_type = typename masstree::size_type;
@@ -311,12 +280,6 @@ struct scan_device_func {
     elem_type root_lane_elem;
   };
   // device-side functions
-  template <typename warp_type, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void load_root(dev_regs& regs, masstree& tree, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
-    if constexpr (reuse_root) {
-      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(warp_tile, tile, allocator);
-    }
-  }
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
@@ -340,14 +303,9 @@ struct scan_device_func {
     auto cur_value_lengths = tile.shfl(regs.value_lengths, cur_rank);
     auto cur_out_key = tile.shfl(regs.out_key, cur_rank);
     auto cur_out_key_length = tile.shfl(regs.out_key_length, cur_rank);
-    auto cur_count = reuse_root ?
-      tree.template cooperative_scan_from_root<use_upper_key, concurrent>(
-        regs.root_lane_elem,
-        cur_lower_key, cur_lower_key_length, tile, allocator, cur_upper_key, cur_upper_key_length,
-        max_count_per_query, cur_values, cur_value_lengths, max_value_length, cur_out_key, cur_out_key_length, max_key_length) :
-      tree.template cooperative_scan<use_upper_key, concurrent>(
-        cur_lower_key, cur_lower_key_length, tile, allocator, cur_upper_key, cur_upper_key_length,
-        max_count_per_query, cur_values, cur_value_lengths, max_value_length, cur_out_key, cur_out_key_length, max_key_length);
+    auto cur_count = tree.template cooperative_scan<use_upper_key, concurrent>(
+      cur_lower_key, cur_lower_key_length, tile, allocator, cur_upper_key, cur_upper_key_length,
+      max_count_per_query, cur_values, cur_value_lengths, max_value_length, cur_out_key, cur_out_key_length, max_key_length);
     if (tile.thread_rank() == cur_rank) {
       regs.count = cur_count;
     }
@@ -362,8 +320,7 @@ template <typename masstree,
           bool enable_suffix,
           bool erase_do_merge,
           bool erase_pessimistic_merge,
-          bool erase_do_remove_empty_root,
-          bool reuse_root>
+          bool erase_do_remove_empty_root>
 struct mixed_device_func {
   using key_slice_type = typename masstree::key_slice_type;
   using size_type = typename masstree::size_type;
@@ -392,12 +349,6 @@ struct mixed_device_func {
     elem_type root_lane_elem;
   };
   // device-side functions
-  template <typename warp_type, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void load_root(dev_regs& regs, masstree& tree, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
-    if constexpr (reuse_root) {
-      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(warp_tile, tile, allocator);
-    }
-  }
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
@@ -421,23 +372,17 @@ struct mixed_device_func {
     if (cur_type == request_type_insert) {
       auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
       auto cur_value = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value.input, cur_rank, tile), cur_value_length, max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size, tile);
-      auto cur_result = reuse_root ?
-        tree.template cooperative_insert_from_root<enable_suffix>(regs.root_lane_elem, cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, insert_update_if_exists) :  
-        tree.template cooperative_insert<enable_suffix>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, insert_update_if_exists);
+      auto cur_result = tree.template cooperative_insert<enable_suffix>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, insert_update_if_exists);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else if (cur_type == request_type_find) {
       auto cur_value = utils::varlenkv::wrapper_output<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value.output, cur_rank, tile), max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size);
-      auto cur_value_length = reuse_root ?
-        tree.template cooperative_find_from_root<true>(regs.root_lane_elem, cur_key, cur_key_length, cur_value, max_value_length, tile, allocator) :
-        tree.template cooperative_find<true>(cur_key, cur_key_length, cur_value, max_value_length, tile, allocator);
+      auto cur_value_length = tree.template cooperative_find<true>(cur_key, cur_key_length, cur_value, max_value_length, tile, allocator);
       cur_value.flush(cur_value_length, tile, regs.value.output, cur_rank);
       if (tile.thread_rank() == cur_rank) { regs.value_length = cur_value_length; }
     }
     else if (cur_type == request_type_erase) {
-      auto cur_result = reuse_root ?
-        tree.template cooperative_erase_from_root<true, erase_do_merge, erase_pessimistic_merge, erase_do_remove_empty_root>(regs.root_lane_elem, cur_key, cur_key_length, tile, allocator, reclaimer) :
-        tree.template cooperative_erase<true, erase_do_merge, erase_pessimistic_merge, erase_do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, reclaimer);
+      auto cur_result = tree.template cooperative_erase<true, erase_do_merge, erase_pessimistic_merge, erase_do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, reclaimer);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else {  // request_type_successor
@@ -505,8 +450,6 @@ struct insert_device_func {
     size_type value_length;
   };
   // device-side functions
-  template <typename warp_type, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const noexcept {}
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
@@ -550,8 +493,6 @@ struct find_device_func {
     size_type value_length;
   };
   // device-side functions
-  template <typename warp_type, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const noexcept {}
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
@@ -595,8 +536,6 @@ struct erase_device_func {
     size_type key_length;
   };
   // device-side functions
-  template <typename warp_type, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const noexcept {}
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
@@ -643,8 +582,6 @@ struct mixed_device_func {
     bool result;
   };
   // device-side functions
-  template <typename warp_type, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const noexcept {}
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
@@ -723,7 +660,7 @@ __global__ void initialize_kernel(extendhashtable table) {
   table.initialize_bucket(bucket_index, tile, allocator);
 }
 
-template <typename hashtable, bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains, bool reuse_dirsize>
+template <typename hashtable, bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains>
 struct insert_device_func {
   using key_slice_type = typename hashtable::key_slice_type;
   using size_type = typename hashtable::size_type;
@@ -747,12 +684,6 @@ struct insert_device_func {
     size_type directory_size;
   };
   // device-side functions
-  template <typename warp_type, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
-    if constexpr (reuse_dirsize) {
-      regs.directory_size = table.template cooperative_fetch_dirsize<true>(warp_tile);
-    }
-  }
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
@@ -768,18 +699,13 @@ struct insert_device_func {
     auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
     auto cur_key = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
     auto cur_value = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value, cur_rank, tile), cur_value_length, max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size, tile);
-    if constexpr (reuse_dirsize) {
-      table.template cooperative_insert_from_dirsize<use_hash_tag, tag_use_same_hash, do_merge_chains>(regs.directory_size, cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, update_if_exists);
-    }
-    else {
-      table.template cooperative_insert<use_hash_tag, tag_use_same_hash, do_merge_chains>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, update_if_exists);
-    }
+    table.template cooperative_insert<use_hash_tag, tag_use_same_hash, do_merge_chains>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, update_if_exists);
   }
   template <bool use_shmem_key>
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
 
-template <typename hashtable, bool concurrent, bool use_hash_tag, bool tag_use_same_hash, bool reuse_dirsize>
+template <typename hashtable, bool concurrent, bool use_hash_tag, bool tag_use_same_hash>
 struct find_device_func {
   using key_slice_type = typename hashtable::key_slice_type;
   using size_type = typename hashtable::size_type;
@@ -802,12 +728,6 @@ struct find_device_func {
     size_type directory_size;
   };
   // device-side functions
-  template <typename warp_type, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
-    if constexpr (reuse_dirsize) {
-      regs.directory_size = table.template cooperative_fetch_dirsize<true>(warp_tile);
-    }
-  }
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
@@ -821,9 +741,7 @@ struct find_device_func {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_key = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
     auto cur_value = utils::varlenkv::wrapper_output<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value, cur_rank, tile), max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size);
-    auto cur_value_length = reuse_dirsize ?
-      table.template cooperative_find_from_dirsize<concurrent, use_hash_tag, tag_use_same_hash>(regs.directory_size, cur_key, cur_key_length, cur_value, max_value_length, tile, allocator) :
-      table.template cooperative_find<concurrent, use_hash_tag, tag_use_same_hash>(cur_key, cur_key_length, cur_value, max_value_length, tile, allocator);
+    auto cur_value_length = table.template cooperative_find<concurrent, use_hash_tag, tag_use_same_hash>(cur_key, cur_key_length, cur_value, max_value_length, tile, allocator);
     cur_value.flush(cur_value_length, tile, regs.value, cur_rank);
     if (tile.thread_rank() == cur_rank) {
       regs.value_length = cur_value_length;
@@ -836,7 +754,7 @@ struct find_device_func {
   }
 };
 
-template <typename hashtable, bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains, bool do_merge_buckets, bool reuse_dirsize>
+template <typename hashtable, bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains, bool do_merge_buckets>
 struct erase_device_func {
   using key_slice_type = typename hashtable::key_slice_type;
   using size_type = typename hashtable::size_type;
@@ -854,12 +772,6 @@ struct erase_device_func {
     size_type directory_size;
   };
   // device-side functions
-  template <typename warp_type, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
-    if constexpr (reuse_dirsize) {
-      regs.directory_size = table.template cooperative_fetch_dirsize<true>(warp_tile);
-    }
-  }
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
@@ -871,12 +783,7 @@ struct erase_device_func {
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_key = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
-    if constexpr (reuse_dirsize) {
-      table.template cooperative_erase_from_dirsize<use_hash_tag, tag_use_same_hash, do_merge_chains, do_merge_buckets>(regs.directory_size, cur_key, cur_key_length, tile, allocator, reclaimer);
-    }
-    else {
-      table.template cooperative_erase<use_hash_tag, tag_use_same_hash, do_merge_chains, do_merge_buckets>(cur_key, cur_key_length, tile, allocator, reclaimer);
-    }
+    table.template cooperative_erase<use_hash_tag, tag_use_same_hash, do_merge_chains, do_merge_buckets>(cur_key, cur_key_length, tile, allocator, reclaimer);
   }
   template <bool use_shmem_key>
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
@@ -886,8 +793,7 @@ template <typename hashtable,
           bool use_hash_tag,
           bool tag_use_same_hash,
           bool do_merge_chains,
-          bool erase_do_merge_buckets,
-          bool reuse_dirsize>
+          bool erase_do_merge_buckets>
 struct mixed_device_func {
   using key_slice_type = typename hashtable::key_slice_type;
   using size_type = typename hashtable::size_type;
@@ -915,12 +821,6 @@ struct mixed_device_func {
     size_type directory_size;
   };
   // device-side functions
-  template <typename warp_type, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void load_root(dev_regs& regs, hashtable& table, const warp_type& warp_tile, const tile_type& tile, allocator_type& allocator) const {
-    if constexpr (reuse_dirsize) {
-      regs.directory_size = table.template cooperative_fetch_dirsize<true>(warp_tile);
-    }
-  }
   template <typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
     if (task_exists) {
@@ -944,23 +844,17 @@ struct mixed_device_func {
     if (cur_type == request_type_insert) {
       auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
       auto cur_value = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value.input, cur_rank, tile), cur_value_length, max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size, tile);
-      auto cur_result = reuse_dirsize ?
-        table.template cooperative_insert_from_dirsize<use_hash_tag, tag_use_same_hash, do_merge_chains>(regs.directory_size, cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, insert_update_if_exists) :
-        table.template cooperative_insert<use_hash_tag, tag_use_same_hash, do_merge_chains>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, insert_update_if_exists);
+      auto cur_result = table.template cooperative_insert<use_hash_tag, tag_use_same_hash, do_merge_chains>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, insert_update_if_exists);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else if (cur_type == request_type_find) {
       auto cur_value = utils::varlenkv::wrapper_output<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value.output, cur_rank, tile), max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size);
-      auto cur_value_length = reuse_dirsize ?
-        table.template cooperative_find_from_dirsize<true, use_hash_tag, tag_use_same_hash>(regs.directory_size, cur_key, cur_key_length, cur_value, max_value_length, tile, allocator) :
-        table.template cooperative_find<true, use_hash_tag, tag_use_same_hash>(cur_key, cur_key_length, cur_value, max_value_length, tile, allocator);
+      auto cur_value_length = table.template cooperative_find<true, use_hash_tag, tag_use_same_hash>(cur_key, cur_key_length, cur_value, max_value_length, tile, allocator);
       cur_value.flush(cur_value_length, tile, regs.value.output, cur_rank);
       if (tile.thread_rank() == cur_rank) { regs.value_length = cur_value_length; }
     }
     else if (cur_type == request_type_erase) {
-      auto cur_result = reuse_dirsize ?
-        table.template cooperative_erase_from_dirsize<use_hash_tag, tag_use_same_hash, do_merge_chains, erase_do_merge_buckets>(regs.directory_size, cur_key, cur_key_length, tile, allocator, reclaimer) :
-        table.template cooperative_erase<use_hash_tag, tag_use_same_hash, do_merge_chains, erase_do_merge_buckets>(cur_key, cur_key_length, tile, allocator, reclaimer);
+      auto cur_result = table.template cooperative_erase<use_hash_tag, tag_use_same_hash, do_merge_chains, erase_do_merge_buckets>(cur_key, cur_key_length, tile, allocator, reclaimer);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else {  // request_type_successor

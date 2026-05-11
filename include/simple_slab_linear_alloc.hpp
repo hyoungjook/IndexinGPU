@@ -146,7 +146,7 @@ struct device_allocator_context<simple_slab_linear_allocator<slab_size>> {
     }
     pointer_type ptr = (block_index_ * num_slabs_in_block_) + slab_index;
     // manage load factor
-    if (utils::finalize(ptr) % check_load_factor_every_ == 0) {
+    if (utils::mix32(ptr) % check_load_factor_every_ == 0) {
       size_type num_slabs;
       if (tile.thread_rank() == 0) {
         cuda::atomic_ref<size_type, cuda::thread_scope_device> num_slabs_ref(alloc_.counts_->num_slabs_);
@@ -187,7 +187,7 @@ struct device_allocator_context<simple_slab_linear_allocator<slab_size>> {
   }
   DEVICE_QUALIFIER uint32_t deallocate_perlane(pointer_type p) {
     deallocate_in_block(p);
-    return (utils::finalize(p) % check_load_factor_every_ == 0) ? 1 : 0;
+    return (utils::mix32(p) % check_load_factor_every_ == 0) ? 1 : 0;
   }
   template <typename tile_type>
   DEVICE_QUALIFIER void deallocate_perlane_finish(uint32_t sum, const tile_type& tile) {

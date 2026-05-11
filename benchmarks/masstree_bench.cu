@@ -41,8 +41,7 @@ template <typename masstree_type,
           bool erase_remove_empty_root = true,
           bool erase_pessimistic_merge = true,
           bool erase_merge = true,
-          bool erase_concurrent = true,
-          bool reuse_root = true>
+          bool erase_concurrent = true>
 void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
                     thrust::device_vector<size_type>& d_lengths,
                     thrust::device_vector<value_type>& d_values,
@@ -82,7 +81,7 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
     }
     gpu_timer insert_timer;
     insert_timer.start_timer();
-    tree.template insert<enable_suffix, reuse_root>(
+    tree.template insert<enable_suffix>(
       d_keys.data().get(), max_key_length, d_lengths.data().get(),
       d_values.data().get(), max_value_length, d_value_lengths.data().get(), num_keys);
     insert_timer.stop_timer();
@@ -96,7 +95,7 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
 
     gpu_timer find_timer1;
     find_timer1.start_timer();
-    tree.template find<false, reuse_root>(
+    tree.template find<false>(
       d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(),
       d_query_results.data().get(), max_value_length, d_query_result_lengths.data().get(), num_keys);
     find_timer1.stop_timer();
@@ -106,7 +105,7 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
 
     gpu_timer find_timer2;
     find_timer2.start_timer();
-    tree.template find<true, reuse_root>(
+    tree.template find<true>(
       d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(),
       d_query_results.data().get(), max_value_length, d_query_result_lengths.data().get(), num_keys);
     find_timer2.stop_timer();
@@ -116,7 +115,7 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
 
     gpu_timer successor_timer1;
     successor_timer1.start_timer();
-    tree.template scan<false, false, reuse_root>(
+    tree.template scan<false, false>(
       d_query_keys.data().get(), d_query_lengths.data().get(),
       max_key_length, max_counts_per_query, num_keys,
       nullptr, nullptr, nullptr, d_scan_results.data().get(),
@@ -128,7 +127,7 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
 
     gpu_timer successor_timer2;
     successor_timer2.start_timer();
-    tree.template scan<false, true, reuse_root>(
+    tree.template scan<false, true>(
       d_query_keys.data().get(), d_query_lengths.data().get(),
       max_key_length, max_counts_per_query, num_keys,
       nullptr, nullptr, nullptr, d_scan_results.data().get(),
@@ -148,8 +147,7 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
     tree.template erase<erase_remove_empty_root,
                         erase_pessimistic_merge || erase_remove_empty_root,
                         erase_merge || erase_pessimistic_merge || erase_remove_empty_root,
-                        erase_concurrent || erase_merge || erase_pessimistic_merge || erase_remove_empty_root,
-                        reuse_root>(
+                        erase_concurrent || erase_merge || erase_pessimistic_merge || erase_remove_empty_root>(
       d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), num_erase);
     erase_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());

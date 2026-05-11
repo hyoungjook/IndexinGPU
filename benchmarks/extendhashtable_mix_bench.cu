@@ -40,8 +40,7 @@ template <typename hashtable_type,
           bool use_hash_tag = true,
           bool tag_use_same_hash = true,
           bool merge_chains = true,
-          bool erase_merge_buckets = true,
-          bool reuse_dirsize = true>
+          bool erase_merge_buckets = true>
 void mix_bench_extendhashtable(thrust::device_vector<key_slice_type>& d_insert_keys,
                                thrust::device_vector<size_type>& d_insert_lengths,
                                thrust::device_vector<value_type>& d_insert_values,
@@ -75,7 +74,7 @@ void mix_bench_extendhashtable(thrust::device_vector<key_slice_type>& d_insert_k
     }
     gpu_timer insert_timer;
     insert_timer.start_timer();
-    tree.template insert<use_hash_tag, tag_use_same_hash, merge_chains, reuse_dirsize>(
+    tree.template insert<use_hash_tag, tag_use_same_hash, merge_chains>(
       d_insert_keys.data().get(), max_key_length, d_insert_lengths.data().get(),
       d_insert_values.data().get(), max_value_length, d_insert_value_lengths.data().get(), insert_num_keys);
     insert_timer.stop_timer();
@@ -87,8 +86,7 @@ void mix_bench_extendhashtable(thrust::device_vector<key_slice_type>& d_insert_k
     mix_timer.start_timer();
     tree.template mixed_batch<use_hash_tag, tag_use_same_hash,
                               merge_chains || erase_merge_buckets,
-                              erase_merge_buckets,
-                              reuse_dirsize>(
+                              erase_merge_buckets>(
       d_mix_types.data().get(), d_mix_keys.data().get(), max_key_length, d_mix_lengths.data().get(),
       d_mix_values.data().get(), max_value_length, d_mix_value_lengths.data().get(), nullptr, mix_num_requests);
     mix_timer.stop_timer();

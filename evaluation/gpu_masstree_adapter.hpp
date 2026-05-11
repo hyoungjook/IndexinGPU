@@ -183,31 +183,31 @@ struct gpu_masstree_adapter {
   template <uint32_t tile_size, bool enable_suffix, bool use_shmem_key, typename... arg_types>
   void do_insert(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template insert<enable_suffix, true, use_shmem_key>(args...);
+      ->template insert<enable_suffix, use_shmem_key>(args...);
   }
 
   template <uint32_t tile_size, uint32_t merge_level, bool use_shmem_key, typename... arg_types>
   void do_erase(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template erase<merge_level >= 4, merge_level >= 3, merge_level >= 2, merge_level >= 1, true, use_shmem_key>(args...);
+      ->template erase<merge_level >= 4, merge_level >= 3, merge_level >= 2, merge_level >= 1, use_shmem_key>(args...);
   }
 
   template <uint32_t tile_size, bool lookup_concurrent, bool use_shmem_key, typename... arg_types>
   void do_find(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template find<lookup_concurrent, true, use_shmem_key>(args...);
+      ->template find<lookup_concurrent, use_shmem_key>(args...);
   }
 
   template <uint32_t tile_size, bool lookup_concurrent, bool use_shmem_key, typename... arg_types>
   void do_scan(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template scan<false, lookup_concurrent, true, use_shmem_key>(args...);
+      ->template scan<false, lookup_concurrent, use_shmem_key>(args...);
   }
 
   template <uint32_t tile_size, bool enable_suffix, uint32_t merge_level, bool use_shmem_key, typename... arg_types>
   void do_mixed(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template mixed_batch<enable_suffix, merge_level >= 4, merge_level >= 3, merge_level >= 2, true, use_shmem_key>(args...);
+      ->template mixed_batch<enable_suffix, merge_level >= 4, merge_level >= 3, merge_level >= 2, use_shmem_key>(args...);
   }
 
   configs configs_;

@@ -20,6 +20,7 @@
 #include <macros.hpp>
 #include <utils.hpp>
 #include <suffix_node_subwarp.hpp>
+#include <compute_hash.hpp>
 
 template <typename tile_type, typename allocator_type>
 struct masstree_node_subwarp {
@@ -64,6 +65,25 @@ struct masstree_node_subwarp {
     write_metadata_to_registers();
   }
 
+  DEVICE_QUALIFIER uint32_t compute_checksum() const {
+    auto masked_lane_elem = lane_elem_;
+    if (tile_.thread_rank() == metadata_lane_) {
+      masked_lane_elem.key &= ~(checksum_mask_ | lock_bit_mask_);
+    }
+    return utils::compute_checksum(masked_lane_elem, tile_) & checksum_mask_;
+  }
+  template <utils::memory_order order>
+  DEVICE_QUALIFIER bool check_checksum() const {
+    if constexpr (order == utils::memory_order::weak) { return true; }
+    else { return compute_checksum() == (tile_.shfl(lane_elem_.key, metadata_lane_) & checksum_mask_); }
+  }
+  DEVICE_QUALIFIER void write_checksum() {
+    uint32_t checksum = compute_checksum();
+    if (tile_.thread_rank() == metadata_lane_) {
+      lane_elem_.key &= ~checksum_mask_;
+      lane_elem_.key |= checksum;
+    }
+  }
   template <utils::memory_order order>
   DEVICE_QUALIFIER void load() {
     load_fetchonly<order>();
@@ -72,28 +92,21 @@ struct masstree_node_subwarp {
   template <utils::memory_order order>
   DEVICE_QUALIFIER void load_fetchonly() {
     auto node_ptr = reinterpret_cast<elem_unsigned_type*>(allocator_.address(node_index_));
-    auto elem = utils::memory::cacheline_atomic_load<elem_unsigned_type, order>(node_ptr, tile_);
-    lane_elem_ = *reinterpret_cast<elem_type*>(&elem);
-  }
-  template <utils::memory_order order, typename warp_type>
-  DEVICE_QUALIFIER void load_warpwidesync(const warp_type& warp) {
-    auto node_ptr = reinterpret_cast<key_type*>(allocator_.address(node_index_));
-    // 1. fetch once: thread0-15 fetches tile.rank()*2, thread16-31 fetches tile.rank()*2+1
-    int fetch_idx = (tile_.thread_rank() * 2) + (warp.thread_rank() < 16 ? 0 : 1);
-    if constexpr (order != utils::memory_order::weak) { warp.sync(); }
-    auto tmp_elem = utils::memory::load<key_type, order>(node_ptr + fetch_idx);
-    if constexpr (order != utils::memory_order::weak) { warp.sync(); }
-    // 2. re-distribute tmp_elem
-    lane_elem_.key = tmp_elem;
-    lane_elem_.value = tmp_elem;
-    auto up_elem = warp.shfl_up(tmp_elem, 16);
-    if (warp.thread_rank() >= 16) { lane_elem_.key = up_elem; }
-    auto down_elem = warp.shfl_down(tmp_elem, 16);
-    if (warp.thread_rank() < 16) { lane_elem_.value = down_elem; }
+    #ifndef DISABLE_CACHELINE_ATOMICITY_CHECKSUM
+    do {
+    #endif
+      auto elem = utils::memory::cacheline_atomic_load<elem_unsigned_type, order>(node_ptr, tile_);
+      lane_elem_ = *reinterpret_cast<elem_type*>(&elem);
+    #ifndef DISABLE_CACHELINE_ATOMICITY_CHECKSUM
+    } while (!check_checksum<order>());
+    #endif
   }
   template <utils::memory_order order>
   DEVICE_QUALIFIER void store() {
     auto node_ptr = reinterpret_cast<elem_unsigned_type*>(allocator_.address(node_index_));
+    #ifndef DISABLE_CACHELINE_ATOMICITY_CHECKSUM
+    write_checksum();
+    #endif
     utils::memory::cacheline_atomic_store<elem_unsigned_type, order>(
       node_ptr, *reinterpret_cast<elem_unsigned_type*>(&lane_elem_), tile_);
   }
@@ -973,7 +986,7 @@ struct masstree_node_subwarp {
 
   // metadata is 32bits.
   //    (MSB)
-  //    [empty:23]
+  //    [checksum:23]
   //    [is_root:1]
   //    [is_garbage:1][has_sibling:1]
   //    [is_border:1][is_locked:1]
@@ -998,6 +1011,9 @@ struct masstree_node_subwarp {
   static constexpr uint32_t garbage_bit_mask_ = 1u << garbage_bit_offset_;
   static constexpr uint32_t root_bit_offset_ = 8;
   static constexpr uint32_t root_bit_mask_ = 1u << root_bit_offset_;
+  static constexpr uint32_t checksum_offset_ = 9;
+  static constexpr uint32_t checksum_bits_ = 23;
+  static constexpr uint32_t checksum_mask_ = ((1u << checksum_bits_) - 1) << checksum_offset_;
 
   static constexpr uint32_t interior_max_num_keys_ = node_width - 1;
   static constexpr uint32_t border_max_num_keys_ = node_width - 2;

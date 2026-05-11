@@ -236,9 +236,9 @@ struct suffix_node_subwarp {
     }
     // 3. reduce sum
     for (uint32_t offset = (node_width / 2); offset != 0; offset >>= 1) {
-      hash += tile_.shfl_down(hash, offset);
+      hash += tile_.shfl_xor(hash, offset);
     }
-    return tile_.shfl(hash, 0);
+    return hash;
   }
   template <uint32_t prime0, uint32_t prime1>
   DEVICE_QUALIFIER uint2 compute_polynomialx2() const {
@@ -303,10 +303,10 @@ struct suffix_node_subwarp {
     }
     // 3. reduce sum
     for (uint32_t offset = (node_width / 2); offset != 0; offset >>= 1) {
-      hash += tile_.shfl_down(hash, offset);
-      hash1 += tile_.shfl_down(hash1, offset);
+      hash += tile_.shfl_xor(hash, offset);
+      hash1 += tile_.shfl_xor(hash1, offset);
     }
-    return make_uint2(tile_.shfl(hash, 0), tile_.shfl(hash1, 0));
+    return make_uint2(hash, hash1);
   }
 
   template <typename keyptr_or_keystore, typename valptr_or_valstore>
