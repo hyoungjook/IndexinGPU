@@ -27,7 +27,7 @@ constexpr uint32_t PRIME0 = 0x9e3779b1;
 constexpr uint32_t PRIME1 = 0x01000193;
 constexpr uint32_t PRIME2 = 0xfffffffb;
 
-DEVICE_QUALIFIER uint32_t finalize(uint32_t x) {
+DEVICE_QUALIFIER uint32_t mix32(uint32_t x) {
   // murmur3 finalizer
   x ^= x >> 16;
   x *= 0x85ebca6b;
@@ -66,19 +66,19 @@ DEVICE_QUALIFIER uint32_t compute_hash(keyptr_or_keystore input, uint32_t length
   }
   // 3. reduce sum
   for (uint32_t offset = (tile_size / 2); offset != 0; offset >>= 1) {
-    hash += tile.shfl_down(hash, offset);
+    hash += tile.shfl_xor(hash, offset);
   }
   hash = ((hash * prime0) + original_length) * prime0;
   // 4. finalize
-  hash = finalize(hash);
-  return tile.shfl(hash, 0);
+  hash = mix32(hash);
+  return hash;
 }
 
 template <uint32_t prime0>
 DEVICE_QUALIFIER uint32_t compute_hash_slice(uint32_t slice) {
-  // if key_length == 1, hash = finalize(((key * p) + 1) * p)
+  // if key_length == 1, hash = mix32(((key * p) + 1) * p)
   uint32_t hash = ((slice * prime0) + 1) * prime0;
-  return finalize(hash);
+  return mix32(hash);
 }
 
 template <uint32_t prime0, uint32_t prime1, typename tile_type, typename keyptr_or_keystore>
@@ -116,24 +116,27 @@ DEVICE_QUALIFIER uint2 compute_hashx2(keyptr_or_keystore input, uint32_t length,
   }
   // 3. reduce sum
   for (uint32_t offset = (tile_size / 2); offset != 0; offset >>= 1) {
-    hash += tile.shfl_down(hash, offset);
-    hash1 += tile.shfl_up(hash1, offset);
+    hash += tile.shfl_xor(hash, offset);
+    hash1 += tile.shfl_xor(hash1, offset);
   }
-  hash = ((hash * prime0) + original_length) * prime0;
-  hash1 = ((hash1 * prime1) + original_length) * prime1;
-  if (tile.thread_rank() == tile_size - 1) { hash = hash1; }
+  auto perlane_prime = prime0;
+  if (tile.thread_rank() == tile_size - 1) {
+    hash = hash1;
+    perlane_prime = prime1;
+  }
+  hash = ((hash * perlane_prime) + original_length) * perlane_prime;
   // 4. finalize
-  hash = finalize(hash);
+  hash = mix32(hash);
   return make_uint2(tile.shfl(hash, 0), tile.shfl(hash, tile_size - 1));
 }
 
 template <uint32_t prime0, uint32_t prime1, typename tile_type>
 DEVICE_QUALIFIER uint2 compute_hashx2_slice(uint32_t slice, const tile_type& tile) {
-  // if key_length == 1, hash = finalize(((key * p) + 1) * p)
+  // if key_length == 1, hash = mix32(((key * p) + 1) * p)
   uint2 hash = make_uint2(((slice * prime0) + 1) * prime0,
                           ((slice * prime1) + 1) * prime1);
   if (tile.thread_rank() == 1) { hash.x = hash.y; }
-  hash.x = finalize(hash.x);
+  hash.x = mix32(hash.x);
   return make_uint2(tile.shfl(hash.x, 0), tile.shfl(hash.x, 1));
 }
 
@@ -150,7 +153,7 @@ DEVICE_QUALIFIER uint32_t compute_hash_suffix(const suffix_type& suffix,
   uint32_t length = suffix.get_key_length() + suffix_offset;
   hash = ((hash * prime0) + length) * prime0;
   // finalize
-  return finalize(hash);
+  return mix32(hash);
 }
 
 template <uint32_t prime0, uint32_t prime1, bool use_first_slice, typename suffix_type, typename tile_type>
@@ -169,8 +172,30 @@ static DEVICE_QUALIFIER uint2 compute_hashx2_suffix(const suffix_type& suffix,
   hash.y = ((hash.y * prime1) + length) * prime1;
   // finalize
   if (tile.thread_rank() == 1) { hash.x = hash.y; }
-  hash.x = finalize(hash.x);
+  hash.x = mix32(hash.x);
   return make_uint2(tile.shfl(hash.x, 0), tile.shfl(hash.x, 1));
+}
+
+#define DISABLE_CACHELINE_ATOMICITY_CHECKSUM
+
+template <typename elem_type, typename tile_type>
+static DEVICE_QUALIFIER uint32_t compute_checksum(const elem_type& lane_elem,
+                                                  const tile_type& tile) {
+  static constexpr uint32_t tile_size = tile_type::size();
+  static_assert(tile_size == 16 || tile_size == 32);
+  // assume exception bits (checksum, lock bits) are already masked out
+  uint32_t hash;
+  if constexpr (tile_size == 16) {
+    hash = lane_elem.key + lane_elem.value * 0x85ebca6b;
+    hash = mix32(hash ^ (tile.thread_rank() * PRIME0));
+  }
+  else {
+    hash = mix32(lane_elem ^ (tile.thread_rank() * PRIME0));
+  }
+  for (uint32_t offset = (tile_size / 2); offset != 0; offset >>= 1) {
+    hash ^= tile.shfl_xor(hash, offset);
+  }
+  return hash;
 }
 
 } // namespace utils

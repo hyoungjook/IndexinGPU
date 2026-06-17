@@ -20,6 +20,7 @@
 #include <macros.hpp>
 #include <utils.hpp>
 #include <suffix_node_warp.hpp>
+#include <compute_hash.hpp>
 
 template <typename tile_type, typename allocator_type>
 struct hashtable_node_warp {
@@ -50,6 +51,27 @@ struct hashtable_node_warp {
     write_metadata_to_registers();
   }
 
+  DEVICE_QUALIFIER uint32_t compute_checksum() const {
+    auto masked_lane_elem = lane_elem_;
+    if (tile_.thread_rank() == checksum_lane_) {
+      masked_lane_elem = 0;
+    }
+    if (tile_.thread_rank() == metadata_lane_) {
+      masked_lane_elem &= ~(lock_bit_mask_ | garbage_bit_mask_);
+    }
+    return utils::compute_checksum(masked_lane_elem, tile_);
+  }
+  template <utils::memory_order order>
+  DEVICE_QUALIFIER bool check_checksum() const {
+    if constexpr (order == utils::memory_order::weak) { return true; }
+    else { return compute_checksum() == tile_.shfl(lane_elem_, checksum_lane_); }
+  }
+  DEVICE_QUALIFIER void write_checksum() {
+    uint32_t checksum = compute_checksum();
+    if (tile_.thread_rank() == checksum_lane_) {
+      lane_elem_ = checksum;
+    }
+  }
   template <utils::memory_order order>
   DEVICE_QUALIFIER void load_from_array(elem_type* table_ptr) {
     auto node_ptr = table_ptr + (static_cast<std::size_t>(2 * node_width) * node_index_);
@@ -62,7 +84,13 @@ struct hashtable_node_warp {
   }
   template <utils::memory_order order>
   DEVICE_QUALIFIER void do_load(elem_type* node_ptr) {
-    lane_elem_ = utils::memory::cacheline_atomic_load<elem_type, order>(node_ptr, tile_);
+    #ifndef DISABLE_CACHELINE_ATOMICITY_CHECKSUM
+    do {
+    #endif
+      lane_elem_ = utils::memory::cacheline_atomic_load<elem_type, order>(node_ptr, tile_);
+    #ifndef DISABLE_CACHELINE_ATOMICITY_CHECKSUM
+    } while (!check_checksum<order>());
+    #endif
     read_metadata_from_registers();
   }
   template <utils::memory_order order>
@@ -84,6 +112,9 @@ struct hashtable_node_warp {
   }
   template <utils::memory_order order>
   DEVICE_QUALIFIER void do_store(elem_type* node_ptr) {
+    #ifndef DISABLE_CACHELINE_ATOMICITY_CHECKSUM
+    write_checksum();
+    #endif
     utils::memory::cacheline_atomic_store<elem_type, order>(node_ptr, lane_elem_, tile_);
   }
 
@@ -350,9 +381,12 @@ struct hashtable_node_warp {
     }
     // has_next = next.has_next
     // next.has_next = true; next.make_garbage()
+    // next.is_head = is_head: mark that the next pointer is head, so load from array
     metadata_ &= ~next_bit_mask_;
     metadata_ |= (next_node.metadata_ & next_bit_mask_);
     next_node.metadata_ |= (next_bit_mask_ | garbage_bit_mask_);
+    next_node.metadata_ &= ~head_bit_mask_;
+    next_node.metadata_ |= (metadata_ & head_bit_mask_);
     write_metadata_to_registers();
     next_node.write_metadata_to_registers();
   }
@@ -445,7 +479,7 @@ struct hashtable_node_warp {
   allocator_type& allocator_;
 
   // node consists of 2*node_width elements, each mapped to a lane in the tile.
-  //  [key0] [key1] ... [key13] | [-]         [metadata]
+  //  [key0] [key1] ... [key13] | [checksum]  [metadata]
   //  [val0] [val1] ... [val13] | [keystates] [next]
 
   // keystates: each key 13-0 has 2 bits (total 28 bits used)
@@ -470,6 +504,7 @@ struct hashtable_node_warp {
   static constexpr uint32_t metadata_lane_ = node_width - 1;
   static constexpr uint32_t next_ptr_lane_ = node_width * 2 - 1;
   static constexpr uint32_t keystate_bits_lane_ = node_width * 2 - 2;
+  static constexpr uint32_t checksum_lane_ = node_width - 2;
   static constexpr uint32_t num_keys_offset_ = 0;
   static constexpr uint32_t num_keys_bits_ = 4;
   static constexpr uint32_t num_keys_mask_ = ((1u << num_keys_bits_) - 1) << num_keys_offset_;

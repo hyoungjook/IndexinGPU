@@ -179,25 +179,25 @@ struct gpu_extendhashtable_adapter {
   template <uint32_t tile_size, uint32_t hash_tag_level, uint32_t merge_level, bool use_shmem_key, typename... arg_types>
   void do_insert(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template insert<hash_tag_level >= 1, hash_tag_level >= 2, merge_level >= 1, true, use_shmem_key>(args...);
+      ->template insert<hash_tag_level >= 1, hash_tag_level >= 2, merge_level >= 1, use_shmem_key>(args...);
   }
 
   template <uint32_t tile_size, uint32_t hash_tag_level, uint32_t merge_level, bool use_shmem_key, typename... arg_types>
   void do_erase(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template erase<hash_tag_level >= 1, hash_tag_level >= 2, merge_level >= 2, merge_level >= 1, true, use_shmem_key>(args...);
+      ->template erase<hash_tag_level >= 1, hash_tag_level >= 2, merge_level >= 2, merge_level >= 1, use_shmem_key>(args...);
   }
 
   template <uint32_t tile_size, bool lookup_concurrent, uint32_t hash_tag_level, bool use_shmem_key, typename... arg_types>
   void do_find(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template find<lookup_concurrent, hash_tag_level >= 1, hash_tag_level >= 2, true, use_shmem_key>(args...);
+      ->template find<lookup_concurrent, hash_tag_level >= 1, hash_tag_level >= 2, use_shmem_key>(args...);
   }
 
   template <uint32_t tile_size, uint32_t hash_tag_level, uint32_t merge_level, bool use_shmem_key, typename... arg_types>
   void do_mixed(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template mixed_batch<hash_tag_level >= 1, hash_tag_level >= 2, merge_level >= 1, merge_level >= 2, true, use_shmem_key>(args...);
+      ->template mixed_batch<hash_tag_level >= 1, hash_tag_level >= 2, merge_level >= 1, merge_level >= 2, use_shmem_key>(args...);
   }
 
   configs configs_;

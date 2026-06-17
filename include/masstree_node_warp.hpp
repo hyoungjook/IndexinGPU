@@ -20,6 +20,7 @@
 #include <macros.hpp>
 #include <utils.hpp>
 #include <suffix_node_warp.hpp>
+#include <compute_hash.hpp>
 
 template <typename tile_type, typename allocator_type>
 struct masstree_node_warp {
@@ -60,6 +61,25 @@ struct masstree_node_warp {
     write_metadata_to_registers();
   }
 
+  DEVICE_QUALIFIER uint32_t compute_checksum() const {
+    auto masked_lane_elem = lane_elem_;
+    if (tile_.thread_rank() == metadata_lane_) {
+      masked_lane_elem &= ~(checksum_mask_ | lock_bit_mask_);
+    }
+    return utils::compute_checksum(masked_lane_elem, tile_) & checksum_mask_;
+  }
+  template <utils::memory_order order>
+  DEVICE_QUALIFIER bool check_checksum() const {
+    if constexpr (order == utils::memory_order::weak) { return true; }
+    else { return compute_checksum() == (tile_.shfl(lane_elem_, metadata_lane_) & checksum_mask_); }
+  }
+  DEVICE_QUALIFIER void write_checksum() {
+    uint32_t checksum = compute_checksum();
+    if (tile_.thread_rank() == metadata_lane_) {
+      lane_elem_ &= ~checksum_mask_;
+      lane_elem_ |= checksum;
+    }
+  }
   template <utils::memory_order order>
   DEVICE_QUALIFIER void load() {
     load_fetchonly<order>();
@@ -68,19 +88,20 @@ struct masstree_node_warp {
   template <utils::memory_order order>
   DEVICE_QUALIFIER void load_fetchonly() {
     auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
-    lane_elem_ = utils::memory::cacheline_atomic_load<elem_type, order>(node_ptr, tile_);
-  }
-  template <utils::memory_order order, typename warp_type>
-  DEVICE_QUALIFIER void load_warpwidesync(const warp_type& warp) {
-    static_assert(warp_type::size() == tile_type::size());
-    auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
-    if constexpr (order != utils::memory_order::weak) { warp.sync(); }
-    lane_elem_ = utils::memory::load<elem_type, order>(node_ptr + tile_.thread_rank());
-    if constexpr (order != utils::memory_order::weak) { warp.sync(); }
+    #ifndef DISABLE_CACHELINE_ATOMICITY_CHECKSUM
+    do {
+    #endif
+      lane_elem_ = utils::memory::cacheline_atomic_load<elem_type, order>(node_ptr, tile_);
+    #ifndef DISABLE_CACHELINE_ATOMICITY_CHECKSUM
+    } while (!check_checksum<order>());
+    #endif
   }
   template <utils::memory_order order>
   DEVICE_QUALIFIER void store() {
     auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
+    #ifndef DISABLE_CACHELINE_ATOMICITY_CHECKSUM
+    write_checksum();
+    #endif
     utils::memory::cacheline_atomic_store<elem_type, order>(node_ptr, lane_elem_, tile_);
   }
   template <utils::memory_order order>
@@ -963,7 +984,7 @@ struct masstree_node_warp {
 
   // metadata is 32bits.
   //    (MSB)
-  //    [empty:23]
+  //    [checksum:23]
   //    [is_root:1]
   //    [is_garbage:1][has_sibling:1]
   //    [is_border:1][is_locked:1]
@@ -988,6 +1009,9 @@ struct masstree_node_warp {
   static constexpr uint32_t garbage_bit_mask_ = 1u << garbage_bit_offset_;
   static constexpr uint32_t root_bit_offset_ = 8;
   static constexpr uint32_t root_bit_mask_ = 1u << root_bit_offset_;
+  static constexpr uint32_t checksum_offset_ = 9;
+  static constexpr uint32_t checksum_bits_ = 23;
+  static constexpr uint32_t checksum_mask_ = ((1u << checksum_bits_) - 1) << checksum_offset_;
 
   static constexpr uint32_t interior_max_num_keys_ = node_width - 1;
   static constexpr uint32_t border_max_num_keys_ = node_width - 2;

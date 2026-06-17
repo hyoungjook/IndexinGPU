@@ -192,6 +192,10 @@ struct full_warp_tile {
   DEVICE_QUALIFIER Tret shfl_up(T elem, unsigned int delta) const {
     return __shfl_up_sync(mask_, elem, delta, size_);
   }
+  template <typename T, typename Tret = std::remove_const_t<T>>
+  DEVICE_QUALIFIER Tret shfl_xor(T elem, unsigned int delta) const {
+    return __shfl_xor_sync(mask_, elem, delta, size_);
+  }
 private:
   static constexpr int size_ = 32;
   static constexpr uint32_t mask_ = 0xffffffffu;
@@ -232,6 +236,10 @@ struct half_warp_tile {
   template <typename T, typename Tret = std::remove_const_t<T>>
   DEVICE_QUALIFIER Tret shfl_up(T elem, unsigned int delta) const {
     return __shfl_up_sync(mask_, elem, delta, size_);
+  }
+  template <typename T, typename Tret = std::remove_const_t<T>>
+  DEVICE_QUALIFIER Tret shfl_xor(T elem, unsigned int delta) const {
+    return __shfl_xor_sync(mask_, elem, delta, size_);
   }
 private:
   uint32_t mask_;

@@ -40,8 +40,7 @@ template <typename extendhashtable_type,
           bool use_hash_tag = true,
           bool tag_use_same_hash = true,
           bool merge_chains = true,
-          bool erase_merge_buckets = true,
-          bool reuse_dirsize = true>
+          bool erase_merge_buckets = true>
 void bench_extendhashtable(thrust::device_vector<key_slice_type>& d_keys,
                            thrust::device_vector<size_type>& d_lengths,
                            thrust::device_vector<value_type>& d_values,
@@ -79,7 +78,7 @@ void bench_extendhashtable(thrust::device_vector<key_slice_type>& d_keys,
     }
     gpu_timer insert_timer;
     insert_timer.start_timer();
-    table.template insert<use_hash_tag, tag_use_same_hash, merge_chains, reuse_dirsize>(
+    table.template insert<use_hash_tag, tag_use_same_hash, merge_chains>(
       d_keys.data().get(), max_key_length, d_lengths.data().get(),
       d_values.data().get(), max_value_length, d_value_lengths.data().get(), num_keys);
     insert_timer.stop_timer();
@@ -93,7 +92,7 @@ void bench_extendhashtable(thrust::device_vector<key_slice_type>& d_keys,
 
     gpu_timer find_timer1;
     find_timer1.start_timer();
-    table.template find<false, use_hash_tag, tag_use_same_hash, reuse_dirsize>(
+    table.template find<false, use_hash_tag, tag_use_same_hash>(
       d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(),
       d_query_results.data().get(), max_value_length, d_query_result_lengths.data().get(), num_keys);
     find_timer1.stop_timer();
@@ -103,7 +102,7 @@ void bench_extendhashtable(thrust::device_vector<key_slice_type>& d_keys,
 
     gpu_timer find_timer2;
     find_timer2.start_timer();
-    table.template find<true, use_hash_tag, tag_use_same_hash, reuse_dirsize>(
+    table.template find<true, use_hash_tag, tag_use_same_hash>(
       d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(),
       d_query_results.data().get(), max_value_length, d_query_result_lengths.data().get(), num_keys);
     find_timer2.stop_timer();
@@ -120,8 +119,7 @@ void bench_extendhashtable(thrust::device_vector<key_slice_type>& d_keys,
     erase_timer.start_timer();
     table.template erase<use_hash_tag, tag_use_same_hash,
                          erase_merge_buckets,
-                         merge_chains || erase_merge_buckets,
-                         reuse_dirsize>(
+                         merge_chains || erase_merge_buckets>(
       d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), num_erase);
     erase_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
