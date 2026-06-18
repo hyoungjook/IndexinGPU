@@ -32,6 +32,7 @@
 #include <unordered_set>
 #include <vector>
 #include <thread>
+#include <gallatin_alloc.hpp>
 
 using key_slice_type = uint32_t;
 using value_type = uint32_t;
@@ -312,14 +313,25 @@ int main(int argc, char** argv) {
   std::cout << "common_prefix_ratio = " << common_prefix_ratio << ", ";
   std::cout << "erase-ratio = " << erase_ratio << std::endl;
   using simple_slab_alloc_type = simple_slab_allocator<128>;
+  using gallatin_alloc_type = gallatin_allocator<128>;
   using simple_debra_reclaim_type = simple_debra_reclaimer<>;
   using chainhashtable_tile32_type = GpuHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_debra_reclaim_type, 32>;
   using chainhashtable_tile16_type = GpuHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_debra_reclaim_type, 16>;
   using cuckoohashtable_tile32_type = GpuHashtable::gpu_cuckoohashtable<simple_slab_alloc_type, simple_debra_reclaim_type, 32>;
   using cuckoohashtable_tile16_type = GpuHashtable::gpu_cuckoohashtable<simple_slab_alloc_type, simple_debra_reclaim_type, 16>;
+  using chainhashtable_gallatin_tile32_type = GpuHashtable::gpu_chainhashtable<gallatin_alloc_type, simple_debra_reclaim_type, 32>;
+  using chainhashtable_gallatin_tile16_type = GpuHashtable::gpu_chainhashtable<gallatin_alloc_type, simple_debra_reclaim_type, 16>;
+  using cuckoohashtable_gallatin_tile32_type = GpuHashtable::gpu_cuckoohashtable<gallatin_alloc_type, simple_debra_reclaim_type, 32>;
+  using cuckoohashtable_gallatin_tile16_type = GpuHashtable::gpu_cuckoohashtable<gallatin_alloc_type, simple_debra_reclaim_type, 16>;
 
   std::cout << "Benchmarking chainhashtable_tile32_type" << std::endl;
   bench_hashtable<chainhashtable_tile32_type>(
+    d_keys, d_lengths, d_values, d_value_lengths, d_find_keys, d_find_lengths, d_results, d_result_lengths,
+    num_keys, max_key_length, max_value_length, num_experiments, erase_ratio, chain_array_factor,
+    allocator_pool_ratio, validate_result, validate_index, verbose
+  );
+  std::cout << "Benchmarking chainhashtable_gallatin_tile32_type" << std::endl;
+  bench_hashtable<chainhashtable_gallatin_tile32_type>(
     d_keys, d_lengths, d_values, d_value_lengths, d_find_keys, d_find_lengths, d_results, d_result_lengths,
     num_keys, max_key_length, max_value_length, num_experiments, erase_ratio, chain_array_factor,
     allocator_pool_ratio, validate_result, validate_index, verbose
@@ -330,14 +342,32 @@ int main(int argc, char** argv) {
     num_keys, max_key_length, max_value_length, num_experiments, erase_ratio, chain_array_factor,
     allocator_pool_ratio, validate_result, validate_index, verbose
   );
+  std::cout << "Benchmarking chainhashtable_gallatin_tile16_type" << std::endl;
+  bench_hashtable<chainhashtable_gallatin_tile16_type>(
+    d_keys, d_lengths, d_values, d_value_lengths, d_find_keys, d_find_lengths, d_results, d_result_lengths,
+    num_keys, max_key_length, max_value_length, num_experiments, erase_ratio, chain_array_factor,
+    allocator_pool_ratio, validate_result, validate_index, verbose
+  );
   std::cout << "Benchmarking cuckoohashtable_tile32_type" << std::endl;
   bench_hashtable<cuckoohashtable_tile32_type>(
     d_keys, d_lengths, d_values, d_value_lengths, d_find_keys, d_find_lengths, d_results, d_result_lengths,
     num_keys, max_key_length, max_value_length, num_experiments, erase_ratio, cuckoo_fill_factor,
     allocator_pool_ratio, validate_result, validate_index, verbose
   );
+  std::cout << "Benchmarking cuckoohashtable_gallatin_tile32_type" << std::endl;
+  bench_hashtable<cuckoohashtable_gallatin_tile32_type>(
+    d_keys, d_lengths, d_values, d_value_lengths, d_find_keys, d_find_lengths, d_results, d_result_lengths,
+    num_keys, max_key_length, max_value_length, num_experiments, erase_ratio, cuckoo_fill_factor,
+    allocator_pool_ratio, validate_result, validate_index, verbose
+  );
   std::cout << "Benchmarking cuckoohashtable_tile16_type" << std::endl;
   bench_hashtable<cuckoohashtable_tile16_type>(
+    d_keys, d_lengths, d_values, d_value_lengths, d_find_keys, d_find_lengths, d_results, d_result_lengths,
+    num_keys, max_key_length, max_value_length, num_experiments, erase_ratio, cuckoo_fill_factor,
+    allocator_pool_ratio, validate_result, validate_index, verbose
+  );
+  std::cout << "Benchmarking cuckoohashtable_gallatin_tile16_type" << std::endl;
+  bench_hashtable<cuckoohashtable_gallatin_tile16_type>(
     d_keys, d_lengths, d_values, d_value_lengths, d_find_keys, d_find_lengths, d_results, d_result_lengths,
     num_keys, max_key_length, max_value_length, num_experiments, erase_ratio, cuckoo_fill_factor,
     allocator_pool_ratio, validate_result, validate_index, verbose

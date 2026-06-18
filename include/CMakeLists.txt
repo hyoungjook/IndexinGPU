@@ -7,4 +7,6 @@ file(GLOB_RECURSE   indexingpu_src
                     "*.cu")
 set(SOURCE_LIST ${indexingpu_src})
 target_sources(indexingpu INTERFACE ${indexingpu_src})
-target_include_directories(indexingpu INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_include_directories(indexingpu INTERFACE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../baselines/gallatin/include")

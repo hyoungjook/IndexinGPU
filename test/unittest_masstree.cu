@@ -20,6 +20,7 @@
 #include <cmd.hpp>
 #include <cstdint>
 #include <random>
+#include <gallatin_alloc.hpp>
 
 std::size_t num_keys;
 
@@ -305,12 +306,15 @@ struct testing_range_input {
 
 using simple_bump_alloc_type = simple_bump_allocator<128>;
 using simple_slab_alloc_type = simple_slab_allocator<128>;
+using gallatin_alloc_type = gallatin_allocator<128>;
 using simple_dummy_reclaim_type = simple_dummy_reclaimer;
 using simple_debra_reclaim_type = simple_debra_reclaimer<>;
 
 typedef testing::Types<
     MapData<GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type, 32>>,
-    MapData<GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type, 16>>>
+    MapData<GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type, 16>>,
+    MapData<GpuMasstree::gpu_masstree<gallatin_alloc_type, simple_debra_reclaim_type, 32>>,
+    MapData<GpuMasstree::gpu_masstree<gallatin_alloc_type, simple_debra_reclaim_type, 16>>>
     Implementations;
 
 TYPED_TEST_SUITE(MapTest, Implementations);

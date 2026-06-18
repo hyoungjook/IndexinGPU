@@ -31,6 +31,7 @@
 #include <unordered_set>
 #include <vector>
 #include <thread>
+#include <gallatin_alloc.hpp>
 
 using key_slice_type = uint32_t;
 using value_type = uint32_t;
@@ -350,9 +351,12 @@ int main(int argc, char** argv) {
   std::cout << "common_prefix_ratio = " << common_prefix_ratio << ", ";
   std::cout << "erase-ratio = " << erase_ratio << std::endl;
   using simple_slab_alloc_type = simple_slab_allocator<128>;
+  using gallatin_alloc_type = gallatin_allocator<128>;
   using simple_debra_reclaim_type = simple_debra_reclaimer<>;
   using masstree_tile32_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type, 32>;
   using masstree_tile16_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type, 16>;
+  using masstree_gallatin_tile32_type = GpuMasstree::gpu_masstree<gallatin_alloc_type, simple_debra_reclaim_type, 32>;
+  using masstree_gallatin_tile16_type = GpuMasstree::gpu_masstree<gallatin_alloc_type, simple_debra_reclaim_type, 16>;
 
   std::cout << "Benchmarking masstree_tile32_type" << std::endl;
   bench_masstree<masstree_tile32_type>(
@@ -361,8 +365,22 @@ int main(int argc, char** argv) {
     num_keys, max_key_length, max_value_length, max_counts_per_query, num_experiments, erase_ratio,
     allocator_pool_ratio, validate_result, validate_index, verbose
   );
+  std::cout << "Benchmarking masstree_gallatin_tile32_type" << std::endl;
+  bench_masstree<masstree_gallatin_tile32_type>(
+    d_keys, d_lengths, d_values, d_value_lengths, d_find_keys, d_find_lengths,
+    d_results, d_result_lengths, d_scan_results, d_scan_result_lengths,
+    num_keys, max_key_length, max_value_length, max_counts_per_query, num_experiments, erase_ratio,
+    allocator_pool_ratio, validate_result, validate_index, verbose
+  );
   std::cout << "Benchmarking masstree_tile16_type" << std::endl;
   bench_masstree<masstree_tile16_type>(
+    d_keys, d_lengths, d_values, d_value_lengths, d_find_keys, d_find_lengths,
+    d_results, d_result_lengths, d_scan_results, d_scan_result_lengths,
+    num_keys, max_key_length, max_value_length, max_counts_per_query, num_experiments, erase_ratio,
+    allocator_pool_ratio, validate_result, validate_index, verbose
+  );
+  std::cout << "Benchmarking masstree_gallatin_tile16_type" << std::endl;
+  bench_masstree<masstree_gallatin_tile16_type>(
     d_keys, d_lengths, d_values, d_value_lengths, d_find_keys, d_find_lengths,
     d_results, d_result_lengths, d_scan_results, d_scan_result_lengths,
     num_keys, max_key_length, max_value_length, max_counts_per_query, num_experiments, erase_ratio,

@@ -16,3 +16,6 @@
 [submodule "baselines/oneTBB"]
 	path = baselines/oneTBB
 	url = https://github.com/uxlfoundation/oneTBB.git
+[submodule "baselines/gallatin"]
+	path = baselines/gallatin
+	url = https://github.com/saltsystemslab/gallatin.git
