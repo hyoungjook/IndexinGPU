@@ -397,6 +397,7 @@ struct suffix_node_subwarp {
                                   reclaimer_type& reclaimer) {
     // move elements from src[offset:] and retire all nodes in src
     auto new_length = src.get_key_length() - offset;
+    auto value_length = src.get_value_length();
     // skip src nodes until the first element
     reclaimer.retire(src.get_node_index(), tile_);
     while (offset >= node_max_len_) {
@@ -408,7 +409,6 @@ struct suffix_node_subwarp {
     // copy elements into this
     elem_type dst_lane_elem;
     elem_type* dst_ptr = nullptr; // NULL means it's head
-    auto value_length = src.get_value_length();
     if (tile_.thread_rank() == head_node_length_lane_) {
       dst_lane_elem.first = (new_length << key_length_offset_bits_) |
                             (value_length << value_length_offset_bits_);
