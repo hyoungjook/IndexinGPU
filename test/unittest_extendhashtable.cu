@@ -20,6 +20,7 @@
 #include <cmd.hpp>
 #include <cstdint>
 #include <random>
+#include <gallatin_alloc.hpp>
 
 std::size_t num_keys;
 uint32_t initial_directory_size;
@@ -195,12 +196,15 @@ struct testing_input {
 
 using simple_bump_linear_alloc_type = simple_bump_linear_allocator<128>;
 using simple_slab_linear_alloc_type = simple_slab_linear_allocator<128>;
+using gallatin_lienar_alloc_type = gallatin_linear_allocator<128>;
 using simple_dummy_reclaim_type = simple_dummy_reclaimer;
 using simple_debra_reclaim_type = simple_debra_reclaimer<>;
 
 typedef testing::Types<
     MapData<GpuExtendHashtable::gpu_extendhashtable<simple_slab_linear_alloc_type, simple_debra_reclaim_type, 32>>,
-    MapData<GpuExtendHashtable::gpu_extendhashtable<simple_slab_linear_alloc_type, simple_debra_reclaim_type, 16>>>
+    MapData<GpuExtendHashtable::gpu_extendhashtable<simple_slab_linear_alloc_type, simple_debra_reclaim_type, 16>>,
+    MapData<GpuExtendHashtable::gpu_extendhashtable<gallatin_lienar_alloc_type, simple_debra_reclaim_type, 32>>,
+    MapData<GpuExtendHashtable::gpu_extendhashtable<gallatin_lienar_alloc_type, simple_debra_reclaim_type, 16>>>
     Implementations;
 
 TYPED_TEST_SUITE(MapTest, Implementations);
