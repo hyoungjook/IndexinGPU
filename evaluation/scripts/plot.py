@@ -207,6 +207,8 @@ def key_length_plots(configs_and_results, plot_file_prefix):
     for index_type in all_index_types:
         tputs[index_type] = {}
         result_types = [ResultType.lookup, ResultType.insert, ResultType.delete]
+        if index_type in IS_INDEX_TYPE_SUPPORT_UPDATE:
+            result_types.append(ResultType.update)
         if index_type in IS_INDEX_TYPE_SUPPORT_MIX:
             result_types.append(ResultType.mixed)
         if index_type in IS_INDEX_TYPE_ORDERED:
@@ -239,6 +241,8 @@ def key_length_plots(configs_and_results, plot_file_prefix):
                 elif result_type == ResultType.scan:
                     desired_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
                     desired_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
+                elif result_type == ResultType.update:
+                    desired_config[ConfigType.num_updates] = DEFAULT_BATCH_SIZE
                 result = filter(configs_and_results, desired_config, result_type)
                 processed_result = _compute_avg_min_max_from_raw(result[result_type.name]['raw'])
                 for metric_type in ['avg', 'min', 'max']:
@@ -263,17 +267,19 @@ def key_length_plots(configs_and_results, plot_file_prefix):
     plot_spec = [
         (tree_indexes, ResultType.lookup, False, True),
         (tree_indexes, ResultType.insert, False, False),
+        (tree_indexes, ResultType.update, False, False),
         (tree_indexes, ResultType.delete, False, False),
         (tree_indexes, ResultType.mixed, False, False),
         (tree_indexes, ResultType.scan, False, False),
         (hashtable_indexes, ResultType.lookup, True, True),
         (hashtable_indexes, ResultType.insert, True, False),
+        (hashtable_indexes, ResultType.update, True, False),
         (hashtable_indexes, ResultType.delete, True, False),
         (hashtable_indexes, ResultType.mixed, True, False),
     ]
     plot_names = [
-        'tree-lookup', 'tree-insert', 'tree-delete', 'tree-mixed', 'tree-scan',
-        'ht-lookup', 'ht-insert', 'ht-delete', 'ht-mixed'
+        'tree-lookup', 'tree-insert', 'tree-update', 'tree-delete', 'tree-mixed', 'tree-scan',
+        'ht-lookup', 'ht-insert', 'ht-update', 'ht-delete', 'ht-mixed'
     ]
     for idx, (index_types, result_type, set_xlabel, set_ylabel) in enumerate(plot_spec):
         fig, ax = _make_fixed_plot_area_figure(2, 1.3,
@@ -362,6 +368,8 @@ def key_length_cpu_plots(configs_and_results, plot_file_prefix):
             result_types.append(ResultType.mixed)
         if index_type in IS_INDEX_TYPE_ORDERED:
             result_types.append(ResultType.scan)
+        if index_type in IS_INDEX_TYPE_SUPPORT_UPDATE:
+            result_types.append(ResultType.update)
         if index_type in IS_INDEX_TYPE_SUPPORT_LONGKEY:
             key_lengths = EXP_KEY_LENGTHS
         else:
@@ -392,6 +400,8 @@ def key_length_cpu_plots(configs_and_results, plot_file_prefix):
                 elif result_type == ResultType.scan:
                     desired_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
                     desired_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
+                elif result_type == ResultType.update:
+                    desired_config[ConfigType.num_updates] = DEFAULT_BATCH_SIZE
                 result = filter(configs_and_results, desired_config, result_type)
                 processed_result = _compute_avg_min_max_from_raw(result[result_type.name]['raw'])
                 for metric_type in ['avg', 'min', 'max']:
@@ -403,17 +413,19 @@ def key_length_cpu_plots(configs_and_results, plot_file_prefix):
     plot_spec = [
         (tree_indexes, ResultType.lookup, False, True),
         (tree_indexes, ResultType.insert, False, False),
+        (tree_indexes, ResultType.update, False, False),
         (tree_indexes, ResultType.delete, False, False),
         (tree_indexes, ResultType.mixed, False, False),
         (tree_indexes, ResultType.scan, False, False),
         (hashtable_indexes, ResultType.lookup, True, True),
         (hashtable_indexes, ResultType.insert, True, False),
+        (hashtable_indexes, ResultType.update, True, False),
         (hashtable_indexes, ResultType.delete, True, False),
         (hashtable_indexes, ResultType.mixed, True, False),
     ]
     plot_names = [
-        'tree-lookup', 'tree-insert', 'tree-delete', 'tree-mixed', 'tree-scan',
-        'ht-lookup', 'ht-insert', 'ht-delete', 'ht-mixed'
+        'tree-lookup', 'tree-insert', 'tree-update', 'tree-delete', 'tree-mixed', 'tree-scan',
+        'ht-lookup', 'ht-insert', 'ht-update', 'ht-delete', 'ht-mixed'
     ]
     for idx, (index_types, result_type, set_xlabel, set_ylabel) in enumerate(plot_spec):
         fig, ax = _make_fixed_plot_area_figure(2, 1.3,
@@ -1037,6 +1049,8 @@ def meme_plots(configs_and_results, plot_file_prefix):
         result_types = [ResultType.lookup, ResultType.insert, ResultType.delete, ResultType.mixed]
         if index_type in IS_INDEX_TYPE_ORDERED:
             result_types.append(ResultType.scan)
+        if index_type in IS_INDEX_TYPE_SUPPORT_UPDATE:
+            result_types.append(ResultType.update)
         for result_type in result_types:
             tputs[index_type][result_type] = {
                 'avg': [], 'min': [], 'max': []
@@ -1057,14 +1071,16 @@ def meme_plots(configs_and_results, plot_file_prefix):
             elif result_type == ResultType.scan:
                 desired_config[ConfigType.num_scans] = BATCH_SIZE_MEME
                 desired_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
+            elif result_type == ResultType.update:
+                    desired_config[ConfigType.num_updates] = BATCH_SIZE_MEME
             result = filter(configs_and_results, desired_config, result_type)
             processed_result = _compute_avg_min_max_from_raw(result[result_type.name]['raw'])
             for metric_type in ['avg', 'min', 'max']:
                 tputs[index_type][result_type][metric_type].append(processed_result[metric_type])
     # plot
     plot_spec = [
-        (tree_indexes, [ResultType.lookup, ResultType.scan, ResultType.insert, ResultType.delete, ResultType.mixed]),
-        (hashtable_indexes, [ResultType.lookup, ResultType.insert, ResultType.delete, ResultType.mixed]),
+        (tree_indexes, [ResultType.lookup, ResultType.scan, ResultType.insert, ResultType.update, ResultType.delete, ResultType.mixed]),
+        (hashtable_indexes, [ResultType.lookup, ResultType.insert, ResultType.update, ResultType.delete, ResultType.mixed]),
     ]
     plot_names = ['tree', 'ht']
     legend_handles = []
@@ -1084,7 +1100,7 @@ def meme_plots(configs_and_results, plot_file_prefix):
         ))
         legend_labels.append(index_label)
     for idx, (index_types, result_types) in enumerate(plot_spec):
-        fig_width = 2.7 if idx == 0 else 2.7
+        fig_width = 3.2
         fig, ax = _make_fixed_plot_area_figure(fig_width, 1.5, include_xlabel=False, include_ylabel=(idx == 0))
         bar_width = 0.22 if len(index_types) == 3 else 0.15
         bar_spacing = bar_width * 1.2

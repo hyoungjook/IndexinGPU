@@ -581,7 +581,7 @@ int main(int argc, char** argv) {
   if (!args.only_check_space) {
     check_argument(args.rep_lookup > 0 || args.rep_scan > 0 ||
                    args.rep_insdel > 0 || args.rep_mixed > 0 ||
-                   args.rep_space > 0);
+                   args.rep_update > 0 || args.rep_space > 0);
     if (args.rep_space > 0) {
       check_argument(args.max_keys % args.num_space == 0);
     }
