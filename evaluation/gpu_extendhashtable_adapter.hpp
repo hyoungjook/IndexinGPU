@@ -68,12 +68,13 @@ struct gpu_extendhashtable_adapter {
               const value_slice_type* values,
               uint32_t valuelen_max,
               const size_type* value_lengths,
-              std::size_t num_keys) {
+              std::size_t num_keys,
+              bool update_if_exists = false) {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_uint32<0, 1, 2>(configs_.hash_tag_level, [&](auto t2, auto h2) {
         adapter_util::dispatch_uint32<0, 1, 2>(configs_.merge_level, [&](auto t3, auto h3, auto m3) {
           adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t4, auto h4, auto m4, auto k4) {
-            do_insert<t4.value, h4.value, m4.value, k4.value>(keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, num_keys);
+            do_insert<t4.value, h4.value, m4.value, k4.value>(keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, num_keys, (cudaStream_t)0, update_if_exists);
           }, t3, h3, m3);
         }, t2, h2);
       }, t1);

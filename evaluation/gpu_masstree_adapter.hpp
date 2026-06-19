@@ -66,11 +66,12 @@ struct gpu_masstree_adapter {
               const value_slice_type* values,
               uint32_t valuelen_max,
               const size_type* value_lengths,
-              std::size_t num_keys) {
+              std::size_t num_keys,
+              bool update_if_exists = false) {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_bool(configs_.enable_suffix, [&](auto t2, auto s2) {
         adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t3, auto s3, auto k3) {
-          do_insert<t3.value, s3.value, k3.value>(keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, num_keys);
+          do_insert<t3.value, s3.value, k3.value>(keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, num_keys, (cudaStream_t)0, update_if_exists);
         }, t2, s2);
       }, t1);
     });

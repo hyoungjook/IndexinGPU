@@ -39,6 +39,7 @@ IS_INDEX_TYPE_ORDERED = [
     IndexType.cpu_art,
     IndexType.cpu_masstree
 ]
+IS_INDEX_TYPE_SUPPORT_UPDATE = INDEX_TYPES_ROBUST + INDEX_TYPES_CPU_BASELINE + [IndexType.gpu_blink_tree]
 IS_INDEX_TYPE_SUPPORT_MIX = INDEX_TYPES_ROBUST + INDEX_TYPES_CPU_BASELINE + [IndexType.gpu_blink_tree]
 IS_INDEX_TYPE_SUPPORT_LONGKEY = INDEX_TYPES_ROBUST + INDEX_TYPES_CPU_BASELINE + [IndexType.gpu_dycuckoo]
 def DO_TEST_FOR_INDEX_TYPE(index_type, key_length):

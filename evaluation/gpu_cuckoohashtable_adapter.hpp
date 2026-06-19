@@ -67,11 +67,12 @@ struct gpu_cuckoohashtable_adapter {
               const value_slice_type* values,
               uint32_t valuelen_max,
               const size_type* value_lengths,
-              std::size_t num_keys) {
+              std::size_t num_keys,
+              bool update_if_exists = false) {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_bool(configs_.use_hash_tag, [&](auto t2, auto h2) {
         adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t3, auto h3, auto k3) {
-          do_insert<t3.value, h3.value, k3.value>(keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, num_keys);
+          do_insert<t3.value, h3.value, k3.value>(keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, num_keys, (cudaStream_t)0, update_if_exists);
         }, t2, h2);
       }, t1);
     });

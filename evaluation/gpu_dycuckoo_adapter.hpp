@@ -68,11 +68,13 @@ struct gpu_dycuckoo_adapter {
               const value_type* values,
               uint32_t valuelen_max,
               const size_type* value_lengths,
-              std::size_t num_keys) {
+              std::size_t num_keys,
+              bool update_if_exists = false) {
     (void)keylen_max;
     (void)key_lengths;
     (void)valuelen_max;
     (void)value_lengths;
+    (void)update_if_exists;
     if (configs_.use_lock) {
       gpu_dycuckoo_dynamic_lock_insert(index_, keys, values, num_keys);
     }

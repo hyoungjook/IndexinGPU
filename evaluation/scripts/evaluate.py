@@ -39,6 +39,7 @@ class ConfigType(Enum):
     lookup_theta = auto()
     num_scans = auto()
     scan_count = auto()
+    num_updates = auto()
     num_insdel = auto()
     num_mixed = auto()
     num_space = auto()
@@ -46,6 +47,7 @@ class ConfigType(Enum):
     mix_presort = auto()
     rep_lookup = auto()
     rep_scan = auto()
+    rep_update = auto()
     rep_insdel = auto()
     rep_mixed = auto()
     rep_space = auto()
@@ -77,6 +79,7 @@ class ResultType(Enum):
     delete = auto()
     lookup = auto()
     scan = auto()
+    update = auto()
     mixed = auto()
     space = auto()
 

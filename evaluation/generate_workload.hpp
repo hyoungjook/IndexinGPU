@@ -429,6 +429,8 @@ void generate_mixed_keys(std::vector<kernels::request_type>& mix_types,
   /* scan test */ \
   x(num_scans, uint32_t, 0) \
   x(scan_count, uint32_t, 1) \
+  /* update test */ \
+  x(num_updates, uint32_t, 0) \
   /* insert delete test */ \
   x(num_insdel, uint32_t, 0) \
   /* mixed test */ \
@@ -440,6 +442,7 @@ void generate_mixed_keys(std::vector<kernels::request_type>& mix_types,
   /* repeats */ \
   x(rep_lookup, uint32_t, 0) \
   x(rep_scan, uint32_t, 0) \
+  x(rep_update, uint32_t, 0) \
   x(rep_insdel, uint32_t, 0) \
   x(rep_mixed, uint32_t, 0) \
   x(rep_space, uint32_t, 0) \

@@ -290,6 +290,44 @@ static void run_bench(adapter_type& adapter,
     }
   }
 
+  // measure update
+  if (args.rep_update > 0) {
+    cpu_lap_timer update_timer;
+    prefill(adapter, h_keys, h_key_lengths, h_values, h_value_lengths, args.keylen_min, args.keylen_max, args.valuelen_min, args.valuelen_max, args.max_keys);
+    #if !defined(NOGPU)
+    auto d_update_keys = device_vector<key_slice_type>(h_lookup_keys, args.use_pinned_host_memory);
+    auto d_update_key_lengths = device_vector<size_type>(h_lookup_key_lengths, args.use_pinned_host_memory, use_null_keylength);
+    auto d_update_values = device_vector<value_slice_type>(&h_values[0], static_cast<std::size_t>(args.num_updates) * args.valuelen_max, args.use_pinned_host_memory);
+    auto d_update_value_lengths = device_vector<size_type>(&h_value_lengths[0], args.num_updates, args.use_pinned_host_memory, use_null_valuelength);
+    cuda_try(cudaDeviceSynchronize());
+    #endif
+    for (uint32_t r = 0; r < args.rep_update; r++) {
+      update_timer.start();
+      #if !defined(NOGPU)
+      adapter.insert(d_update_keys.data(), args.keylen_max, d_update_key_lengths.data(), d_update_values.data(), args.valuelen_max, d_update_value_lengths.data(), args.num_updates, true);
+      #else
+      helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
+          auto tuple_id = task_idx;
+          adapter.update(&h_lookup_keys[tuple_id * args.keylen_max],
+                         h_lookup_key_lengths[tuple_id],
+                         h_values[tuple_id],
+                         tuple_id,
+                         thread_id);
+        }, args.num_updates,
+        [&](unsigned thread_id) { adapter.thread_enter(thread_id); },
+        [&](unsigned thread_id) { adapter.thread_exit(thread_id); });
+      #endif
+      #if !defined(NOGPU)
+      cuda_try(cudaDeviceSynchronize());
+      #endif
+      update_timer.stop();
+      update_timer.record();
+      if (verbose) { std::cout << "update tested " << r + 1 << "/" << args.rep_update << std::endl; }
+    }
+    adapter.destroy();
+    update_timer.print_rate_Mops("update", args.num_updates, print_all_measurements);
+  }
+
   // measure insert & delete
   if (args.rep_insdel > 0) {
     cpu_lap_timer insert_timer, delete_timer;
@@ -564,9 +602,10 @@ int main(int argc, char** argv) {
       universal::varlen_key_big_endian);
   }
   // 2. generate lookup keys: max(num_lookups, num_scans)
-  std::size_t num_lookups_keys = std::max<std::size_t>(
+  std::size_t num_lookups_keys = std::max<std::size_t>(std::max<std::size_t>(
     (args.rep_lookup > 0) ? args.num_lookups : 0,
-    (args.rep_scan > 0) ? args.num_scans : 0);
+    (args.rep_scan > 0) ? args.num_scans : 0),
+    (args.rep_update > 0) ? args.num_updates : 0);
   if (num_lookups_keys > 0) {
     universal::generate_lookup_keys(
       h_lookup_keys, h_lookup_key_lengths, h_keys, h_key_lengths,
