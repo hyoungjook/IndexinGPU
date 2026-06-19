@@ -1,5 +1,7 @@
 # IndexinGPU
 
+**This is Gallatin integration branch. See [Gallatin_test.md](Gallatin_test.md) for details.**
+
 IndexinGPU is a header-only CUDA/C++ library of GPU-resident indexes for workloads that need more than fixed-width key/value lookups. It is designed for:
 
 - variable-length keys and values

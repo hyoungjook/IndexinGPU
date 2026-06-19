@@ -220,10 +220,7 @@ struct gallatin_linear_allocator {
 
     auto linear_entries = linear_bytes / sizeof(size_type);
     if (linear_entries > std::numeric_limits<size_type>::max()) {
-      std::cerr
-          << "gallatin_linear_allocator: linear capacity exceeds uint32 limit"
-          << std::endl;
-      std::abort();
+      linear_entries = std::numeric_limits<size_type>::max();
     }
     linear_capacity_ = static_cast<size_type>(linear_entries);
     linear_capacity_ = linear_capacity_ / 32 * 32;
