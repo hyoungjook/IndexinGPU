@@ -102,6 +102,15 @@ struct cpu_masstree_adapter {
     fence();
     cursor.finish(1, ti);
   }
+  void update(const key_slice_type* key, size_type key_length, value_type value, std::size_t tuple_id, unsigned thread_idx) {
+    (void)tuple_id;
+    threadinfo& ti = get_threadinfo(thread_idx);
+    cursor_type cursor(*table_, make_key(key, key_length));
+    cursor.find_insert(ti);
+    cursor.value() = value;
+    fence();
+    cursor.finish(0, ti);
+  }
   void erase(const key_slice_type* key, size_type key_length, unsigned thread_idx) {
     threadinfo& ti = get_threadinfo(thread_idx);
     cursor_type cursor(*table_, make_key(key, key_length));
