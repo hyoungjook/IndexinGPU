@@ -1120,6 +1120,86 @@ def load_factor_plots(configs_and_results, plot_file_prefix):
     plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
     plt.close(fig)
 
+def batch_plots(configs_and_results, plot_file_prefix):
+    tputs = {}
+    latencies = {}
+    for index_type in INDEX_TYPES_ROBUST:
+        tputs[index_type] = {
+            'avg': [], 'min': [], 'max': []
+        }
+        latencies[index_type] = {
+            'avg': [], 'min': [], 'max': []
+        }
+        for batch_size in EXP_BATCHSIZES:
+            desired_config = {
+                ConfigType.index_type: index_type,
+                ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+                ConfigType.keylen_prefix: 0,
+                ConfigType.keylen_min: DEFAULT_KEY_LENGTH,
+                ConfigType.keylen_max: DEFAULT_KEY_LENGTH,
+                ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH,
+                ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH,
+                ConfigType.num_mixed: batch_size,
+                ConfigType.mix_read_ratio: DEFAULT_MIX_READ_RATIO,
+                ConfigType.mix_presort: 1,
+                OptionalConfigType.tile_size: 16,
+            }
+            result = filter(configs_and_results, desired_config, ResultType.mixed)
+            processed_result = _compute_avg_min_max_from_raw(result['mixed']['raw'])
+            for metric_type in ['avg', 'min', 'max']:
+                tputs[index_type][metric_type].append(processed_result[metric_type])
+            latencies[index_type]['avg'].append(batch_size / processed_result['avg'] / 1000)
+            latencies[index_type]['min'].append(batch_size / processed_result['max'] / 1000)
+            latencies[index_type]['max'].append(batch_size / processed_result['min'] / 1000)
+    # plot
+    plot_spec = [
+        ('throughput', tputs, 'Throughput (Mop/s)', False),
+        ('latency', latencies, 'Latency (ms)', True),
+    ]
+    legend_handles = []
+    legend_labels = []
+    for idx, (plot_name, plot_data, ylabel, log_y) in enumerate(plot_spec):
+        fig, ax = _make_fixed_plot_area_figure(1.6, 1.2,
+            include_xlabel=True,
+            include_ylabel=True,
+        )
+        for index_type in INDEX_TYPES_ROBUST:
+            line, = ax.plot(
+                EXP_BATCHSIZES, plot_data[index_type]['avg'],
+                label=INDEX_LABELS[index_type],
+                linewidth=2, markersize=6,
+                **INDEX_STYLES[index_type]
+            )
+            _add_throughput_error_bars(
+                ax,
+                EXP_BATCHSIZES,
+                plot_data[index_type]['avg'],
+                plot_data[index_type]['min'],
+                plot_data[index_type]['max'],
+                color=INDEX_STYLES[index_type]['color']
+            )
+            if idx == 0:
+                legend_handles.append(line)
+                legend_labels.append(INDEX_LABELS[index_type])
+        ax.set_xscale('log')
+        if log_y:
+            ax.set_yscale('log')
+        else:
+            ax.set_ylim(bottom=0)
+        ax.set_xlim(left=EXP_BATCHSIZES[0], right=EXP_BATCHSIZES[-1])
+        ax.set_xticks(EXP_BATCHSIZES)
+        ax.tick_params(axis='y', which='minor', left=False)
+        ax.grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
+        ax.set_xlabel('Batch Size')
+        ax.set_ylabel(ylabel)
+        plt.savefig(f'{plot_file_prefix}-{plot_name}.pdf', bbox_inches='tight')
+        plt.close(fig)
+    fig, ax = plt.subplots(1, 1, figsize=(6, 0.3), constrained_layout=True)
+    ax.legend(legend_handles, legend_labels, loc='center', ncol=len(legend_labels))
+    ax.axis("off")
+    plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
+    plt.close(fig)
+
 def meme_plots(configs_and_results, plot_file_prefix):
     tputs = {}
     tree_indexes = [IndexType.cpu_art, IndexType.cpu_masstree, IndexType.gpu_masstree,]
@@ -1252,6 +1332,7 @@ def generate_plots(args, configs_and_results):
     merge_plots(configs_and_results, Path(args.result_dir) / 'plot_merge')
     intro_plots(configs_and_results, Path(args.result_dir) / 'plot_intro')
     load_factor_plots(configs_and_results, Path(args.result_dir) / 'plot_loadfactor')
+    batch_plots(configs_and_results, Path(args.result_dir) / 'plot_batch')
     if not args.skip_meme:
         meme_plots(configs_and_results, Path(args.result_dir) / 'plot_meme')
 
