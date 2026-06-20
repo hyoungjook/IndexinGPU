@@ -145,3 +145,12 @@ EXP_HT_LOADFACTORS = {
         [0.7, 2, 5, 9]
     ),
 }
+
+EXP_BATCHSIZES = [
+    int(1 * 1000),
+    int(10 * 1000),
+    int(100 * 1000),
+    int(1 * MILLION),
+    int(10 * MILLION),
+    int(100 * MILLION),
+]

@@ -171,6 +171,25 @@ def generate_configs(args):
                 ConfigType.ht_print_load_factor: 1,
             }
             configs.append(common_config)
+    # batch size
+    for index_type in INDEX_TYPES_ROBUST:
+        for batch_size in EXP_BATCHSIZES:
+            if batch_size == DEFAULT_BATCH_SIZE:
+                pass # already measured
+            common_config = {
+                ConfigType.index_type: index_type,
+                ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+                ConfigType.keylen_prefix: 0,
+                ConfigType.keylen_min: DEFAULT_KEY_LENGTH,
+                ConfigType.keylen_max: DEFAULT_KEY_LENGTH,
+                ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH,
+                ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH,
+                ConfigType.num_mixed: batch_size,
+                ConfigType.rep_mixed: NUM_REPEATS,
+                ConfigType.mix_read_ratio: DEFAULT_MIX_READ_RATIO,
+                OptionalConfigType.allocator_pool_ratio: ROBUST_INDEX_ALLOC_POOL_RATIO(index_type),
+            }
+            configs.append(common_config)
     if not args.skip_meme:
         # meme
         for index_type in INDEX_TYPES_ROBUST:
