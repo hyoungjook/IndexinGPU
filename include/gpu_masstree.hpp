@@ -1274,6 +1274,11 @@ struct gpu_masstree {
     traverse_tree_nodes(task);
   }
 
+  std::size_t num_nodes_used() {
+    std::size_t num_slabs_in_alloc = allocator_.num_allocated_slabs();
+    return num_slabs_in_alloc;
+  }
+
   struct validate_tree_task {
     template <typename tile_type>
     DEVICE_QUALIFIER void init(const tile_type& tile) {}

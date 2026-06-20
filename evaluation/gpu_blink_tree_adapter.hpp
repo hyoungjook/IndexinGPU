@@ -131,6 +131,11 @@ struct gpu_blink_tree_adapter {
     index_->mixed_batch(types, keys, values, num_keys);
   }
   void print_stats() {}
+  void ht_print_load_factor(std::size_t max_keys, uint32_t key_length, uint32_t value_length) {
+    (void)max_keys;
+    (void)key_length;
+    (void)value_length;
+  }
 
  private:
   #define FORALL_ARGUMENTS_GPU_BLINKTREE(x) \

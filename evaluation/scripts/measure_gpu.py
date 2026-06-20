@@ -151,6 +151,26 @@ def generate_configs(args):
                 OptionalConfigType.merge_level: merge_level
             }
             configs.append(common_config)
+    # HT load factor
+    for index_type in [IndexType.gpu_cuckoohashtable, IndexType.gpu_chainhashtable, IndexType.gpu_extendhashtable]:
+        factor_config_type, factors = EXP_HT_LOADFACTORS[index_type]
+        for factor in factors:
+            common_config = {
+                ConfigType.index_type: index_type,
+                ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+                ConfigType.keylen_min: 1,
+                ConfigType.keylen_max: 1,
+                ConfigType.valuelen_min: 1,
+                ConfigType.valuelen_max: 1,
+                ConfigType.num_lookups: DEFAULT_BATCH_SIZE,
+                ConfigType.num_insdel: DEFAULT_BATCH_SIZE,
+                ConfigType.rep_lookup: NUM_REPEATS,
+                ConfigType.rep_insdel: NUM_REPEATS,
+                OptionalConfigType.allocator_pool_ratio: ROBUST_INDEX_ALLOC_POOL_RATIO(index_type),
+                factor_config_type: factor,
+                ConfigType.ht_print_load_factor: 1,
+            }
+            configs.append(common_config)
     if not args.skip_meme:
         # meme
         for index_type in INDEX_TYPES_ROBUST:

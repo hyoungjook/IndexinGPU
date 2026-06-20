@@ -54,6 +54,7 @@ class ConfigType(Enum):
     index_type = auto()
     only_check_space = auto()
     use_pinned_host_memory = auto()
+    ht_print_load_factor = auto()
 
 class OptionalConfigType(Enum):
     allocator_pool_ratio = auto()
@@ -82,6 +83,7 @@ class ResultType(Enum):
     update = auto()
     mixed = auto()
     space = auto()
+    load_factor = auto()
 
 EXECUTABLE_INFO = {
     BenchExecutable.robust: {
@@ -253,6 +255,9 @@ def run_one(args, config):
                 if '%' in token:
                     space_results.append(float(re.sub(r'[()%]', '', token)))
                     break
+        elif 'LoadFactor' in result_line:
+            result_tokens = result_line.split(' ')
+            result['load_factor'] = float(result_tokens[1])
     if len(space_results) > 0:
         result['space'] = space_results
     print(f'parsed_config: {parsed_config}, result: {result}')

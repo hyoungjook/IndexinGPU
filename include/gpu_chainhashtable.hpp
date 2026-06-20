@@ -526,6 +526,12 @@ struct gpu_chainhashtable {
       << static_cast<float>(memory_use_bytes) / meminfo.total_bytes * 100.0f << "%)" << std::endl;
   }
 
+  std::size_t num_nodes_used() {
+    std::size_t num_slabs_in_array = static_cast<std::size_t>(num_buckets_);
+    std::size_t num_slabs_in_alloc = allocator_.num_allocated_slabs();
+    return num_slabs_in_array + num_slabs_in_alloc;
+  }
+
   struct validate_nodes_task {
     template <typename tile_type>
     DEVICE_QUALIFIER void init(const tile_type& tile) {}

@@ -130,3 +130,18 @@ EXP_MERGE_ERASE_RATIOS = [
     float(x / DEFAULT_MAXKEY_LONG) for x in range(0, DEFAULT_MAXKEY_LONG + 1, DEFAULT_BATCH_SIZE)
 ]
 EXP_GPU_MASSTREE_MERGE_SKIP_LEVEL = [2]
+
+EXP_HT_LOADFACTORS = {
+    IndexType.gpu_cuckoohashtable: (
+        OptionalConfigType.initial_array_fill_factor,
+        [0.6, 0.7, 0.8, 0.9, 0.95]
+    ),
+    IndexType.gpu_chainhashtable: (
+        OptionalConfigType.initial_array_fill_factor,
+        [0.7, 0.8, 2, 3, 4, 6]
+    ),
+    IndexType.gpu_extendhashtable: (
+        OptionalConfigType.load_factor_threshold,
+        [0.7, 2, 5, 9]
+    ),
+}

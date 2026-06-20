@@ -226,13 +226,17 @@ static void run_bench(adapter_type& adapter,
                       std::size_t result_buffer_size,
                       std::size_t result_length_buffer_size,
                       bool verbose,
-                      bool print_all_measurements) {
+                      bool print_all_measurements,
+                      bool ht_print_load_factor) {
   const bool use_null_keylength = (args.keylen_min == args.keylen_max);
   const bool use_null_valuelength = (args.valuelen_min == args.valuelen_max);
   // measure lookup & scan
   if (args.rep_lookup > 0 || args.rep_scan > 0) {
     cpu_lap_timer lookup_timer, scan_timer;
     prefill(adapter, h_keys, h_key_lengths, h_values, h_value_lengths, args.keylen_min, args.keylen_max, args.valuelen_min, args.valuelen_max, args.max_keys);
+    if (ht_print_load_factor) {
+      adapter.ht_print_load_factor(args.max_keys, args.keylen_max, args.valuelen_max);
+    }
     #if !defined(NOGPU)
     auto d_lookup_keys = device_vector<key_slice_type>(h_lookup_keys, args.use_pinned_host_memory);
     auto d_lookup_key_lengths = device_vector<size_type>(h_lookup_key_lengths, args.use_pinned_host_memory, use_null_keylength);
@@ -661,7 +665,7 @@ int main(int argc, char** argv) {
     universal::bench_runner<index##_adapter>::run_bench(index##_adapter_, \
       h_keys, h_key_lengths, h_values, h_value_lengths, h_lookup_keys, h_lookup_key_lengths, h_scan_upper_keys_if_btree, \
       h_mix_types, h_mix_keys, h_mix_key_lengths, h_mix_values, h_mix_value_lengths, h_mix_key_tuple_ids, args, \
-      result_buffer_size, result_length_buffer_size, verbose, print_all_measurements); \
+      result_buffer_size, result_length_buffer_size, verbose, print_all_measurements, args.ht_print_load_factor); \
   }
   FORALL_INDEXES(ADAPTER_RUN_BENCH)
   #undef ADAPTER_RUN_BENCH

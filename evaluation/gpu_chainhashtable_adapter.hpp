@@ -135,6 +135,18 @@ struct gpu_chainhashtable_adapter {
     //  reinterpret_cast<index16_type*>(index_)->validate();
     //}
   }
+  void ht_print_load_factor(std::size_t max_keys, uint32_t key_length, uint32_t value_length) {
+    check_argument(key_length == 1 && value_length == 1);
+    std::size_t num_nodes;
+    if (configs_.tile_size == 32) {
+      num_nodes = reinterpret_cast<index32_type*>(index_)->num_nodes_used();
+    }
+    else {
+      num_nodes = reinterpret_cast<index16_type*>(index_)->num_nodes_used();
+    }
+    double load_factor = static_cast<double>(max_keys) / num_nodes / hashtable_node_capacity;
+    std::cout << "LoadFactor: " << load_factor << std::endl;
+  }
 
  private:
   #define FORALL_ARGUMENTS_GPU_CHAINHASHTABLE(x) \

@@ -131,6 +131,18 @@ struct gpu_cuckoohashtable_adapter {
     //  reinterpret_cast<index16_type*>(index_)->validate();
     //}
   }
+  void ht_print_load_factor(std::size_t max_keys, uint32_t key_length, uint32_t value_length) {
+    check_argument(key_length == 1 && value_length == 1);
+    std::size_t num_nodes;
+    if (configs_.tile_size == 32) {
+      num_nodes = reinterpret_cast<index32_type*>(index_)->num_nodes_used();
+    }
+    else {
+      num_nodes = reinterpret_cast<index16_type*>(index_)->num_nodes_used();
+    }
+    double load_factor = static_cast<double>(max_keys) / num_nodes / hashtable_node_capacity;
+    std::cout << "LoadFactor: " << load_factor << std::endl;
+  }
 
  private:
   #define FORALL_ARGUMENTS_GPU_CUCKOOHASHTABLE(x) \
@@ -157,7 +169,7 @@ struct gpu_cuckoohashtable_adapter {
       #undef PARSE_DEFAULT_ARGUMENTS
       num_keys = tmp_max_keys;
       check_argument(tile_size == 32 || tile_size == 16);
-      check_argument(0 < initial_array_fill_factor && initial_array_fill_factor <= 0.9f);
+      check_argument(0 < initial_array_fill_factor && initial_array_fill_factor < 1.0f);
     }
     void print() const {
       #define PRINT_ARGUMENTS(arg, type, default_value) \

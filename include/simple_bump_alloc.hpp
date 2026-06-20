@@ -35,6 +35,11 @@ struct simple_bump_allocator {
     void* pool_;
     size_type* slab_count_;
     pointer_type max_count_;
+    std::size_t num_allocated_slabs() const {
+      size_type h_slab_count = 0;
+      cuda_try(cudaMemcpy(&h_slab_count, slab_count_, sizeof(size_type), cudaMemcpyDeviceToHost));
+      return static_cast<std::size_t>(h_slab_count);
+    }
   };
 
   simple_bump_allocator(float pool_ratio = 0.9f) {
@@ -62,8 +67,8 @@ struct simple_bump_allocator {
   }
 
   void print_stats() const {
-    size_type h_slab_count = 0;
-    cuda_try(cudaMemcpy(&h_slab_count, slab_count_, sizeof(size_type), cudaMemcpyDeviceToHost));
+    auto device_instance = get_device_instance();
+    auto h_slab_count = device_instance.num_allocated_slabs();
     std::cout << "simple_bump_allocator(" << slab_size_ << "B slabs): "
         << h_slab_count << "/" << max_count_ << " slabs allocated " 
         << "(" << (float)h_slab_count / max_count_ * 100.0f << "%)" << std::endl;
