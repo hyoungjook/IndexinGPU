@@ -1040,6 +1040,86 @@ def intro_plots(configs_and_results, plot_file_prefix):
     plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
     plt.close(fig)
 
+def load_factor_plots(configs_and_results, plot_file_prefix):
+    tputs = {}
+    index_types = [
+        IndexType.gpu_cuckoohashtable,
+        IndexType.gpu_chainhashtable,
+        IndexType.gpu_extendhashtable,
+    ]
+    result_types = [ResultType.insert, ResultType.delete, ResultType.lookup]
+    for index_type in index_types:
+        tputs[index_type] = {}
+        for result_type in result_types:
+            tputs[index_type][result_type] = {
+                'load_factor': [], 'avg': [], 'min': [], 'max': []
+            }
+        factor_config_type, factors = EXP_HT_LOADFACTORS[index_type]
+        desired_config = {
+            ConfigType.index_type: index_type,
+            ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+            ConfigType.keylen_min: 1,
+            ConfigType.keylen_max: 1,
+            ConfigType.valuelen_min: 1,
+            ConfigType.valuelen_max: 1,
+            ConfigType.num_lookups: DEFAULT_BATCH_SIZE,
+            ConfigType.num_insdel: DEFAULT_BATCH_SIZE,
+            ConfigType.ht_print_load_factor: 1,
+        }
+        for factor in factors:
+            result = filter(configs_and_results, {**desired_config, factor_config_type: factor}, ResultType.lookup)
+            load_factor = result['load_factor']
+            for result_type in result_types:
+                processed_result = _compute_avg_min_max_from_raw(result[result_type.name]['raw'])
+                tputs[index_type][result_type]['load_factor'].append(load_factor)
+                for metric_type in ['avg', 'min', 'max']:
+                    tputs[index_type][result_type][metric_type].append(processed_result[metric_type])
+    # plot
+    legend_handles = []
+    legend_labels = []
+    for idx, result_type in enumerate(result_types):
+        fig, ax = _make_fixed_plot_area_figure(1.3, 1.1,
+            include_xlabel=True,
+            include_ylabel=(idx == 0),
+        )
+        for index_type in index_types:
+            xdata = tputs[index_type][result_type]['load_factor']
+            avg_values = _convert_mops_to_bops(tputs[index_type][result_type]['avg'], index_type)
+            min_values = _convert_mops_to_bops(tputs[index_type][result_type]['min'], index_type)
+            max_values = _convert_mops_to_bops(tputs[index_type][result_type]['max'], index_type)
+            line, = ax.plot(
+                xdata, avg_values,
+                label=INDEX_LABELS[index_type],
+                linewidth=2, markersize=6,
+                **INDEX_STYLES[index_type]
+            )
+            _add_throughput_error_bars(
+                ax,
+                xdata,
+                avg_values,
+                min_values,
+                max_values,
+                color=INDEX_STYLES[index_type]['color']
+            )
+            if idx == 0:
+                legend_handles.append(line)
+                legend_labels.append(INDEX_LABELS[index_type])
+        ax.set_ylim(bottom=0)
+        ax.set_xlim(left=0.6, right=1.0)
+        ax.set_xticks([0.6, 0.7, 0.8, 0.9, 1.0])
+        ax.xaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
+        ax.grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
+        ax.set_xlabel('Load Factor')
+        if idx == 0:
+            ax.set_ylabel(r'Throughput ($10^9$/s)')
+        plt.savefig(f'{plot_file_prefix}-{result_type.name}.pdf', bbox_inches='tight')
+        plt.close(fig)
+    fig, ax = plt.subplots(1, 1, figsize=(6, 0.3), constrained_layout=True)
+    ax.legend(legend_handles, legend_labels, loc='center', ncol=len(legend_labels))
+    ax.axis("off")
+    plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
+    plt.close(fig)
+
 def meme_plots(configs_and_results, plot_file_prefix):
     tputs = {}
     tree_indexes = [IndexType.cpu_art, IndexType.cpu_masstree, IndexType.gpu_masstree,]
@@ -1171,6 +1251,7 @@ def generate_plots(args, configs_and_results):
     tile_plots(configs_and_results, Path(args.result_dir) / 'plot_tile')
     merge_plots(configs_and_results, Path(args.result_dir) / 'plot_merge')
     intro_plots(configs_and_results, Path(args.result_dir) / 'plot_intro')
+    load_factor_plots(configs_and_results, Path(args.result_dir) / 'plot_loadfactor')
     if not args.skip_meme:
         meme_plots(configs_and_results, Path(args.result_dir) / 'plot_meme')
 
