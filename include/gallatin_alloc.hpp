@@ -29,6 +29,60 @@
 
 namespace gallatin_alloc_detail {
 
+constexpr uint64_t gallatin_segment_bytes = 16ULL * 1024ULL * 1024ULL;
+constexpr uint64_t gallatin_min_alloc_size = 128ULL;
+constexpr uint64_t gallatin_max_alloc_size = 4096ULL;
+
+using global_allocator_type =
+    gallatin::allocators::Gallatin<gallatin_segment_bytes,
+                                   gallatin_min_alloc_size,
+                                   gallatin_max_alloc_size>;
+
+static __device__ global_allocator_type* global_gallatin = nullptr;
+
+__host__ inline bool init_global_allocator(uint64_t num_bytes,
+                                           uint64_t seed,
+                                           bool print_info = true) {
+  auto* local_copy =
+      global_allocator_type::generate_on_device(num_bytes, seed, print_info);
+  cudaMemcpyToSymbol(global_gallatin, &local_copy,
+                     sizeof(global_allocator_type*));
+  cudaDeviceSynchronize();
+  return local_copy != nullptr;
+}
+
+__host__ inline void free_global_allocator() {
+  global_allocator_type* local_copy = nullptr;
+  cudaMemcpyFromSymbol(&local_copy, global_gallatin,
+                       sizeof(global_allocator_type*));
+  cudaDeviceSynchronize();
+  global_allocator_type::free_on_device(local_copy);
+  local_copy = nullptr;
+  cudaMemcpyToSymbol(global_gallatin, &local_copy,
+                     sizeof(global_allocator_type*));
+  cudaDeviceSynchronize();
+}
+
+__host__ inline void print_global_stats() {
+  global_allocator_type* local_copy = nullptr;
+  cudaMemcpyFromSymbol(&local_copy, global_gallatin,
+                       sizeof(global_allocator_type*));
+  cudaDeviceSynchronize();
+  local_copy->print_info();
+}
+
+__device__ inline void* global_malloc(uint64_t num_bytes) {
+  return global_gallatin->malloc(num_bytes);
+}
+
+__device__ inline void global_free(void* ptr) {
+  global_gallatin->free(ptr);
+}
+
+__device__ inline uint64_t global_memory_base() {
+  return reinterpret_cast<uint64_t>(global_gallatin->table->memory);
+}
+
 constexpr uint64_t max_u64(uint64_t a, uint64_t b) {
   return a > b ? a : b;
 }
@@ -60,13 +114,13 @@ struct gallatin_allocator {
   using pointer_type = size_type;
 
   static constexpr uint32_t slab_size_ = slab_size;
-  static constexpr uint64_t gallatin_segment_bytes_ = 16ULL * 1024ULL * 1024ULL;
-  static constexpr uint64_t gallatin_min_alloc_size_ = 16ULL;
-  static constexpr uint64_t gallatin_max_alloc_size_ = 4096ULL;
-  using gallatin_allocator_type =
-      gallatin::allocators::Gallatin<gallatin_segment_bytes_,
-                                     gallatin_min_alloc_size_,
-                                     gallatin_max_alloc_size_>;
+  static constexpr uint64_t gallatin_segment_bytes_ =
+      gallatin_alloc_detail::gallatin_segment_bytes;
+  static constexpr uint64_t gallatin_min_alloc_size_ =
+      gallatin_alloc_detail::gallatin_min_alloc_size;
+  static constexpr uint64_t gallatin_max_alloc_size_ =
+      gallatin_alloc_detail::gallatin_max_alloc_size;
+  using gallatin_allocator_type = gallatin_alloc_detail::global_allocator_type;
 
   static constexpr uint64_t effective_slab_size_ =
       gallatin_alloc_detail::bit_ceil(
@@ -82,7 +136,6 @@ struct gallatin_allocator {
   static_assert(effective_slab_size_ <= gallatin_max_alloc_size_);
 
   struct device_instance_type {
-    gallatin_allocator_type* allocator_;
     pointer_type total_slots_;
   };
 
@@ -111,9 +164,9 @@ struct gallatin_allocator {
     }
     total_slots_ = static_cast<pointer_type>(total_slots);
 
-    allocator_ = gallatin_allocator_type::generate_on_device(max_bytes, seed,
-                                                             print_info);
-    if (allocator_ == nullptr) {
+    initialized_ = gallatin_alloc_detail::init_global_allocator(max_bytes, seed,
+                                                                print_info);
+    if (!initialized_) {
       std::cerr << "gallatin_allocator: Gallatin initialization failed"
                 << std::endl;
       std::abort();
@@ -121,8 +174,8 @@ struct gallatin_allocator {
   }
 
   ~gallatin_allocator() {
-    if (allocator_ != nullptr) {
-      gallatin_allocator_type::free_on_device(allocator_);
+    if (initialized_) {
+      gallatin_alloc_detail::free_global_allocator();
     }
   }
 
@@ -130,18 +183,18 @@ struct gallatin_allocator {
   gallatin_allocator& operator=(const gallatin_allocator& other) = delete;
 
   device_instance_type get_device_instance() const {
-    return device_instance_type{allocator_, total_slots_};
+    return device_instance_type{total_slots_};
   }
 
   void print_stats() const {
     std::cout << "gallatin_allocator(" << slab_size_ << "B slabs, "
               << effective_slab_size_ << "B Gallatin slices): "
               << total_slots_ << " max slots" << std::endl;
-    allocator_->print_info();
+    gallatin_alloc_detail::print_global_stats();
   }
 
 private:
-  gallatin_allocator_type* allocator_ = nullptr;
+  bool initialized_ = false;
   pointer_type total_slots_ = 0;
 };
 
@@ -168,7 +221,6 @@ struct gallatin_linear_allocator {
   static_assert(slab_size_ <= gallatin_max_alloc_size_);
 
   struct device_instance_type {
-    gallatin_allocator_type* allocator_;
     pointer_type total_slots_;
     size_type* linear_pool_;
     size_type* linear_count_;
@@ -234,9 +286,9 @@ struct gallatin_linear_allocator {
                         static_cast<std::size_t>(linear_capacity_) *
                             sizeof(size_type)));
 
-    allocator_ = gallatin_allocator_type::generate_on_device(gallatin_bytes, seed,
-                                                             print_info);
-    if (allocator_ == nullptr) {
+    initialized_ = gallatin_alloc_detail::init_global_allocator(
+        gallatin_bytes, seed, print_info);
+    if (!initialized_) {
       std::cerr << "gallatin_linear_allocator: Gallatin initialization failed"
                 << std::endl;
       std::abort();
@@ -247,8 +299,8 @@ struct gallatin_linear_allocator {
   }
 
   ~gallatin_linear_allocator() {
-    if (allocator_ != nullptr) {
-      gallatin_allocator_type::free_on_device(allocator_);
+    if (initialized_) {
+      gallatin_alloc_detail::free_global_allocator();
     }
     if (linear_pool_ != nullptr) {
       cuda_try(cudaFree(linear_pool_));
@@ -263,8 +315,8 @@ struct gallatin_linear_allocator {
       delete;
 
   device_instance_type get_device_instance() const {
-    return device_instance_type{allocator_, total_slots_, linear_pool_,
-                                linear_count_, linear_capacity_};
+    return device_instance_type{total_slots_, linear_pool_, linear_count_,
+                                linear_capacity_};
   }
 
   void print_stats() const {
@@ -275,11 +327,11 @@ struct gallatin_linear_allocator {
               << effective_slab_size_ << "B Gallatin slices): "
               << total_slots_ << " max slots, " << h_linear_count << "/"
               << linear_capacity_ << " linear entries" << std::endl;
-    allocator_->print_info();
+    gallatin_alloc_detail::print_global_stats();
   }
 
 private:
-  gallatin_allocator_type* allocator_ = nullptr;
+  bool initialized_ = false;
   pointer_type total_slots_ = 0;
   size_type* linear_pool_ = nullptr;
   size_type* linear_count_ = nullptr;
@@ -304,7 +356,7 @@ struct device_allocator_context<gallatin_allocator<slab_size>> {
   DEVICE_QUALIFIER pointer_type allocate(const tile_type& tile) {
     uint64_t raw_addr = 0;
     if (tile.thread_rank() == 0) {
-      auto* raw_ptr = alloc_.allocator_->malloc(slab_size_);
+      auto* raw_ptr = gallatin_alloc_detail::global_malloc(slab_size_);
       if (raw_ptr == nullptr) {
         printf("gallatin_allocator: allocation failed for %u bytes\n",
                slab_size_);
@@ -319,12 +371,12 @@ struct device_allocator_context<gallatin_allocator<slab_size>> {
   template <typename tile_type>
   DEVICE_QUALIFIER void deallocate_coop(pointer_type p, const tile_type& tile) {
     if (tile.thread_rank() == 0) {
-      alloc_.allocator_->free(address(p));
+      gallatin_alloc_detail::global_free(address(p));
     }
   }
 
   DEVICE_QUALIFIER uint32_t deallocate_perlane(pointer_type p) {
-    alloc_.allocator_->free(address(p));
+    gallatin_alloc_detail::global_free(address(p));
     return 0;
   }
 
@@ -334,7 +386,7 @@ struct device_allocator_context<gallatin_allocator<slab_size>> {
 
   DEVICE_QUALIFIER void* address(pointer_type p) const {
     assert(p < alloc_.total_slots_);
-    auto raw_addr = reinterpret_cast<uint64_t>(alloc_.allocator_->table->memory) +
+    auto raw_addr = gallatin_alloc_detail::global_memory_base() +
                     static_cast<uint64_t>(p) * effective_slab_size_;
     return reinterpret_cast<void*>(raw_addr);
   }
@@ -347,7 +399,7 @@ private:
   const device_instance_type& alloc_;
 
   DEVICE_QUALIFIER pointer_type pointer_to_handle(uint64_t raw_addr) const {
-    auto base_addr = reinterpret_cast<uint64_t>(alloc_.allocator_->table->memory);
+    auto base_addr = gallatin_alloc_detail::global_memory_base();
     assert(raw_addr >= base_addr);
     auto offset = raw_addr - base_addr;
     assert((offset % effective_slab_size_) == 0);
@@ -375,7 +427,7 @@ struct device_allocator_context<gallatin_linear_allocator<slab_size>> {
   DEVICE_QUALIFIER pointer_type allocate(const tile_type& tile) {
     uint64_t raw_addr = 0;
     if (tile.thread_rank() == 0) {
-      auto* raw_ptr = alloc_.allocator_->malloc(slab_size_);
+      auto* raw_ptr = gallatin_alloc_detail::global_malloc(slab_size_);
       if (raw_ptr == nullptr) {
         printf("gallatin_linear_allocator: allocation failed for %u bytes\n",
                slab_size_);
@@ -390,12 +442,12 @@ struct device_allocator_context<gallatin_linear_allocator<slab_size>> {
   template <typename tile_type>
   DEVICE_QUALIFIER void deallocate_coop(pointer_type p, const tile_type& tile) {
     if (tile.thread_rank() == 0) {
-      alloc_.allocator_->free(address(p));
+      gallatin_alloc_detail::global_free(address(p));
     }
   }
 
   DEVICE_QUALIFIER uint32_t deallocate_perlane(pointer_type p) {
-    alloc_.allocator_->free(address(p));
+    gallatin_alloc_detail::global_free(address(p));
     return 0;
   }
 
@@ -406,7 +458,7 @@ struct device_allocator_context<gallatin_linear_allocator<slab_size>> {
 
   DEVICE_QUALIFIER void* address(pointer_type p) const {
     assert(p < alloc_.total_slots_);
-    auto raw_addr = reinterpret_cast<uint64_t>(alloc_.allocator_->table->memory) +
+    auto raw_addr = gallatin_alloc_detail::global_memory_base() +
                     static_cast<uint64_t>(p) * effective_slab_size_;
     return reinterpret_cast<void*>(raw_addr);
   }
@@ -446,7 +498,7 @@ private:
   const device_instance_type& alloc_;
 
   DEVICE_QUALIFIER pointer_type pointer_to_handle(uint64_t raw_addr) const {
-    auto base_addr = reinterpret_cast<uint64_t>(alloc_.allocator_->table->memory);
+    auto base_addr = gallatin_alloc_detail::global_memory_base();
     assert(raw_addr >= base_addr);
     auto offset = raw_addr - base_addr;
     assert((offset % effective_slab_size_) == 0);
