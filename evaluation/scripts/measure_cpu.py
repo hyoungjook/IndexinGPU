@@ -23,8 +23,9 @@ def generate_configs(args):
                 common_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
                 common_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
                 common_config[ConfigType.rep_scan] = NUM_REPEATS
-            common_config[ConfigType.num_updates] = DEFAULT_BATCH_SIZE
-            common_config[ConfigType.rep_update] = NUM_REPEATS
+            if index_type in IS_INDEX_TYPE_SUPPORT_UPDATE:
+                common_config[ConfigType.num_updates] = DEFAULT_BATCH_SIZE
+                common_config[ConfigType.rep_update] = NUM_REPEATS
             common_config[ConfigType.num_mixed] = DEFAULT_BATCH_SIZE
             common_config[ConfigType.mix_read_ratio] = DEFAULT_MIX_READ_RATIO
             common_config[ConfigType.rep_mixed] = NUM_REPEATS

@@ -956,20 +956,17 @@ def intro_plots(configs_and_results, plot_file_prefix):
             for index_type in index_types:
                 desired_config = {
                     ConfigType.index_type: index_type,
-                    ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
-                    ConfigType.keylen_prefix: 0,
-                    ConfigType.keylen_min: intro_plot_key_length,
-                    ConfigType.keylen_max: intro_plot_key_length,
+                    ConfigType.dataset_file: MEME_DATASET_PATH,
                     ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH_OVERVIEW,
                     ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH_OVERVIEW,
                 }
                 if result_type == ResultType.lookup:
-                    desired_config[ConfigType.num_lookups] = DEFAULT_BATCH_SIZE
+                    desired_config[ConfigType.num_lookups] = BATCH_SIZE_MEME
                 elif result_type == ResultType.scan:
-                    desired_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
+                    desired_config[ConfigType.num_scans] = BATCH_SIZE_MEME
                     desired_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
                 else:
-                    desired_config[ConfigType.num_mixed] = DEFAULT_BATCH_SIZE
+                    desired_config[ConfigType.num_mixed] = BATCH_SIZE_MEME
                     desired_config[ConfigType.mix_read_ratio] = DEFAULT_MIX_READ_RATIO
                 result = filter(configs_and_results, desired_config, result_type)
                 processed_result = _compute_avg_min_max_from_raw(result[result_type.name]['raw'])
@@ -1159,7 +1156,7 @@ def batch_plots(configs_and_results, plot_file_prefix):
     legend_handles = []
     legend_labels = []
     for idx, (plot_name, plot_data, ylabel, log_y) in enumerate(plot_spec):
-        fig, ax = _make_fixed_plot_area_figure(1.6, 1.2,
+        fig, ax = _make_fixed_plot_area_figure(2, 1.3,
             include_xlabel=True,
             include_ylabel=True,
         )
@@ -1206,11 +1203,9 @@ def meme_plots(configs_and_results, plot_file_prefix):
     hashtable_indexes = [IndexType.cpu_libcuckoo, IndexType.cpu_onetbb, IndexType.gpu_cuckoohashtable, IndexType.gpu_chainhashtable, IndexType.gpu_extendhashtable,]
     for index_type in tree_indexes + hashtable_indexes:
         tputs[index_type] = {}
-        result_types = [ResultType.lookup, ResultType.insert, ResultType.delete, ResultType.mixed]
+        result_types = [ResultType.lookup, ResultType.insert, ResultType.update, ResultType.delete, ResultType.mixed]
         if index_type in IS_INDEX_TYPE_ORDERED:
             result_types.append(ResultType.scan)
-        if index_type in IS_INDEX_TYPE_SUPPORT_UPDATE:
-            result_types.append(ResultType.update)
         for result_type in result_types:
             tputs[index_type][result_type] = {
                 'avg': [], 'min': [], 'max': []
@@ -1233,10 +1228,14 @@ def meme_plots(configs_and_results, plot_file_prefix):
                 desired_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
             elif result_type == ResultType.update:
                     desired_config[ConfigType.num_updates] = BATCH_SIZE_MEME
-            result = filter(configs_and_results, desired_config, result_type)
-            processed_result = _compute_avg_min_max_from_raw(result[result_type.name]['raw'])
-            for metric_type in ['avg', 'min', 'max']:
-                tputs[index_type][result_type][metric_type].append(processed_result[metric_type])
+            if result_type != ResultType.update or index_type in IS_INDEX_TYPE_SUPPORT_UPDATE:
+                result = filter(configs_and_results, desired_config, result_type)
+                processed_result = _compute_avg_min_max_from_raw(result[result_type.name]['raw'])
+                for metric_type in ['avg', 'min', 'max']:
+                    tputs[index_type][result_type][metric_type].append(processed_result[metric_type])
+            else:
+                for metric_type in ['avg', 'min', 'max']:
+                    tputs[index_type][result_type][metric_type].append(0.0)
     # plot
     plot_spec = [
         (tree_indexes, [ResultType.lookup, ResultType.scan, ResultType.insert, ResultType.update, ResultType.delete, ResultType.mixed]),
