@@ -67,14 +67,26 @@ struct gpu_chainhashtable_adapter {
               const value_slice_type* values,
               uint32_t valuelen_max,
               const size_type* value_lengths,
-              std::size_t num_keys,
-              bool update_if_exists = false) {
+              std::size_t num_keys) {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_bool(configs_.use_hash_tag, [&](auto t2, auto h2) {
         adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t3, auto h3, auto k3) {
-          adapter_util::dispatch_bool(update_if_exists, [&](auto t4, auto h4, auto k4, auto u4) {
-            do_insert<t4.value, u4.value, h4.value, k4.value>(keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, num_keys, (cudaStream_t)0);
-          }, t3, h3, k3);
+          do_insert<t3.value, h3.value, k3.value>(keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, num_keys, (cudaStream_t)0);
+        }, t2, h2);
+      }, t1);
+    });
+  }
+  void update(const key_slice_type* keys,
+              uint32_t keylen_max,
+              const size_type* key_lengths,
+              const value_slice_type* values,
+              uint32_t valuelen_max,
+              const size_type* value_lengths,
+              std::size_t num_keys) {
+    adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
+      adapter_util::dispatch_bool(configs_.use_hash_tag, [&](auto t2, auto h2) {
+        adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t3, auto h3, auto k3) {
+          do_update<t3.value, h3.value, k3.value>(keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, num_keys, (cudaStream_t)0);
         }, t2, h2);
       }, t1);
     });
@@ -190,10 +202,16 @@ struct gpu_chainhashtable_adapter {
   };
   #undef FORALL_ARGUMENTS_GPU_CHAINHASHTABLE
 
-  template <uint32_t tile_size, bool update_if_exists, bool use_hash_tag, bool use_shmem_key, typename... arg_types>
+  template <uint32_t tile_size, bool use_hash_tag, bool use_shmem_key, typename... arg_types>
   void do_insert(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template insert<update_if_exists, use_hash_tag, use_shmem_key>(args...);
+      ->template insert<false, use_hash_tag, use_shmem_key>(args...);
+  }
+
+  template <uint32_t tile_size, bool use_hash_tag, bool use_shmem_key, typename... arg_types>
+  void do_update(arg_types... args) {
+    reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
+      ->template update<use_hash_tag, use_shmem_key>(args...);
   }
 
   template <uint32_t tile_size, bool use_hash_tag, bool merge_chains, bool use_shmem_key, typename... arg_types>

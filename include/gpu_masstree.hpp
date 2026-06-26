@@ -114,6 +114,21 @@ struct gpu_masstree {
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
 
+  template <bool enable_suffix = true,
+            bool use_shmem_key = false>
+  void update(const key_slice_type* keys,
+              const size_type max_key_length,
+              const size_type* key_lengths,
+              const value_slice_type* values,
+              const size_type max_value_length,
+              const size_type* value_lengths,
+              const size_type num_keys,
+              cudaStream_t stream = 0) {
+    kernels::GpuMasstree::update_device_func<gpu_masstree, enable_suffix>
+      func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths};
+    kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
+  }
+
   template <bool do_remove_empty_root = true,
             bool pessimistic_merge = true,
             bool do_merge = true,
@@ -609,6 +624,128 @@ struct gpu_masstree {
       return true;
     }
     assert(false);
+    return false;
+  }
+
+  template <bool enable_suffix = true,
+            typename tile_type,
+            typename keyptr_or_keystore,
+            typename valptr_or_valstore>
+  DEVICE_QUALIFIER bool cooperative_update(keyptr_or_keystore& key,
+                                           const size_type key_length,
+                                           valptr_or_valstore& value,
+                                           const size_type value_length,
+                                           const tile_type& tile,
+                                           device_allocator_context_type& allocator,
+                                           device_reclaimer_context_type& reclaimer) {
+    using node_type = masstree_node<tile_type, device_allocator_context_type>;
+    using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
+    struct split_early_exit_check {
+      DEVICE_QUALIFIER bool check(const node_type& border_node) {
+        // if the border node already has the key slice and it's not the last slice,
+        // we just follow the same entry, no need to update the node; so we don't lock it
+        exited_ =
+            more_key_ && border_node.key_is_in_node(key_slice_, node_type::KEYSTATE_LINK);
+        return exited_;
+      }
+      const key_slice_type& key_slice_;
+      const bool& more_key_;
+      bool exited_ = false;
+    };
+    size_type slice = 0;
+    size_type current_root_index = root_index_;
+    auto current_node = node_type(root_index_, tile, allocator);
+    current_node.template load<utils::memory_order::acq_rel>();
+    while (slice < key_length) {
+      const key_slice_type key_slice = key[slice];
+      const bool more_key = (slice < key_length - 1);
+      split_early_exit_check early_exit{key_slice, more_key};
+      coop_traverse_until_border<true, utils::memory_order::acq_rel>(
+        current_node, key_slice, tile, allocator, true, early_exit);
+      if (early_exit.exited_) {
+        // find next layer root and continue now
+        current_node.get_key_value_from_node(key_slice, current_root_index, more_key);
+        current_node = node_type(current_root_index, tile, allocator);
+        current_node.template load<utils::memory_order::acq_rel>();
+        slice++;
+        continue;
+      }
+      if (current_node.is_garbage()) {
+        current_node.unlock();
+        return false;
+      }
+      value_slice_type found_value;
+      auto keystate = current_node.get_key_value_from_node(key_slice, found_value, more_key);
+      if (keystate < 0) {
+        current_node.unlock();
+        return false;
+      }
+      else if (keystate == node_type::KEYSTATE_LINK) {
+        current_node.unlock();
+        current_root_index = found_value;
+        current_node = node_type(current_root_index, tile, allocator);
+        current_node.template load<utils::memory_order::acq_rel>();
+        slice++;
+        continue;
+      }
+      else if (keystate == node_type::KEYSTATE_VALUE ||
+               keystate == node_type::KEYSTATE_LONGVAL) {
+        if (keystate == node_type::KEYSTATE_VALUE) {
+          if (value_length == 1) {
+            found_value = value[0];
+          }
+          else {
+            found_value = allocator.allocate(tile);
+            auto suffix = suffix_type(found_value, tile, allocator);
+            suffix.template create_from<const key_slice_type*>(nullptr, 0, value, value_length);
+            suffix.store_head();
+          }
+        }
+        else { // keystate = LONGVAL
+          if (value_length == 1) {
+            auto suffix = suffix_type(found_value, tile, allocator);
+            suffix.load_head();
+            suffix.retire(reclaimer);
+            found_value = value[0];
+          }
+          else {
+            auto suffix = suffix_type(found_value, tile, allocator);
+            suffix.load_head();
+            found_value = allocator.allocate(tile);
+            auto new_suffix = suffix_type(found_value, tile, allocator);
+            new_suffix.switch_value_from(suffix, value, value_length, reclaimer);
+            new_suffix.store_head();
+          }
+        }
+        current_node.update(key_slice, found_value, keystate, value_length == 1 ? node_type::KEYSTATE_VALUE : node_type::KEYSTATE_LONGVAL);
+        current_node.template store_unlock<utils::memory_order::acq_rel>();
+        return true;
+      }
+      else if constexpr (enable_suffix) { // node_type::KEYSTATE_SUFFIX
+        auto suffix = suffix_type(found_value, tile, allocator);
+        suffix.load_head();
+        key_slice_type mismatch_suffix_slice;
+        int cmp = suffix.strcmp(key + (slice + 1), key_length - slice - 1, &mismatch_suffix_slice);
+        if (cmp == 0) {
+          // protected by current_node.lock()
+          found_value = allocator.allocate(tile);
+          auto new_suffix = suffix_type(found_value, tile, allocator);
+          new_suffix.switch_value_from(suffix, value, value_length, reclaimer);
+          new_suffix.store_head();
+          current_node.update(key_slice, found_value, node_type::KEYSTATE_SUFFIX, node_type::KEYSTATE_SUFFIX);
+          current_node.template store_unlock<utils::memory_order::acq_rel>();
+          return true;
+        }
+        else {
+          current_node.unlock();
+          return false;
+        }
+      }
+      else {
+        current_node.unlock();
+        return false;
+      }
+    }
     return false;
   }
 

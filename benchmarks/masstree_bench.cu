@@ -67,6 +67,7 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
   float average_find_concurrent_seconds = 0.f;
   float average_successor_readonly_seconds = 0.f;
   float average_successor_concurrent_seconds = 0.f;
+  float average_update_seconds = 0.f;
   float average_erase_seconds = 0.f;
   std::size_t valid_count = 0;
 
@@ -137,6 +138,16 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
     auto successor_elapsed2 = successor_timer2.get_elapsed_s();
     average_successor_concurrent_seconds += successor_elapsed2;
 
+    gpu_timer update_timer;
+    update_timer.start_timer();
+    tree.template update<enable_suffix>(
+      d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(),
+      d_query_results.data().get(), max_value_length, d_query_result_lengths.data().get(), num_keys);
+    update_timer.stop_timer();
+    cuda_try(cudaDeviceSynchronize());
+    float update_elapsed = update_timer.get_elapsed_s();
+    average_update_seconds += update_elapsed;
+
     if (validate_index && exp == 0) {
       tree.validate();
     }
@@ -161,6 +172,7 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
                 << find_elapsed2 << " "
                 << successor_elapsed1 << " "
                 << successor_elapsed2 << " "
+                << update_elapsed << " "
                 << erase_elapsed << std::endl;
     }
     if (validate_result) {
@@ -186,18 +198,21 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
   average_find_concurrent_seconds /= float(num_experiments);
   average_successor_readonly_seconds /= float(num_experiments);
   average_successor_concurrent_seconds /= float(num_experiments);
+  average_update_seconds /= float(num_experiments);
   average_erase_seconds /= float(num_experiments);
   float insertion_rate = float(d_lengths.size()) / 1e6 / average_insert_seconds;
   float find_readonly_rate = float(d_query_lengths.size()) / 1e6 / average_find_readonly_seconds;
   float find_concurrent_rate = float(d_query_lengths.size()) / 1e6 / average_find_concurrent_seconds;
   float successor_readonly_rate = float(d_query_lengths.size()) / 1e6 / average_successor_readonly_seconds;
   float successor_concurrent_rate = float(d_query_lengths.size()) / 1e6 / average_successor_concurrent_seconds;
+  float update_rate = float(d_query_lengths.size()) / 1e6 / average_update_seconds;
   float erase_rate      = float(d_query_lengths.size()) * erase_ratio / 1e6 / average_erase_seconds;
   std::cout << "insert: " << insertion_rate << " Mop/s" << std::endl;
   std::cout << "find(readonly): " << find_readonly_rate << " Mop/s" << std::endl;
   std::cout << "find(concurrent): " << find_concurrent_rate << " Mop/s" << std::endl;
   std::cout << "successor(readonly): " << successor_readonly_rate << " Mop/s" << std::endl;
   std::cout << "successor(concurrent): " << successor_concurrent_rate << " Mop/s" << std::endl;
+  std::cout << "update: " << update_rate << " Mop/s" << std::endl;
   std::cout << "erase: " << erase_rate << " Mop/s" << std::endl;
   if (validate_result) {
     if (valid_count == num_experiments) {

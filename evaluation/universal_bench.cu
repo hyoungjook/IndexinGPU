@@ -310,7 +310,7 @@ static void run_bench(adapter_type& adapter,
     for (uint32_t r = 0; r < args.rep_update; r++) {
       update_timer.start();
       #if !defined(NOGPU)
-      adapter.insert(d_update_keys.data(), args.keylen_max, d_update_key_lengths.data(), d_update_values.data(), args.valuelen_max, d_update_value_lengths.data(), args.num_updates, true);
+      adapter.update(d_update_keys.data(), args.keylen_max, d_update_key_lengths.data(), d_update_values.data(), args.valuelen_max, d_update_value_lengths.data(), args.num_updates);
       #else
       helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
           auto tuple_id = task_idx;

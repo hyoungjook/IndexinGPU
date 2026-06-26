@@ -66,13 +66,25 @@ struct gpu_blink_tree_adapter {
               const value_type* values,
               uint32_t valuelen_max,
               const size_type* value_lengths,
-              std::size_t num_keys,
-              bool update_if_exists = false) {
+              std::size_t num_keys) {
     (void)keylen_max;
     (void)key_lengths;
     (void)valuelen_max;
     (void)value_lengths;
-    (void)update_if_exists;
+    index_->insert(keys, values, num_keys);
+  }
+
+  void update(const key_slice_type* keys,
+              uint32_t keylen_max,
+              const size_type* key_lengths,
+              const value_type* values,
+              uint32_t valuelen_max,
+              const size_type* value_lengths,
+              std::size_t num_keys) {
+    (void)keylen_max;
+    (void)key_lengths;
+    (void)valuelen_max;
+    (void)value_lengths;
     index_->insert(keys, values, num_keys);
   }
 
