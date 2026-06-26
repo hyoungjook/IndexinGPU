@@ -66,7 +66,7 @@ def generate_configs(args):
                         ConfigType.lookup_theta: ycsb_theta,
                         ConfigType.rep_ycsb: NUM_REPEATS,
                     }
-                configs.append(common_config)
+                    configs.append(common_config)
     return configs
 
 if __name__ == "__main__":

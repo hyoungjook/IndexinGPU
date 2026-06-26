@@ -227,8 +227,8 @@ def generate_configs(args):
                         ConfigType.lookup_theta: ycsb_theta,
                         ConfigType.rep_ycsb: NUM_REPEATS,
                     }
-                common_config[OptionalConfigType.allocator_pool_ratio] = 0.7
-                configs.append(common_config)
+                    common_config[OptionalConfigType.allocator_pool_ratio] = 0.7
+                    configs.append(common_config)
     return configs
 
 if __name__ == "__main__":
