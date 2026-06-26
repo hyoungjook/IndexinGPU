@@ -423,9 +423,10 @@ void test_concurrentmix(map_type* map, uint32_t min_key_length, uint32_t max_key
   std::size_t offset_keysetD = 3 * num_keyset;
   // at step 2, we will execute concurrent mix of:
   //    - insert A, C
+  //    - update A, D
   //    - find A, B, C, D
   //    - erase B, D
-  std::size_t mix_num_requests = 8 * num_keyset;
+  std::size_t mix_num_requests = 10 * num_keyset;
   mapped_vector<kernels::request_type> mix_types(mix_num_requests);
   mapped_vector<key_slice_type> mix_keys(mix_num_requests * max_key_length);
   mapped_vector<size_type> mix_lengths(mix_num_requests);
@@ -448,9 +449,11 @@ void test_concurrentmix(map_type* map, uint32_t min_key_length, uint32_t max_key
         mix_keys[shuffled_dst_i * max_key_length + s] = input.keys[src_i * max_key_length + s];
       }
       mix_lengths[shuffled_dst_i] = input.lengths[src_i];
-      if (type == kernels::request_type_insert) {
+      if (type == kernels::request_type_insert || type == kernels::request_type_update) {
         for (uint32_t s = 0; s < max_value_length; s++) {
-          mix_values[shuffled_dst_i * max_value_length + s] = input.values[src_i * max_value_length + s];
+          mix_values[shuffled_dst_i * max_value_length + s] =
+            (type == kernels::request_type_insert) ? input.values[src_i * max_value_length + s] :
+                                                     input.values2[src_i * max_value_length + s];
         }
         mix_value_lengths[shuffled_dst_i] = input.value_lengths[src_i];
       }
@@ -460,12 +463,14 @@ void test_concurrentmix(map_type* map, uint32_t min_key_length, uint32_t max_key
   };
   fill_requests(0, 0, kernels::request_type_insert);
   fill_requests(num_keyset, offset_keysetC, kernels::request_type_insert);
-  fill_requests(2 * num_keyset, 0, kernels::request_type_find);
-  fill_requests(3 * num_keyset, offset_keysetB, kernels::request_type_find);
-  fill_requests(4 * num_keyset, offset_keysetC, kernels::request_type_find);
-  fill_requests(5 * num_keyset, offset_keysetD, kernels::request_type_find);
-  fill_requests(6 * num_keyset, offset_keysetB, kernels::request_type_erase);
-  fill_requests(7 * num_keyset, offset_keysetD, kernels::request_type_erase);
+  fill_requests(2 * num_keyset, 0, kernels::request_type_update);
+  fill_requests(3 * num_keyset, offset_keysetD, kernels::request_type_update);
+  fill_requests(4 * num_keyset, 0, kernels::request_type_find);
+  fill_requests(5 * num_keyset, offset_keysetB, kernels::request_type_find);
+  fill_requests(6 * num_keyset, offset_keysetC, kernels::request_type_find);
+  fill_requests(7 * num_keyset, offset_keysetD, kernels::request_type_find);
+  fill_requests(8 * num_keyset, offset_keysetB, kernels::request_type_erase);
+  fill_requests(9 * num_keyset, offset_keysetD, kernels::request_type_erase);
   // 1. insert A, B
   map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), max_value_length, input.value_lengths.data(), 2 * num_keyset);
   cuda_try(cudaDeviceSynchronize());
@@ -474,6 +479,7 @@ void test_concurrentmix(map_type* map, uint32_t min_key_length, uint32_t max_key
   cuda_try(cudaDeviceSynchronize());
   // on order before shuffle, result should be:
   //    [insert A: fail][insert C: success]
+  //    [update A: success][update D: fail]
   //    [find A: exist][find B: ??][find C: ??][find D: not exist]
   //    [erase B: success][erase D: fail]
   for (std::size_t i = 0; i < mix_num_requests; i++) {
@@ -484,19 +490,27 @@ void test_concurrentmix(map_type* map, uint32_t min_key_length, uint32_t max_key
       auto found_result = mix_results[i];
       ASSERT_EQ(expected_result, found_result);
     }
-    else if (dst_i < 6 * num_keyset) {
+    else if (dst_i < 4 * num_keyset) {
+      ASSERT_EQ(mix_types[i], kernels::request_type_update);
+      auto expected_result = (dst_i < 3 * num_keyset) ? true : false;
+      auto found_result = mix_results[i];
+      ASSERT_EQ(expected_result, found_result);
+    }
+    else if (dst_i < 8 * num_keyset) {
       ASSERT_EQ(mix_types[i], kernels::request_type_find);
-      if (dst_i < 3 * num_keyset) {
-        auto expected_value_length = input.value_lengths[dst_i - 2 * num_keyset];
+      if (dst_i < 5 * num_keyset) {
+        auto expected_value_length = input.value_lengths[dst_i - 4 * num_keyset];
         auto found_value_length = mix_value_lengths[i];
         ASSERT_EQ(expected_value_length, found_value_length);
         for (uint32_t s = 0; s < expected_value_length; s++) {
-          auto expected_value_slice = input.values[(dst_i - 2 * num_keyset) * max_value_length + s];
+          auto expected_value_slice = input.values[(dst_i - 4 * num_keyset) * max_value_length + s];
+          auto expected_value2_slice = input.values2[(dst_i - 4 * num_keyset) * max_value_length + s];
           auto found_value_slice = mix_values[i * max_value_length + s];
-          ASSERT_EQ(expected_value_slice, found_value_slice);
+          ASSERT_TRUE(found_value_slice == expected_value_slice ||
+                      found_value_slice == expected_value2_slice);
         }
       }
-      else if (5 * num_keyset <= dst_i) {
+      else if (7 * num_keyset <= dst_i) {
         auto expected_value_length = 0;
         auto found_value_length = mix_value_lengths[i];
         ASSERT_EQ(expected_value_length, found_value_length);
@@ -504,7 +518,7 @@ void test_concurrentmix(map_type* map, uint32_t min_key_length, uint32_t max_key
     }
     else {
       ASSERT_EQ(mix_types[i], kernels::request_type_erase);
-      auto expected_result = (dst_i < 7 * num_keyset) ? true : false;
+      auto expected_result = (dst_i < 9 * num_keyset) ? true : false;
       auto found_result = mix_results[i];
       ASSERT_EQ(expected_result, found_result);
     }
@@ -512,13 +526,14 @@ void test_concurrentmix(map_type* map, uint32_t min_key_length, uint32_t max_key
   // 3. find all
   map->find(input.keys.data(), max_key_length, input.lengths.data(), find_values.data(), max_value_length, find_value_lengths.data(), 4 * num_keyset);
   cuda_try(cudaDeviceSynchronize());
-  // A, C should exist; B, D should not
+  // A should be updated, C should exist; B, D should not
   for (std::size_t i = 0; i < 4 * num_keyset; i++) {
     auto expected_value_length = (i < num_keyset || (2 * num_keyset <= i && i < 3 * num_keyset)) ? input.value_lengths[i] : 0;
     auto found_value_length = find_value_lengths[i];
     ASSERT_EQ(found_value_length, expected_value_length);
     for (uint32_t s = 0; s < expected_value_length; s++) {
-      auto expected_value_slice = input.values[i * max_value_length + s];
+      auto expected_value_slice = (i < num_keyset) ? input.values2[i * max_value_length + s] :
+                                                     input.values[i * max_value_length + s];
       auto found_value_slice = find_values[i * max_value_length + s];
       ASSERT_EQ(found_value_slice, expected_value_slice);
     }

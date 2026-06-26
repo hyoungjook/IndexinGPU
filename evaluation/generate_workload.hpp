@@ -446,7 +446,7 @@ void generate_ycsb_keys(std::vector<kernels::request_type>& ycsb_types,
     auto& thd_rng = per_thd_rng[thread_id];
     auto dst_idx = idx;
     auto key_idx = key_choose_dist(thd_rng);
-    ycsb_types[dst_idx] = (idx < num_reads) ? kernels::request_type_find : kernels::request_type_insert;
+    ycsb_types[dst_idx] = (idx < num_reads) ? kernels::request_type_find : kernels::request_type_update;
     ycsb_key_lengths[dst_idx] = key_lengths[key_idx];
     std::memcpy(&ycsb_keys[dst_idx * keylen_max], &keys[key_idx * keylen_max], sizeof(key_slice_type) * keylen_max);
     if (idx >= num_reads) {

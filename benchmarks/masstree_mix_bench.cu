@@ -81,8 +81,7 @@ void mix_bench_masstree(thrust::device_vector<key_slice_type>& d_insert_keys,
 
     gpu_timer mix_timer;
     mix_timer.start_timer();
-    tree.template mixed_batch<false,
-                              enable_suffix,
+    tree.template mixed_batch<enable_suffix,
                               erase_remove_empty_root,
                               erase_pessimistic_merge || erase_remove_empty_root,
                               erase_merge || erase_pessimistic_merge || erase_remove_empty_root>(

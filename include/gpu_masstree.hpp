@@ -170,8 +170,7 @@ struct gpu_masstree {
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_queries, stream);
   }
 
-  template <bool insert_update_if_exists = false,
-            bool enable_suffix = true,
+  template <bool enable_suffix = true,
             bool erase_do_remove_empty_root = true,
             bool erase_pessimistic_merge = true,
             bool erase_do_merge = true,
@@ -186,7 +185,7 @@ struct gpu_masstree {
                    bool* results,
                    const size_type num_requests,
                    cudaStream_t stream = 0) {
-    kernels::GpuMasstree::mixed_device_func<gpu_masstree, insert_update_if_exists, enable_suffix, erase_do_merge, erase_pessimistic_merge, erase_do_remove_empty_root>
+    kernels::GpuMasstree::mixed_device_func<gpu_masstree, enable_suffix, erase_do_merge, erase_pessimistic_merge, erase_do_remove_empty_root>
       func{.d_types = request_types, .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths, .d_results = results};
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_requests, stream);
   }

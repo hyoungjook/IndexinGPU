@@ -450,6 +450,13 @@ static void run_bench(adapter_type& adapter,
             else if (h_mix_types[task_idx] == kernels::request_type_insert) {
               adapter.insert(&h_mix_keys[task_idx * args.keylen_max], h_mix_key_lengths[task_idx], h_mix_values[task_idx], h_mix_key_tuple_ids[task_idx], thread_id);
             }
+            else if (h_mix_types[task_idx] == kernels::request_type_update) {
+              adapter.update(&h_mix_keys[task_idx * args.keylen_max],
+                             h_mix_key_lengths[task_idx],
+                             h_mix_values[task_idx],
+                             h_mix_key_tuple_ids[task_idx],
+                             thread_id);
+            }
             else {
               adapter.erase(&h_mix_keys[task_idx * args.keylen_max], h_mix_key_lengths[task_idx], thread_id);
             }
@@ -492,14 +499,21 @@ static void run_bench(adapter_type& adapter,
       for (uint32_t r = 0; r < args.rep_ycsb; r++) {
         ycsb_timer.start();
         #if !defined(NOGPU)
-        adapter.mixed_batch(d_ycsb_types.data(), d_ycsb_keys.data(), args.keylen_max, d_ycsb_key_lengths.data(), d_ycsb_values.data(), args.valuelen_max, d_ycsb_value_lengths.data(), args.num_ycsb, true);
+        adapter.mixed_batch(d_ycsb_types.data(), d_ycsb_keys.data(), args.keylen_max, d_ycsb_key_lengths.data(), d_ycsb_values.data(), args.valuelen_max, d_ycsb_value_lengths.data(), args.num_ycsb);
         #else
         helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
             if (h_ycsb_types[task_idx] == kernels::request_type_find) {
               h_ycsb_values[task_idx] = adapter.find(&h_ycsb_keys[task_idx * args.keylen_max], h_ycsb_key_lengths[task_idx], thread_id);
             }
-            else {
+            else if (h_ycsb_types[task_idx] == kernels::request_type_update) {
               adapter.update(&h_ycsb_keys[task_idx * args.keylen_max],
+                             h_ycsb_key_lengths[task_idx],
+                             h_ycsb_values[task_idx],
+                             h_ycsb_key_tuple_ids[task_idx],
+                             thread_id);
+            }
+            else {
+              adapter.insert(&h_ycsb_keys[task_idx * args.keylen_max],
                              h_ycsb_key_lengths[task_idx],
                              h_ycsb_values[task_idx],
                              h_ycsb_key_tuple_ids[task_idx],

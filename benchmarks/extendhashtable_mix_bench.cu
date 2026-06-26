@@ -84,7 +84,7 @@ void mix_bench_extendhashtable(thrust::device_vector<key_slice_type>& d_insert_k
 
     gpu_timer mix_timer;
     mix_timer.start_timer();
-    tree.template mixed_batch<false, use_hash_tag, tag_use_same_hash,
+    tree.template mixed_batch<use_hash_tag, tag_use_same_hash,
                               merge_chains || erase_merge_buckets,
                               erase_merge_buckets>(
       d_mix_types.data().get(), d_mix_keys.data().get(), max_key_length, d_mix_lengths.data().get(),

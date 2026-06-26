@@ -52,6 +52,7 @@ namespace kernels {
 enum request_type: uint8_t {
   request_type_insert = 0,
   request_type_erase = 1,
-  request_type_find = 2
+  request_type_find = 2,
+  request_type_update = 3
 };
 } // namespace kernels

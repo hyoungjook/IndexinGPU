@@ -178,8 +178,7 @@ struct gpu_extendhashtable {
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
 
-  template <bool insert_update_if_exists = false,
-            bool use_hash_tag = true,
+  template <bool use_hash_tag = true,
             bool tag_use_same_hash = true,
             bool do_merge_chains = true,
             bool erase_do_merge_buckets = true,
@@ -194,7 +193,7 @@ struct gpu_extendhashtable {
                    bool* results,
                    const size_type num_requests,
                    cudaStream_t stream = 0) {
-    kernels::GpuExtendHashtable::mixed_device_func<gpu_extendhashtable, insert_update_if_exists, use_hash_tag, tag_use_same_hash, do_merge_chains, erase_do_merge_buckets>
+    kernels::GpuExtendHashtable::mixed_device_func<gpu_extendhashtable, use_hash_tag, tag_use_same_hash, do_merge_chains, erase_do_merge_buckets>
       func{.d_types = request_types, .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths, .d_results = results};
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_requests, stream);
   }

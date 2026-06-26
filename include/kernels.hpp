@@ -364,7 +364,6 @@ struct scan_device_func {
 };
 
 template <typename masstree,
-          bool insert_update_if_exists = false,
           bool enable_suffix = true,
           bool erase_do_merge = true,
           bool erase_pessimistic_merge = true,
@@ -402,7 +401,7 @@ struct mixed_device_func {
       regs.type = d_types[thread_id];
       regs.key = utils::varlenkv::init_reg_input(d_keys, thread_id, max_key_length);
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
-      if (regs.type == request_type_insert) {
+      if (regs.type == request_type_insert || regs.type == request_type_update) {
         regs.value.input = utils::varlenkv::init_reg_input(d_values, thread_id, max_value_length);
         regs.value_length = d_value_lengths ? d_value_lengths[thread_id] : max_value_length;
       }
@@ -419,7 +418,13 @@ struct mixed_device_func {
     if (cur_type == request_type_insert) {
       auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
       auto cur_value = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value.input, cur_rank, tile), cur_value_length, max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size, tile);
-      auto cur_result = tree.template cooperative_insert<insert_update_if_exists, enable_suffix>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer);
+      auto cur_result = tree.template cooperative_insert<false, enable_suffix>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer);
+      if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
+    }
+    else if (cur_type == request_type_update) {
+      auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
+      auto cur_value = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value.input, cur_rank, tile), cur_value_length, max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size, tile);
+      auto cur_result = tree.template cooperative_update<enable_suffix>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else if (cur_type == request_type_find) {
@@ -438,7 +443,9 @@ struct mixed_device_func {
   }
   template <bool use_shmem_key>
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const {
-    if (regs.type <= request_type_erase) {  // insert or erase
+    if (regs.type == request_type_insert ||
+        regs.type == request_type_update ||
+        regs.type == request_type_erase) {
       if (d_results) { d_results[thread_id] = regs.result; }
     }
     else {  // find or successor
@@ -646,7 +653,6 @@ struct erase_device_func {
 };
 
 template <typename hashtable,
-          bool insert_update_if_exists = false,
           bool use_hash_tag = true,
           bool erase_do_merge = true>
 struct mixed_device_func {
@@ -680,7 +686,7 @@ struct mixed_device_func {
       regs.type = d_types[thread_id];
       regs.key = utils::varlenkv::init_reg_input(d_keys, thread_id, max_key_length);
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
-      if (regs.type == request_type_insert) {
+      if (regs.type == request_type_insert || regs.type == request_type_update) {
         regs.value.input = utils::varlenkv::init_reg_input(d_values, thread_id, max_value_length);
         regs.value_length = d_value_lengths ? d_value_lengths[thread_id] : max_value_length;
       }
@@ -697,7 +703,13 @@ struct mixed_device_func {
     if (cur_type == request_type_insert) {
       auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
       auto cur_value = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value.input, cur_rank, tile), cur_value_length, max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size, tile);
-      auto cur_result = table.template cooperative_insert<insert_update_if_exists, use_hash_tag>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer);
+      auto cur_result = table.template cooperative_insert<false, use_hash_tag>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer);
+      if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
+    }
+    else if (cur_type == request_type_update) {
+      auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
+      auto cur_value = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value.input, cur_rank, tile), cur_value_length, max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size, tile);
+      auto cur_result = table.template cooperative_update<use_hash_tag>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else if (cur_type == request_type_find) {
@@ -716,7 +728,9 @@ struct mixed_device_func {
   }
   template <bool use_shmem_key>
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const {
-    if (regs.type <= request_type_erase) {  // insert or erase
+    if (regs.type == request_type_insert ||
+        regs.type == request_type_update ||
+        regs.type == request_type_erase) {
       if (d_results) { d_results[thread_id] = regs.result; }
     }
     else {  // find or successor
@@ -932,7 +946,6 @@ struct erase_device_func {
 };
 
 template <typename hashtable,
-          bool insert_update_if_exists = false,
           bool use_hash_tag = true,
           bool tag_use_same_hash = true,
           bool do_merge_chains = true,
@@ -969,7 +982,7 @@ struct mixed_device_func {
       regs.type = d_types[thread_id];
       regs.key = utils::varlenkv::init_reg_input(d_keys, thread_id, max_key_length);
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
-      if (regs.type == request_type_insert) {
+      if (regs.type == request_type_insert || regs.type == request_type_update) {
         regs.value.input = utils::varlenkv::init_reg_input(d_values, thread_id, max_value_length);
         regs.value_length = d_value_lengths ? d_value_lengths[thread_id] : max_value_length;
       }
@@ -986,7 +999,13 @@ struct mixed_device_func {
     if (cur_type == request_type_insert) {
       auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
       auto cur_value = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value.input, cur_rank, tile), cur_value_length, max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size, tile);
-      auto cur_result = table.template cooperative_insert<insert_update_if_exists, use_hash_tag, tag_use_same_hash, do_merge_chains>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer);
+      auto cur_result = table.template cooperative_insert<false, use_hash_tag, tag_use_same_hash, do_merge_chains>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer);
+      if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
+    }
+    else if (cur_type == request_type_update) {
+      auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
+      auto cur_value = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value.input, cur_rank, tile), cur_value_length, max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size, tile);
+      auto cur_result = table.template cooperative_update<use_hash_tag, tag_use_same_hash, do_merge_chains>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else if (cur_type == request_type_find) {
@@ -1005,7 +1024,9 @@ struct mixed_device_func {
   }
   template <bool use_shmem_key>
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const {
-    if (regs.type <= request_type_erase) {  // insert or erase
+    if (regs.type == request_type_insert ||
+        regs.type == request_type_update ||
+        regs.type == request_type_erase) {
       if (d_results) { d_results[thread_id] = regs.result; }
     }
     else {  // find or successor

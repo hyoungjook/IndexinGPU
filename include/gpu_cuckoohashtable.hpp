@@ -163,8 +163,7 @@ struct gpu_cuckoohashtable {
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
 
-  template <bool insert_update_if_exists = false,
-            bool use_hash_tag = true, bool _ = true,
+  template <bool use_hash_tag = true, bool _ = true,
             bool use_shmem_key = false>
   void mixed_batch(const kernels::request_type* request_types,
                    const key_slice_type* keys,
@@ -176,7 +175,7 @@ struct gpu_cuckoohashtable {
                    bool* results,
                    const size_type num_requests,
                    cudaStream_t stream = 0) {
-    kernels::GpuHashtable::mixed_device_func<gpu_cuckoohashtable, insert_update_if_exists, use_hash_tag, true>
+    kernels::GpuHashtable::mixed_device_func<gpu_cuckoohashtable, use_hash_tag, true>
       func{.d_types = request_types, .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths, .d_results = results};
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_requests, stream);
   }

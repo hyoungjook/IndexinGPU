@@ -87,7 +87,7 @@ Common host methods:
 - `insert<update_if_exists = false>(..., cudaStream_t stream = 0)`
 - `update(..., cudaStream_t stream = 0)`
 - `erase(..., cudaStream_t stream = 0)`
-- `mixed_batch<insert_update_if_exists = false>(..., bool* results, ..., cudaStream_t stream = 0)`
+- `mixed_batch(..., bool* results, ..., cudaStream_t stream = 0)`
 - `scan(...)` on `gpu_masstree` only
 
 Constructor differences:
@@ -97,7 +97,7 @@ Constructor differences:
 - `gpu_cuckoohashtable(allocator, reclaimer, expected_elements, fill_factor)` or explicit buckets-per-hash-function count
 - `gpu_extendhashtable(allocator, reclaimer, initial_directory_size, resize_policy, load_factor_threshold)`
 
-For mixed batches, use `kernels::request_type_insert`, `kernels::request_type_find`, and `kernels::request_type_erase`. Lookup requests write back `values` and `value_lengths`; insert and erase requests report success through `results` when provided.
+For mixed batches, use `kernels::request_type_insert`, `kernels::request_type_update`, `kernels::request_type_find`, and `kernels::request_type_erase`. Lookup requests write back `values` and `value_lengths`; insert, update, and erase requests report success through `results` when provided.
 
 `gpu_masstree` also supports range scans from the host:
 
