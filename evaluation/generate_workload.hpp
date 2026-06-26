@@ -411,6 +411,52 @@ void generate_mixed_keys(std::vector<kernels::request_type>& mix_types,
   }, num_mixed, [](unsigned){}, [](unsigned){});
 }
 
+inline
+void generate_ycsb_keys(std::vector<kernels::request_type>& ycsb_types,
+                        std::vector<key_slice_type>& ycsb_keys,
+                        std::vector<size_type>& ycsb_key_lengths,
+                        std::vector<value_slice_type>& ycsb_values,
+                        std::vector<size_type>& ycsb_value_lengths,
+                        std::vector<std::size_t>& ycsb_key_tuple_ids,
+                        std::vector<key_slice_type>& keys,
+                        std::vector<size_type>& key_lengths,
+                        std::vector<value_slice_type>& values,
+                        std::vector<size_type>& value_lengths,
+                        std::size_t num_keys,
+                        uint32_t keylen_max,
+                        uint32_t valuelen_max,
+                        std::size_t num_ycsb,
+                        double ycsb_read_ratio,
+                        double lookup_theta) {
+  auto num_reads = static_cast<std::size_t>(ycsb_read_ratio * num_ycsb);
+  std::mt19937 rng(0);
+  ycsb_types = std::vector<kernels::request_type>(num_ycsb);
+  ycsb_keys = std::vector<key_slice_type>(num_ycsb * keylen_max);
+  ycsb_key_lengths = std::vector<size_type>(num_ycsb);
+  ycsb_values = std::vector<value_slice_type>(num_ycsb * valuelen_max);
+  ycsb_value_lengths = std::vector<size_type>(num_ycsb);
+  ycsb_key_tuple_ids = std::vector<std::size_t>(num_ycsb);
+  zipfian_int_distribution<std::size_t> key_choose_dist(0, num_keys - 1, lookup_theta);
+  const unsigned num_workers = std::max(1u, std::thread::hardware_concurrency());
+  std::vector<std::mt19937> per_thd_rng;
+  for (unsigned tid = 0; tid < num_workers; tid++) {
+    per_thd_rng.emplace_back(tid + 1);
+  }
+  helper_multithread([&](std::size_t idx, unsigned thread_id) {
+    auto& thd_rng = per_thd_rng[thread_id];
+    auto dst_idx = idx;
+    auto key_idx = key_choose_dist(thd_rng);
+    ycsb_types[dst_idx] = (idx < num_reads) ? kernels::request_type_find : kernels::request_type_insert;
+    ycsb_key_lengths[dst_idx] = key_lengths[key_idx];
+    std::memcpy(&ycsb_keys[dst_idx * keylen_max], &keys[key_idx * keylen_max], sizeof(key_slice_type) * keylen_max);
+    if (idx >= num_reads) {
+      ycsb_value_lengths[dst_idx] = value_lengths[key_idx];
+      std::memcpy(&ycsb_values[dst_idx * valuelen_max], &values[key_idx * valuelen_max], sizeof(value_slice_type) * valuelen_max);
+    }
+    ycsb_key_tuple_ids[dst_idx] = key_idx;
+  }, num_ycsb, [](unsigned){}, [](unsigned){});
+}
+
 #define FORALL_ARGUMENTS(x) \
   /* key distribution */ \
   x(max_keys, std::size_t, 10000000) \
@@ -439,6 +485,9 @@ void generate_mixed_keys(std::vector<kernels::request_type>& mix_types,
   x(mix_presort, bool, true) \
   /* space test */ \
   x(num_space, uint32_t, 0) \
+  /* YCSB test */ \
+  x(num_ycsb, uint32_t, 0) \
+  x(ycsb_read_ratio, double, 0.1) \
   /* repeats */ \
   x(rep_lookup, uint32_t, 0) \
   x(rep_scan, uint32_t, 0) \
@@ -446,6 +495,7 @@ void generate_mixed_keys(std::vector<kernels::request_type>& mix_types,
   x(rep_insdel, uint32_t, 0) \
   x(rep_mixed, uint32_t, 0) \
   x(rep_space, uint32_t, 0) \
+  x(rep_ycsb, uint32_t, 0) \
   /* index config */ \
   x(index_type, std::string, "gpu_masstree") \
   /* etc */ \

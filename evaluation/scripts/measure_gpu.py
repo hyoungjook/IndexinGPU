@@ -214,6 +214,19 @@ def generate_configs(args):
                 common_config[ConfigType.rep_scan] = NUM_REPEATS
             common_config[OptionalConfigType.allocator_pool_ratio] = 0.7
             configs.append(common_config)
+            for ycsb_read_ratio in EXP_YCSB_READ_RATIOS:
+                common_config = {
+                    ConfigType.index_type: index_type,
+                    ConfigType.dataset_file: MEME_DATASET_PATH,
+                    ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH_OVERVIEW,
+                    ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH_OVERVIEW,
+                    ConfigType.num_ycsb: BATCH_SIZE_MEME,
+                    ConfigType.ycsb_read_ratio: ycsb_read_ratio,
+                    ConfigType.lookup_theta: EXP_YCSB_THETA,
+                    ConfigType.rep_ycsb: NUM_REPEATS,
+                }
+                common_config[OptionalConfigType.allocator_pool_ratio] = 0.7
+                configs.append(common_config)
     return configs
 
 if __name__ == "__main__":

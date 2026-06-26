@@ -16,9 +16,11 @@
 
 #include <stdlib.h>
 #include <algorithm>
+#include <cstring>
 #include <execution>
 #include <cstdint>
 #include <numeric>
+#include <random>
 #include <vector>
 #include <cmd.hpp>
 #include <macros.hpp>
@@ -465,6 +467,58 @@ static void run_bench(adapter_type& adapter,
       }
       mix_timer.print_rate_Mops("mixed", args.num_mixed, print_all_measurements);
     }
+
+    if (args.rep_ycsb > 0) {
+      std::vector<kernels::request_type> h_ycsb_types;
+      std::vector<key_slice_type> h_ycsb_keys;
+      std::vector<size_type> h_ycsb_key_lengths;
+      std::vector<value_slice_type> h_ycsb_values;
+      std::vector<size_type> h_ycsb_value_lengths;
+      std::vector<std::size_t> h_ycsb_key_tuple_ids;
+      generate_ycsb_keys(
+        h_ycsb_types, h_ycsb_keys, h_ycsb_key_lengths, h_ycsb_values, h_ycsb_value_lengths, h_ycsb_key_tuple_ids,
+        h_keys, h_key_lengths, h_values, h_value_lengths,
+        args.max_keys, args.keylen_max, args.valuelen_max, args.num_ycsb, args.ycsb_read_ratio, args.lookup_theta);
+      cpu_lap_timer ycsb_timer;
+      prefill(adapter, h_keys, h_key_lengths, h_values, h_value_lengths, args.keylen_min, args.keylen_max, args.valuelen_min, args.valuelen_max, args.max_keys);
+      #if !defined(NOGPU)
+      auto d_ycsb_types = device_vector<kernels::request_type>(h_ycsb_types, args.use_pinned_host_memory);
+      auto d_ycsb_keys = device_vector<key_slice_type>(h_ycsb_keys, args.use_pinned_host_memory);
+      auto d_ycsb_key_lengths = device_vector<size_type>(h_ycsb_key_lengths, args.use_pinned_host_memory, use_null_keylength);
+      auto d_ycsb_values = device_vector<value_slice_type>(h_ycsb_values, args.use_pinned_host_memory);
+      auto d_ycsb_value_lengths = device_vector<size_type>(h_ycsb_value_lengths, args.use_pinned_host_memory);
+      cuda_try(cudaDeviceSynchronize());
+      #endif
+      for (uint32_t r = 0; r < args.rep_ycsb; r++) {
+        ycsb_timer.start();
+        #if !defined(NOGPU)
+        adapter.mixed_batch(d_ycsb_types.data(), d_ycsb_keys.data(), args.keylen_max, d_ycsb_key_lengths.data(), d_ycsb_values.data(), args.valuelen_max, d_ycsb_value_lengths.data(), args.num_ycsb, true);
+        #else
+        helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
+            if (h_ycsb_types[task_idx] == kernels::request_type_find) {
+              h_ycsb_values[task_idx] = adapter.find(&h_ycsb_keys[task_idx * args.keylen_max], h_ycsb_key_lengths[task_idx], thread_id);
+            }
+            else {
+              adapter.update(&h_ycsb_keys[task_idx * args.keylen_max],
+                             h_ycsb_key_lengths[task_idx],
+                             h_ycsb_values[task_idx],
+                             h_ycsb_key_tuple_ids[task_idx],
+                             thread_id);
+            }
+          }, args.num_ycsb,
+          [&](unsigned thread_id) { adapter.thread_enter(thread_id); },
+          [&](unsigned thread_id) { adapter.thread_exit(thread_id); });
+        #endif
+        #if !defined(NOGPU)
+        cuda_try(cudaDeviceSynchronize());
+        #endif
+        ycsb_timer.stop();
+        ycsb_timer.record();
+        adapter.destroy();
+        if (verbose) { std::cout << "ycsb tested " << r + 1 << "/" << args.rep_ycsb << std::endl; }
+      }
+      ycsb_timer.print_rate_Mops("ycsb", args.num_ycsb, print_all_measurements);
+    }
   }
 }
 };
@@ -585,7 +639,8 @@ int main(int argc, char** argv) {
   if (!args.only_check_space) {
     check_argument(args.rep_lookup > 0 || args.rep_scan > 0 ||
                    args.rep_insdel > 0 || args.rep_mixed > 0 ||
-                   args.rep_update > 0 || args.rep_space > 0);
+                   args.rep_update > 0 || args.rep_space > 0 ||
+                   args.rep_ycsb > 0);
     if (args.rep_space > 0) {
       check_argument(args.max_keys % args.num_space == 0);
     }

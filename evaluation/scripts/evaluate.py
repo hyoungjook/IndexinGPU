@@ -43,6 +43,8 @@ class ConfigType(Enum):
     num_insdel = auto()
     num_mixed = auto()
     num_space = auto()
+    num_ycsb = auto()
+    ycsb_read_ratio = auto()
     mix_read_ratio = auto()
     mix_presort = auto()
     rep_lookup = auto()
@@ -51,6 +53,7 @@ class ConfigType(Enum):
     rep_insdel = auto()
     rep_mixed = auto()
     rep_space = auto()
+    rep_ycsb = auto()
     index_type = auto()
     only_check_space = auto()
     use_pinned_host_memory = auto()
@@ -84,6 +87,7 @@ class ResultType(Enum):
     mixed = auto()
     space = auto()
     load_factor = auto()
+    ycsb = auto()
 
 EXECUTABLE_INFO = {
     BenchExecutable.robust: {

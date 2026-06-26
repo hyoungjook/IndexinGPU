@@ -123,11 +123,13 @@ struct gpu_blink_tree_adapter {
                    value_type* values,
                    uint32_t valuelen_max,
                    size_type* value_lengths,
-                   std::size_t num_keys) {
+                   std::size_t num_keys,
+                   bool insert_update_if_exists = false) {
     (void)keylen_max;
     (void)key_lengths;
     (void)valuelen_max;
     (void)value_lengths;
+    (void)insert_update_if_exists;
     index_->mixed_batch(types, keys, values, num_keys);
   }
   void print_stats() {}
