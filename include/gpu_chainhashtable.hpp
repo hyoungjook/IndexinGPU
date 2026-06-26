@@ -111,7 +111,8 @@ struct gpu_chainhashtable {
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
 
-  template <bool use_hash_tag = true,
+  template <bool update_if_exists = false,
+            bool use_hash_tag = true,
             bool use_shmem_key = false>
   void insert(const key_slice_type* keys,
               const size_type max_key_length,
@@ -120,10 +121,9 @@ struct gpu_chainhashtable {
               const size_type max_value_length,
               const size_type* value_lengths,
               const size_type num_keys,
-              cudaStream_t stream = 0,
-              bool update_if_exists = false) {
-    kernels::GpuHashtable::insert_device_func<gpu_chainhashtable, use_hash_tag>
-      func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths, .update_if_exists = update_if_exists};
+              cudaStream_t stream = 0) {
+    kernels::GpuHashtable::insert_device_func<gpu_chainhashtable, update_if_exists, use_hash_tag>
+      func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths};
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
 
@@ -140,7 +140,8 @@ struct gpu_chainhashtable {
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
 
-  template <bool use_hash_tag = true,
+  template <bool insert_update_if_exists = false,
+            bool use_hash_tag = true,
             bool erase_do_merge = true,
             bool use_shmem_key = false>
   void mixed_batch(const kernels::request_type* request_types,
@@ -152,10 +153,9 @@ struct gpu_chainhashtable {
                    size_type* value_lengths,
                    bool* results,
                    const size_type num_requests,
-                   cudaStream_t stream = 0,
-                   bool insert_update_if_exists = false) {
-    kernels::GpuHashtable::mixed_device_func<gpu_chainhashtable, use_hash_tag, erase_do_merge>
-      func{.d_types = request_types, .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths, .d_results = results, .insert_update_if_exists = insert_update_if_exists};
+                   cudaStream_t stream = 0) {
+    kernels::GpuHashtable::mixed_device_func<gpu_chainhashtable, insert_update_if_exists, use_hash_tag, erase_do_merge>
+      func{.d_types = request_types, .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths, .d_results = results};
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_requests, stream);
   }
 
@@ -203,15 +203,18 @@ struct gpu_chainhashtable {
     return 0;
   }
 
-  template <bool use_hash_tag, typename tile_type, typename keyptr_or_keystore, typename valptr_or_valstore>
+  template <bool update_if_exists = false,
+            bool use_hash_tag = true,
+            typename tile_type,
+            typename keyptr_or_keystore,
+            typename valptr_or_valstore>
   DEVICE_QUALIFIER bool cooperative_insert(keyptr_or_keystore& key,
                                            const size_type key_length,
                                            valptr_or_valstore& value,
                                            const size_type value_length,
                                            const tile_type& tile,
                                            device_allocator_context_type& allocator,
-                                           device_reclaimer_context_type& reclaimer,
-                                           bool update_if_exists = false) {
+                                           device_reclaimer_context_type& reclaimer) {
     using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     key_slice_type first_slice;
@@ -234,7 +237,7 @@ struct gpu_chainhashtable {
     int location_if_found = coop_traverse_until_found<utils::memory_order::weak_tilesync, use_hash_tag>( // use weak load here b/c the first load did memory_order_acquire
         node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator);
     if (location_if_found >= 0) { // already exists
-      if (update_if_exists) {
+      if constexpr (update_if_exists) {
         auto keystate = node.get_keystate_from_location(location_if_found);
         value_slice_type update_value;
         if (keystate == node_type::KEYSTATE_VALUE) {

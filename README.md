@@ -80,9 +80,9 @@ index.erase(d_keys, max_key_length, d_key_lengths, num_keys);
 Common host methods:
 
 - `find(..., cudaStream_t stream = 0)`
-- `insert(..., cudaStream_t stream = 0, bool update_if_exists = false)`
+- `insert<update_if_exists = false>(..., cudaStream_t stream = 0)`
 - `erase(..., cudaStream_t stream = 0)`
-- `mixed_batch(..., bool* results, ..., cudaStream_t stream = 0, bool insert_update_if_exists = false)`
+- `mixed_batch<insert_update_if_exists = false>(..., bool* results, ..., cudaStream_t stream = 0)`
 - `scan(...)` on `gpu_masstree` only
 
 Constructor differences:

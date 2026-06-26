@@ -98,7 +98,8 @@ struct gpu_masstree {
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
 
-  template <bool enable_suffix = true,
+  template <bool update_if_exists = false,
+            bool enable_suffix = true,
             bool use_shmem_key = false>
   void insert(const key_slice_type* keys,
               const size_type max_key_length,
@@ -107,10 +108,9 @@ struct gpu_masstree {
               const size_type max_value_length,
               const size_type* value_lengths,
               const size_type num_keys,
-              cudaStream_t stream = 0,
-              bool update_if_exists = false) {
-    kernels::GpuMasstree::insert_device_func<gpu_masstree, enable_suffix>
-      func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths, .update_if_exists = update_if_exists};
+              cudaStream_t stream = 0) {
+    kernels::GpuMasstree::insert_device_func<gpu_masstree, update_if_exists, enable_suffix>
+      func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths};
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
 
@@ -155,7 +155,8 @@ struct gpu_masstree {
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_queries, stream);
   }
 
-  template <bool enable_suffix = true,
+  template <bool insert_update_if_exists = false,
+            bool enable_suffix = true,
             bool erase_do_remove_empty_root = true,
             bool erase_pessimistic_merge = true,
             bool erase_do_merge = true,
@@ -169,10 +170,9 @@ struct gpu_masstree {
                    size_type* value_lengths,
                    bool* results,
                    const size_type num_requests,
-                   cudaStream_t stream = 0,
-                   bool insert_update_if_exists = false) {
-    kernels::GpuMasstree::mixed_device_func<gpu_masstree, enable_suffix, erase_do_merge, erase_pessimistic_merge, erase_do_remove_empty_root>
-      func{.d_types = request_types, .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths, .d_results = results, .insert_update_if_exists = insert_update_if_exists};
+                   cudaStream_t stream = 0) {
+    kernels::GpuMasstree::mixed_device_func<gpu_masstree, insert_update_if_exists, enable_suffix, erase_do_merge, erase_pessimistic_merge, erase_do_remove_empty_root>
+      func{.d_types = request_types, .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths, .d_results = results};
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_requests, stream);
   }
 
@@ -380,15 +380,18 @@ struct gpu_masstree {
     assert(false);
   }
 
-  template <bool enable_suffix, typename tile_type, typename keyptr_or_keystore, typename valptr_or_valstore>
+  template <bool update_if_exists = false,
+            bool enable_suffix = true,
+            typename tile_type,
+            typename keyptr_or_keystore,
+            typename valptr_or_valstore>
   DEVICE_QUALIFIER bool cooperative_insert(keyptr_or_keystore& key,
                                            const size_type key_length,
                                            valptr_or_valstore& value,
                                            const size_type value_length,
                                            const tile_type& tile,
                                            device_allocator_context_type& allocator,
-                                           device_reclaimer_context_type& reclaimer,
-                                           bool update_if_exists = false) {
+                                           device_reclaimer_context_type& reclaimer) {
     using node_type = masstree_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     struct split_early_exit_check {
@@ -459,7 +462,7 @@ struct gpu_masstree {
         else if (keystate == node_type::KEYSTATE_VALUE ||
                  keystate == node_type::KEYSTATE_LONGVAL) {
           // update or fail
-          if (update_if_exists) {
+          if constexpr (update_if_exists) {
             if (keystate == node_type::KEYSTATE_VALUE) {
               if (value_length == 1) {
                 found_value = value[0];
@@ -500,7 +503,7 @@ struct gpu_masstree {
           key_slice_type mismatch_suffix_slice;
           int cmp = suffix.strcmp(key + (slice + 1), key_length - slice - 1, &mismatch_suffix_slice);
           if (cmp == 0) { // already exists
-            if (update_if_exists) {
+            if constexpr (update_if_exists) {
               // protected by current_node.lock()
               found_value = allocator.allocate(tile);
               auto new_suffix = suffix_type(found_value, tile, allocator);

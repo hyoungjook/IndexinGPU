@@ -120,7 +120,8 @@ struct gpu_cuckoohashtable {
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
 
-  template <bool use_hash_tag = true,
+  template <bool update_if_exists = false,
+            bool use_hash_tag = true,
             bool use_shmem_key = false>
   void insert(const key_slice_type* keys,
               const size_type max_key_length,
@@ -129,10 +130,9 @@ struct gpu_cuckoohashtable {
               const size_type max_value_length,
               const size_type* value_lengths,
               const size_type num_keys,
-              cudaStream_t stream = 0,
-              bool update_if_exists = false) {
-    kernels::GpuHashtable::insert_device_func<gpu_cuckoohashtable, use_hash_tag>
-      func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths, .update_if_exists = update_if_exists};
+              cudaStream_t stream = 0) {
+    kernels::GpuHashtable::insert_device_func<gpu_cuckoohashtable, update_if_exists, use_hash_tag>
+      func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths};
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
 
@@ -148,7 +148,8 @@ struct gpu_cuckoohashtable {
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
 
-  template <bool use_hash_tag = true, bool _ = true,
+  template <bool insert_update_if_exists = false,
+            bool use_hash_tag = true, bool _ = true,
             bool use_shmem_key = false>
   void mixed_batch(const kernels::request_type* request_types,
                    const key_slice_type* keys,
@@ -159,10 +160,9 @@ struct gpu_cuckoohashtable {
                    size_type* value_lengths,
                    bool* results,
                    const size_type num_requests,
-                   cudaStream_t stream = 0,
-                   bool insert_update_if_exists = false) {
-    kernels::GpuHashtable::mixed_device_func<gpu_cuckoohashtable, use_hash_tag, true>
-      func{.d_types = request_types, .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths, .d_results = results, .insert_update_if_exists = insert_update_if_exists};
+                   cudaStream_t stream = 0) {
+    kernels::GpuHashtable::mixed_device_func<gpu_cuckoohashtable, insert_update_if_exists, use_hash_tag, true>
+      func{.d_types = request_types, .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths, .d_results = results};
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_requests, stream);
   }
 
@@ -229,15 +229,18 @@ struct gpu_cuckoohashtable {
     return 0;
   }
 
-  template <bool use_hash_tag, typename tile_type, typename keyptr_or_keystore, typename valptr_or_valstore>
+  template <bool update_if_exists = false,
+            bool use_hash_tag = true,
+            typename tile_type,
+            typename keyptr_or_keystore,
+            typename valptr_or_valstore>
   DEVICE_QUALIFIER bool cooperative_insert(keyptr_or_keystore& key,
                                            const size_type key_length,
                                            valptr_or_valstore& value,
                                            const size_type value_length,
                                            const tile_type& tile,
                                            device_allocator_context_type& allocator,
-                                           device_reclaimer_context_type& reclaimer,
-                                           bool update_if_exists = false) {
+                                           device_reclaimer_context_type& reclaimer) {
     using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     auto hash = utils::compute_hashx2<utils::PRIME0, utils::PRIME1>(key, key_length, tile);
@@ -257,7 +260,7 @@ struct gpu_cuckoohashtable {
       location_if_found = coop_get_key_location_from_node<use_hash_tag>( \
           node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator); \
       if (location_if_found >= 0) { \
-        if (!update_if_exists) { return false; } \
+        if constexpr (!update_if_exists) { return false; } \
         try_lock_and_insert = true; \
       } \
       else if (!node.is_full()) { \
@@ -275,7 +278,7 @@ struct gpu_cuckoohashtable {
         location_if_found = coop_get_key_location_from_node<use_hash_tag>( \
             node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator); \
         if (location_if_found >= 0) { \
-          if (update_if_exists) { \
+          if constexpr (update_if_exists) { \
             auto keystate = node.get_keystate_from_location(location_if_found); \
             value_slice_type update_value; \
             if (keystate == node_type::KEYSTATE_VALUE) { \

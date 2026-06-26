@@ -374,7 +374,7 @@ void test_update(map_type* map, uint32_t min_key_length, uint32_t max_key_length
   testing_input input(num_keys, min_key_length, max_key_length, min_value_length, max_value_length);
   map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), max_value_length, input.value_lengths.data(), num_keys);
   cuda_try(cudaDeviceSynchronize());
-  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values2.data(), max_value_length, input.value_lengths.data(), num_keys, 0, true);
+  map->template insert<true>(input.keys.data(), max_key_length, input.lengths.data(), input.values2.data(), max_value_length, input.value_lengths.data(), num_keys, 0);
   cuda_try(cudaDeviceSynchronize());
   map->find(input.keys.data(), max_key_length, input.lengths.data(), find_values.data(), max_value_length, find_value_lengths.data(), num_keys);
   EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);

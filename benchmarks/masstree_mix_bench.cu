@@ -71,7 +71,7 @@ void mix_bench_masstree(thrust::device_vector<key_slice_type>& d_insert_keys,
     }
     gpu_timer insert_timer;
     insert_timer.start_timer();
-    tree.template insert<enable_suffix>(
+    tree.template insert<false, enable_suffix>(
       d_insert_keys.data().get(), max_key_length, d_insert_lengths.data().get(),
       d_insert_values.data().get(), max_value_length, d_insert_value_lengths.data().get(), insert_num_keys);
     insert_timer.stop_timer();
@@ -81,7 +81,8 @@ void mix_bench_masstree(thrust::device_vector<key_slice_type>& d_insert_keys,
 
     gpu_timer mix_timer;
     mix_timer.start_timer();
-    tree.template mixed_batch<enable_suffix,
+    tree.template mixed_batch<false,
+                              enable_suffix,
                               erase_remove_empty_root,
                               erase_pessimistic_merge || erase_remove_empty_root,
                               erase_merge || erase_pessimistic_merge || erase_remove_empty_root>(

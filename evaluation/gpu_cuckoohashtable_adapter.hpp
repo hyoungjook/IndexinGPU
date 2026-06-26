@@ -72,7 +72,9 @@ struct gpu_cuckoohashtable_adapter {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_bool(configs_.use_hash_tag, [&](auto t2, auto h2) {
         adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t3, auto h3, auto k3) {
-          do_insert<t3.value, h3.value, k3.value>(keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, num_keys, (cudaStream_t)0, update_if_exists);
+          adapter_util::dispatch_bool(update_if_exists, [&](auto t4, auto h4, auto k4, auto u4) {
+            do_insert<t4.value, u4.value, h4.value, k4.value>(keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, num_keys, (cudaStream_t)0);
+          }, t3, h3, k3);
         }, t2, h2);
       }, t1);
     });
@@ -118,7 +120,9 @@ struct gpu_cuckoohashtable_adapter {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_bool(configs_.use_hash_tag, [&](auto t2, auto h2) {
         adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t3, auto h3, auto k3) {
-          do_mixed<t3.value, h3.value, k3.value>(types, keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, nullptr, num_keys, (cudaStream_t)0, insert_update_if_exists);
+          adapter_util::dispatch_bool(insert_update_if_exists, [&](auto t4, auto h4, auto k4, auto u4) {
+            do_mixed<t4.value, u4.value, h4.value, k4.value>(types, keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, nullptr, num_keys, (cudaStream_t)0);
+          }, t3, h3, k3);
         }, t2, h2);
       }, t1);
     });
@@ -181,10 +185,10 @@ struct gpu_cuckoohashtable_adapter {
   };
   #undef FORALL_ARGUMENTS_GPU_CUCKOOHASHTABLE
 
-  template <uint32_t tile_size, bool use_hash_tag, bool use_shmem_key, typename... arg_types>
+  template <uint32_t tile_size, bool update_if_exists, bool use_hash_tag, bool use_shmem_key, typename... arg_types>
   void do_insert(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template insert<use_hash_tag, use_shmem_key>(args...);
+      ->template insert<update_if_exists, use_hash_tag, use_shmem_key>(args...);
   }
 
   template <uint32_t tile_size, bool use_hash_tag, bool use_shmem_key, typename... arg_types>
@@ -199,10 +203,10 @@ struct gpu_cuckoohashtable_adapter {
       ->template find<lookup_concurrent, use_hash_tag, use_shmem_key>(args...);
   }
 
-  template <uint32_t tile_size, bool use_hash_tag, bool use_shmem_key, typename... arg_types>
+  template <uint32_t tile_size, bool insert_update_if_exists, bool use_hash_tag, bool use_shmem_key, typename... arg_types>
   void do_mixed(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template mixed_batch<use_hash_tag, true, use_shmem_key>(args...);
+      ->template mixed_batch<insert_update_if_exists, use_hash_tag, true, use_shmem_key>(args...);
   }
 
   configs configs_;

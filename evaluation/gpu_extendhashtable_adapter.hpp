@@ -74,7 +74,9 @@ struct gpu_extendhashtable_adapter {
       adapter_util::dispatch_uint32<0, 1, 2>(configs_.hash_tag_level, [&](auto t2, auto h2) {
         adapter_util::dispatch_uint32<0, 1, 2>(configs_.merge_level, [&](auto t3, auto h3, auto m3) {
           adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t4, auto h4, auto m4, auto k4) {
-            do_insert<t4.value, h4.value, m4.value, k4.value>(keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, num_keys, (cudaStream_t)0, update_if_exists);
+            adapter_util::dispatch_bool(update_if_exists, [&](auto t5, auto h5, auto m5, auto k5, auto u5) {
+              do_insert<t5.value, u5.value, h5.value, m5.value, k5.value>(keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, num_keys, (cudaStream_t)0);
+            }, t4, h4, m4, k4);
           }, t3, h3, m3);
         }, t2, h2);
       }, t1);
@@ -124,7 +126,9 @@ struct gpu_extendhashtable_adapter {
       adapter_util::dispatch_uint32<0, 1, 2>(configs_.hash_tag_level, [&](auto t2, auto h2) {
         adapter_util::dispatch_uint32<0, 1, 2>(configs_.merge_level, [&](auto t3, auto h3, auto m3) {
           adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t4, auto h4, auto m4, auto k4) {
-            do_mixed<t4.value, h4.value, m4.value, k4.value>(types, keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, nullptr, num_keys, (cudaStream_t)0, insert_update_if_exists);
+            adapter_util::dispatch_bool(insert_update_if_exists, [&](auto t5, auto h5, auto m5, auto k5, auto u5) {
+              do_mixed<t5.value, u5.value, h5.value, m5.value, k5.value>(types, keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, nullptr, num_keys, (cudaStream_t)0);
+            }, t4, h4, m4, k4);
           }, t3, h3, m3);
         }, t2, h2);
       }, t1);
@@ -190,10 +194,10 @@ struct gpu_extendhashtable_adapter {
   };
   #undef FORALL_ARGUMENTS_GPU_EXTENDHASHTABLE
 
-  template <uint32_t tile_size, uint32_t hash_tag_level, uint32_t merge_level, bool use_shmem_key, typename... arg_types>
+  template <uint32_t tile_size, bool update_if_exists, uint32_t hash_tag_level, uint32_t merge_level, bool use_shmem_key, typename... arg_types>
   void do_insert(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template insert<hash_tag_level >= 1, hash_tag_level >= 2, merge_level >= 1, use_shmem_key>(args...);
+      ->template insert<update_if_exists, hash_tag_level >= 1, hash_tag_level >= 2, merge_level >= 1, use_shmem_key>(args...);
   }
 
   template <uint32_t tile_size, uint32_t hash_tag_level, uint32_t merge_level, bool use_shmem_key, typename... arg_types>
@@ -208,10 +212,10 @@ struct gpu_extendhashtable_adapter {
       ->template find<lookup_concurrent, hash_tag_level >= 1, hash_tag_level >= 2, use_shmem_key>(args...);
   }
 
-  template <uint32_t tile_size, uint32_t hash_tag_level, uint32_t merge_level, bool use_shmem_key, typename... arg_types>
+  template <uint32_t tile_size, bool insert_update_if_exists, uint32_t hash_tag_level, uint32_t merge_level, bool use_shmem_key, typename... arg_types>
   void do_mixed(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template mixed_batch<hash_tag_level >= 1, hash_tag_level >= 2, merge_level >= 1, merge_level >= 2, use_shmem_key>(args...);
+      ->template mixed_batch<insert_update_if_exists, hash_tag_level >= 1, hash_tag_level >= 2, merge_level >= 1, merge_level >= 2, use_shmem_key>(args...);
   }
 
   configs configs_;

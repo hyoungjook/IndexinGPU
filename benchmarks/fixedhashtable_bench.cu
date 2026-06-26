@@ -75,7 +75,7 @@ void bench_hashtable(thrust::device_vector<key_slice_type>& d_keys,
     }
     gpu_timer insert_timer;
     insert_timer.start_timer();
-    table.template insert<use_hash_tag>(
+    table.template insert<false, use_hash_tag>(
       d_keys.data().get(), max_key_length, d_lengths.data().get(),
       d_values.data().get(), max_value_length, d_value_lengths.data().get(), num_keys);
     insert_timer.stop_timer();

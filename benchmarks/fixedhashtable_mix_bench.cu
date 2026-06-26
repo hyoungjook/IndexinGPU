@@ -72,7 +72,7 @@ void mix_bench_hashtable(thrust::device_vector<key_slice_type>& d_insert_keys,
     }
     gpu_timer insert_timer;
     insert_timer.start_timer();
-    tree.template insert<use_hash_tag>(
+    tree.template insert<false, use_hash_tag>(
       d_insert_keys.data().get(), max_key_length, d_insert_lengths.data().get(),
       d_insert_values.data().get(), max_value_length, d_insert_value_lengths.data().get(), insert_num_keys);
     insert_timer.stop_timer();
@@ -82,7 +82,7 @@ void mix_bench_hashtable(thrust::device_vector<key_slice_type>& d_insert_keys,
 
     gpu_timer mix_timer;
     mix_timer.start_timer();
-    tree.template mixed_batch<use_hash_tag, erase_merge>(
+    tree.template mixed_batch<false, use_hash_tag, erase_merge>(
       d_mix_types.data().get(), d_mix_keys.data().get(), max_key_length, d_mix_lengths.data().get(),
       d_mix_values.data().get(), max_value_length, d_mix_value_lengths.data().get(), nullptr, mix_num_requests);
     mix_timer.stop_timer();

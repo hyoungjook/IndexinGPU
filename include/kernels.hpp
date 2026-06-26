@@ -113,7 +113,9 @@ __global__ void initialize_kernel(masstree tree, size_type* d_root_index) {
   tree.allocate_root_node(d_root_index, tile, allocator);
 }
 
-template <typename masstree, bool enable_suffix>
+template <typename masstree,
+          bool update_if_exists = false,
+          bool enable_suffix = true>
 struct insert_device_func {
   using key_slice_type = typename masstree::key_slice_type;
   using size_type = typename masstree::size_type;
@@ -128,7 +130,6 @@ struct insert_device_func {
   const value_slice_type* d_values;
   size_type max_value_length;
   const size_type* d_value_lengths;
-  bool update_if_exists;
   // device-side registers
   struct dev_regs {
     utils::varlenkv::reg_input_type key;
@@ -153,7 +154,7 @@ struct insert_device_func {
     auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
     auto cur_key = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
     auto cur_value = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value, cur_rank, tile), cur_value_length, max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size, tile);
-    tree.template cooperative_insert<enable_suffix>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, update_if_exists);
+    tree.template cooperative_insert<update_if_exists, enable_suffix>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer);
   }
   template <bool use_shmem_key>
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
@@ -317,10 +318,11 @@ struct scan_device_func {
 };
 
 template <typename masstree,
-          bool enable_suffix,
-          bool erase_do_merge,
-          bool erase_pessimistic_merge,
-          bool erase_do_remove_empty_root>
+          bool insert_update_if_exists = false,
+          bool enable_suffix = true,
+          bool erase_do_merge = true,
+          bool erase_pessimistic_merge = true,
+          bool erase_do_remove_empty_root = true>
 struct mixed_device_func {
   using key_slice_type = typename masstree::key_slice_type;
   using size_type = typename masstree::size_type;
@@ -337,7 +339,6 @@ struct mixed_device_func {
   size_type max_value_length;
   size_type* d_value_lengths;
   bool* d_results;
-  bool insert_update_if_exists;
   // device-side registers
   struct dev_regs {
     request_type type;
@@ -372,7 +373,7 @@ struct mixed_device_func {
     if (cur_type == request_type_insert) {
       auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
       auto cur_value = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value.input, cur_rank, tile), cur_value_length, max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size, tile);
-      auto cur_result = tree.template cooperative_insert<enable_suffix>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, insert_update_if_exists);
+      auto cur_result = tree.template cooperative_insert<insert_update_if_exists, enable_suffix>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else if (cur_type == request_type_find) {
@@ -427,7 +428,9 @@ __global__ void initialize_kernel(hashtable table) {
   table.initialize_bucket(bucket_index, tile, allocator);
 }
 
-template <typename hashtable, bool use_hash_tag>
+template <typename hashtable,
+          bool update_if_exists = false,
+          bool use_hash_tag = true>
 struct insert_device_func {
   using key_slice_type = typename hashtable::key_slice_type;
   using size_type = typename hashtable::size_type;
@@ -441,7 +444,6 @@ struct insert_device_func {
   const value_slice_type* d_values;
   size_type max_value_length;
   const size_type* d_value_lengths;
-  bool update_if_exists;
   // device-side registers
   struct dev_regs {
     utils::varlenkv::reg_input_type key;
@@ -465,7 +467,7 @@ struct insert_device_func {
     auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
     auto cur_key = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
     auto cur_value = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value, cur_rank, tile), cur_value_length, max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size, tile);
-    table.template cooperative_insert<use_hash_tag>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, update_if_exists);
+    table.template cooperative_insert<update_if_exists, use_hash_tag>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer);
   }
   template <bool use_shmem_key>
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
@@ -554,8 +556,9 @@ struct erase_device_func {
 };
 
 template <typename hashtable,
-          bool use_hash_tag,
-          bool erase_do_merge>
+          bool insert_update_if_exists = false,
+          bool use_hash_tag = true,
+          bool erase_do_merge = true>
 struct mixed_device_func {
   using key_slice_type = typename hashtable::key_slice_type;
   using size_type = typename hashtable::size_type;
@@ -571,7 +574,6 @@ struct mixed_device_func {
   size_type max_value_length;
   size_type* d_value_lengths;
   bool* d_results;
-  bool insert_update_if_exists;
   // device-side registers
   struct dev_regs {
     request_type type;
@@ -605,7 +607,7 @@ struct mixed_device_func {
     if (cur_type == request_type_insert) {
       auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
       auto cur_value = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value.input, cur_rank, tile), cur_value_length, max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size, tile);
-      auto cur_result = table.template cooperative_insert<use_hash_tag>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, insert_update_if_exists);
+      auto cur_result = table.template cooperative_insert<insert_update_if_exists, use_hash_tag>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else if (cur_type == request_type_find) {
@@ -660,7 +662,11 @@ __global__ void initialize_kernel(extendhashtable table) {
   table.initialize_bucket(bucket_index, tile, allocator);
 }
 
-template <typename hashtable, bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains>
+template <typename hashtable,
+          bool update_if_exists = false,
+          bool use_hash_tag = true,
+          bool tag_use_same_hash = true,
+          bool do_merge_chains = true>
 struct insert_device_func {
   using key_slice_type = typename hashtable::key_slice_type;
   using size_type = typename hashtable::size_type;
@@ -674,7 +680,6 @@ struct insert_device_func {
   const value_slice_type* d_values;
   size_type max_value_length;
   const size_type* d_value_lengths;
-  bool update_if_exists;
   // device-side registers
   struct dev_regs {
     utils::varlenkv::reg_input_type key;
@@ -699,7 +704,7 @@ struct insert_device_func {
     auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
     auto cur_key = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
     auto cur_value = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value, cur_rank, tile), cur_value_length, max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size, tile);
-    table.template cooperative_insert<use_hash_tag, tag_use_same_hash, do_merge_chains>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, update_if_exists);
+    table.template cooperative_insert<update_if_exists, use_hash_tag, tag_use_same_hash, do_merge_chains>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer);
   }
   template <bool use_shmem_key>
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
@@ -790,10 +795,11 @@ struct erase_device_func {
 };
 
 template <typename hashtable,
-          bool use_hash_tag,
-          bool tag_use_same_hash,
-          bool do_merge_chains,
-          bool erase_do_merge_buckets>
+          bool insert_update_if_exists = false,
+          bool use_hash_tag = true,
+          bool tag_use_same_hash = true,
+          bool do_merge_chains = true,
+          bool erase_do_merge_buckets = true>
 struct mixed_device_func {
   using key_slice_type = typename hashtable::key_slice_type;
   using size_type = typename hashtable::size_type;
@@ -809,7 +815,6 @@ struct mixed_device_func {
   size_type max_value_length;
   size_type* d_value_lengths;
   bool* d_results;
-  bool insert_update_if_exists;
   // device-side registers
   struct dev_regs {
     request_type type;
@@ -844,7 +849,7 @@ struct mixed_device_func {
     if (cur_type == request_type_insert) {
       auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
       auto cur_value = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value.input, cur_rank, tile), cur_value_length, max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size, tile);
-      auto cur_result = table.template cooperative_insert<use_hash_tag, tag_use_same_hash, do_merge_chains>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer, insert_update_if_exists);
+      auto cur_result = table.template cooperative_insert<insert_update_if_exists, use_hash_tag, tag_use_same_hash, do_merge_chains>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else if (cur_type == request_type_find) {
