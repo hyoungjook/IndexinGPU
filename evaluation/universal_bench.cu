@@ -528,9 +528,9 @@ static void run_bench(adapter_type& adapter,
         #endif
         ycsb_timer.stop();
         ycsb_timer.record();
-        adapter.destroy();
         if (verbose) { std::cout << "ycsb tested " << r + 1 << "/" << args.rep_ycsb << std::endl; }
       }
+      adapter.destroy();
       ycsb_timer.print_rate_Mops("ycsb", args.num_ycsb, print_all_measurements);
     }
   }
