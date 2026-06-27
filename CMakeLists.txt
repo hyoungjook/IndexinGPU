@@ -26,6 +26,16 @@ option(GX_STATIC_COUNTER "Enable GALLATIN_STATIC_COUNTER stateful context fast p
 # Gallatin's native spatial coalescing). Default ON.
 option(GX_GROUPED "Enable GALLATIN_GROUPED warp-coalesced static fast path" ON)
 
+# Gallatin opt (EXPERIMENTAL, default OFF): software-pipelined reservation -- issue
+# the next slice's atomicAdd undecoded and consume it next call, hiding the atomic
+# latency behind the caller's insert work. The one outstanding reservation is
+# returned at context teardown (provably no lost allocation; validated all-valid).
+# MEASURED REGRESSION at the current 64-reg budget: the +5 cross-call pipeline
+# members spill (local_op_st 34M->125M) -> long_scoreboard 8.8->12.0 -> -9..18%.
+# SAFE but slower; kept OFF as a revisitable knob (worth retrying only if the
+# kernel's register pressure drops enough for the pipeline state to stay resident).
+option(GX_PREFETCH "Enable GALLATIN_PREFETCH pipelined static fast path" OFF)
+
 # rdc / separable compilation: lets ptxas keep the malloc hot path lean (cold paths
 # out of line) -> lower long_scoreboard. Validated win; shipped ON.
 option(GX_RDC "Enable CUDA separable compilation (-rdc) for the lean hot path" ON)
@@ -77,6 +87,7 @@ set(CUDA_FLAGS
     $<$<BOOL:${GX_CONST_BASE}>:-DGALLATIN_CONST_BASE>
     $<$<BOOL:${GX_STATIC_COUNTER}>:-DGALLATIN_STATIC_COUNTER>
     $<$<BOOL:${GX_GROUPED}>:-DGALLATIN_GROUPED>
+    $<$<BOOL:${GX_PREFETCH}>:-DGALLATIN_PREFETCH>
 	--expt-extended-lambda
     --expt-relaxed-constexpr
     -Wno-deprecated-gpu-targets #silence deprecated architectures

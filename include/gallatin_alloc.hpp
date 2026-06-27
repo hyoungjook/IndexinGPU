@@ -96,6 +96,21 @@ __device__ inline void* global_gstatic_slow(uint16_t tree_id, uint64_t alloc_siz
                                             int& ci, uint64_t& cb, unsigned int& cg) {
   return global_gallatin->gstatic_slow(tree_id, alloc_size, ci, cb, cg);
 }
+__device__ inline void* global_gstatic_prefetch(
+    int& cidx, uint64_t& cbase, unsigned int& cgen, unsigned long long& pf_merged,
+    int& pf_cidx, uint64_t& pf_cbase, unsigned int& pf_cgen, bool& pf_valid,
+    uint16_t tree_id, uint64_t alloc_size) {
+  return global_gallatin->gstatic_prefetch(cidx, cbase, cgen, pf_merged, pf_cidx,
+                                           pf_cbase, pf_cgen, pf_valid, tree_id,
+                                           alloc_size);
+}
+__device__ inline void* global_gstatic_prefetch_drain(unsigned long long pf_merged,
+                                                      uint64_t pf_cbase,
+                                                      unsigned int pf_cgen,
+                                                      uint64_t alloc_size) {
+  return global_gallatin->gstatic_prefetch_drain(pf_merged, pf_cbase, pf_cgen,
+                                                 alloc_size);
+}
 __device__ inline uint16_t global_tree_id(uint64_t num_bytes) {
   return global_gallatin->get_tree_id_from_size(num_bytes);
 }
@@ -392,8 +407,25 @@ struct device_allocator_context<gallatin_allocator<slab_size>> {
     // (smallest pow2 bucket >= slab_size). Verified here so the fast path can
     // use the constant (folds the count*size multiply) instead of talloc_.
     assert(talloc_ == effective_slab_size_);
+#ifdef GALLATIN_PREFETCH
+    pf_valid_ = false;  // no reservation outstanding yet
+#endif
 #endif
   }
+
+#ifdef GALLATIN_PREFETCH
+  // Return the one outstanding (issued-but-unconsumed) reservation so no
+  // allocation is ever lost. pf_valid_ is only ever set on the tile leader, so
+  // this is implicitly leader-only. Freeing the reserved-but-unwritten slice is
+  // identical to an app alloc+free -> the block's recycle accounting stays exact.
+  DEVICE_QUALIFIER ~device_allocator_context() {
+    if (pf_valid_) {
+      void* leftover = gallatin_alloc_detail::global_gstatic_prefetch_drain(
+          pf_merged_, pf_cbase_, pf_cgen_, effective_slab_size_);
+      if (leftover != nullptr) gallatin_alloc_detail::global_free(leftover);
+    }
+  }
+#endif
 
   template <typename tile_type>
   DEVICE_QUALIFIER pointer_type allocate(const tile_type& tile) {
@@ -402,7 +434,16 @@ struct device_allocator_context<gallatin_allocator<slab_size>> {
 #ifdef GALLATIN_STATIC_COUNTER
       // Try the cached slot (1 atomic, no load); on miss re-resolve safely and
       // refresh the cached {cidx_, cbase_, cgen_}.
-#if defined(GALLATIN_GROUPED)
+#if defined(GALLATIN_PREFETCH)
+      // Software-pipelined: consume the reservation issued LAST call (its atomic
+      // has retired -> no stall) and issue the next undecoded, so its latency
+      // overlaps the caller's insert work. Runs fast+slow internally and always
+      // returns a valid slice (or genuine-exhaustion null). The one outstanding
+      // reservation is returned at teardown (~device_allocator_context).
+      void* raw_ptr = gallatin_alloc_detail::global_gstatic_prefetch(
+          cidx_, cbase_, cgen_, pf_merged_, pf_cidx_, pf_cbase_, pf_cgen_,
+          pf_valid_, tree_id_, effective_slab_size_);
+#elif defined(GALLATIN_GROUPED)
       // Warp-coalesced reservation: the active tile leaders that share a warp
       // (and tree) claim a contiguous run with ONE atomicAdd -- Gallatin's
       // native coalescing, applied to the static counter. Only tile sizes < 32
@@ -416,14 +457,18 @@ struct device_allocator_context<gallatin_allocator<slab_size>> {
         raw_ptr = gallatin_alloc_detail::global_gstatic_fast(
             cidx_, cbase_, cgen_, effective_slab_size_);
       }
-#else
-      void* raw_ptr = gallatin_alloc_detail::global_gstatic_fast(
-          cidx_, cbase_, cgen_, effective_slab_size_);
-#endif
       if (raw_ptr == nullptr) {
         raw_ptr = gallatin_alloc_detail::global_gstatic_slow(
             tree_id_, talloc_, cidx_, cbase_, cgen_);
       }
+#else
+      void* raw_ptr = gallatin_alloc_detail::global_gstatic_fast(
+          cidx_, cbase_, cgen_, effective_slab_size_);
+      if (raw_ptr == nullptr) {
+        raw_ptr = gallatin_alloc_detail::global_gstatic_slow(
+            tree_id_, talloc_, cidx_, cbase_, cgen_);
+      }
+#endif
 #else
       auto* raw_ptr = gallatin_alloc_detail::global_malloc(slab_size_);
 #endif
@@ -474,6 +519,15 @@ private:
   unsigned int cgen_ = 0;  // cached slot generation (validates cbase against swaps)
   uint16_t tree_id_ = 0;   // tree for slab_size_ (resolved once)
   uint64_t talloc_ = 0;    // tree slice size (slice stride within a block)
+#ifdef GALLATIN_PREFETCH
+  // One outstanding pipelined reservation (leader-only): the raw atomic result
+  // (undecoded -> its latency is hidden) plus the slot it was issued against.
+  unsigned long long pf_merged_ = 0;
+  int pf_cidx_ = -1;
+  uint64_t pf_cbase_ = 0;
+  unsigned int pf_cgen_ = 0;
+  bool pf_valid_ = false;
+#endif
 #endif
 
   DEVICE_QUALIFIER pointer_type pointer_to_handle(uint64_t raw_addr) const {
