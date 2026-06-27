@@ -368,6 +368,11 @@ struct device_allocator_context<gallatin_allocator<slab_size>> {
                                             const tile_type& tile)
       : alloc_(alloc) {
     static_assert(tile_type::size() == 32 || tile_type::size() == 16);
+    // Cache the heap base ONCE per kernel. pointer_to_handle()/address() would
+    // otherwise chase global_gallatin->table->memory (3 dependent global loads)
+    // on every alloc/free -- a pure long_scoreboard cost. The base is constant
+    // for the kernel, so resolve it here and keep it register-resident.
+    mbase_ = gallatin_alloc_detail::global_memory_base();
 #ifdef GALLATIN_STATIC_COUNTER
     // Per-(tile-leader) resident context: cache the slot/base/gen across the
     // allocation loop so the hot path is one atomic + a register compare.
@@ -376,6 +381,10 @@ struct device_allocator_context<gallatin_allocator<slab_size>> {
     cgen_ = 0;
     tree_id_ = gallatin_alloc_detail::global_tree_id(slab_size_);
     talloc_ = gallatin_alloc_detail::global_tree_alloc_size(tree_id_);
+    // The tree's slice size is provably the compile-time effective_slab_size_
+    // (smallest pow2 bucket >= slab_size). Verified here so the fast path can
+    // use the constant (folds the count*size multiply) instead of talloc_.
+    assert(talloc_ == effective_slab_size_);
 #endif
   }
 
@@ -386,8 +395,8 @@ struct device_allocator_context<gallatin_allocator<slab_size>> {
 #ifdef GALLATIN_STATIC_COUNTER
       // Try the cached slot (1 atomic, no load); on miss re-resolve safely and
       // refresh the cached {cidx_, cbase_, cgen_}.
-      void* raw_ptr =
-          gallatin_alloc_detail::global_gstatic_fast(cidx_, cbase_, cgen_, talloc_);
+      void* raw_ptr = gallatin_alloc_detail::global_gstatic_fast(
+          cidx_, cbase_, cgen_, effective_slab_size_);
       if (raw_ptr == nullptr) {
         raw_ptr = gallatin_alloc_detail::global_gstatic_slow(
             tree_id_, talloc_, cidx_, cbase_, cgen_);
@@ -424,8 +433,7 @@ struct device_allocator_context<gallatin_allocator<slab_size>> {
 
   DEVICE_QUALIFIER void* address(pointer_type p) const {
     assert(p < alloc_.total_slots_);
-    auto raw_addr = gallatin_alloc_detail::global_memory_base() +
-                    static_cast<uint64_t>(p) * effective_slab_size_;
+    auto raw_addr = mbase_ + static_cast<uint64_t>(p) * effective_slab_size_;
     return reinterpret_cast<void*>(raw_addr);
   }
 
@@ -435,6 +443,7 @@ private:
       host_alloc_type::effective_slab_size_;
 
   const device_instance_type& alloc_;
+  uint64_t mbase_ = 0;     // cached heap base (global_gallatin->table->memory)
 
 #ifdef GALLATIN_STATIC_COUNTER
   int cidx_ = -1;          // cached static-counter slot index (-1 = none)
@@ -445,7 +454,7 @@ private:
 #endif
 
   DEVICE_QUALIFIER pointer_type pointer_to_handle(uint64_t raw_addr) const {
-    auto base_addr = gallatin_alloc_detail::global_memory_base();
+    auto base_addr = mbase_;
     assert(raw_addr >= base_addr);
     auto offset = raw_addr - base_addr;
     assert((offset % effective_slab_size_) == 0);
