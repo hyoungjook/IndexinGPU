@@ -79,6 +79,24 @@ __device__ inline void global_free(void* ptr) {
   global_gallatin->free(ptr);
 }
 
+#ifdef GALLATIN_STATIC_COUNTER
+// Stateful (per-thread context) fast path: ONE atomic on the cached slot.
+__device__ inline void* global_gstatic_fast(int cidx, uint64_t cbase,
+                                            unsigned int cgen, uint64_t alloc_size) {
+  return global_gallatin->gstatic_fast(cidx, cbase, cgen, alloc_size);
+}
+__device__ inline void* global_gstatic_slow(uint16_t tree_id, uint64_t alloc_size,
+                                            int& ci, uint64_t& cb, unsigned int& cg) {
+  return global_gallatin->gstatic_slow(tree_id, alloc_size, ci, cb, cg);
+}
+__device__ inline uint16_t global_tree_id(uint64_t num_bytes) {
+  return global_gallatin->get_tree_id_from_size(num_bytes);
+}
+__device__ inline uint64_t global_tree_alloc_size(uint16_t tree_id) {
+  return global_gallatin->table->get_tree_alloc_size(tree_id);
+}
+#endif
+
 __device__ inline uint64_t global_memory_base() {
   return reinterpret_cast<uint64_t>(global_gallatin->table->memory);
 }
@@ -350,13 +368,33 @@ struct device_allocator_context<gallatin_allocator<slab_size>> {
                                             const tile_type& tile)
       : alloc_(alloc) {
     static_assert(tile_type::size() == 32 || tile_type::size() == 16);
+#ifdef GALLATIN_STATIC_COUNTER
+    // Per-(tile-leader) resident context: cache the slot/base/gen across the
+    // allocation loop so the hot path is one atomic + a register compare.
+    cidx_ = -1;
+    cbase_ = 0;
+    cgen_ = 0;
+    tree_id_ = gallatin_alloc_detail::global_tree_id(slab_size_);
+    talloc_ = gallatin_alloc_detail::global_tree_alloc_size(tree_id_);
+#endif
   }
 
   template <typename tile_type>
   DEVICE_QUALIFIER pointer_type allocate(const tile_type& tile) {
     uint64_t raw_addr = 0;
     if (tile.thread_rank() == 0) {
+#ifdef GALLATIN_STATIC_COUNTER
+      // Try the cached slot (1 atomic, no load); on miss re-resolve safely and
+      // refresh the cached {cidx_, cbase_, cgen_}.
+      void* raw_ptr =
+          gallatin_alloc_detail::global_gstatic_fast(cidx_, cbase_, cgen_, talloc_);
+      if (raw_ptr == nullptr) {
+        raw_ptr = gallatin_alloc_detail::global_gstatic_slow(
+            tree_id_, talloc_, cidx_, cbase_, cgen_);
+      }
+#else
       auto* raw_ptr = gallatin_alloc_detail::global_malloc(slab_size_);
+#endif
       if (raw_ptr == nullptr) {
         printf("gallatin_allocator: allocation failed for %u bytes\n",
                slab_size_);
@@ -397,6 +435,14 @@ private:
       host_alloc_type::effective_slab_size_;
 
   const device_instance_type& alloc_;
+
+#ifdef GALLATIN_STATIC_COUNTER
+  int cidx_ = -1;          // cached static-counter slot index (-1 = none)
+  uint64_t cbase_ = 0;     // cached slot block base address
+  unsigned int cgen_ = 0;  // cached slot generation (validates cbase against swaps)
+  uint16_t tree_id_ = 0;   // tree for slab_size_ (resolved once)
+  uint64_t talloc_ = 0;    // tree slice size (slice stride within a block)
+#endif
 
   DEVICE_QUALIFIER pointer_type pointer_to_handle(uint64_t raw_addr) const {
     auto base_addr = gallatin_alloc_detail::global_memory_base();
@@ -496,6 +542,14 @@ private:
       host_alloc_type::effective_slab_size_;
 
   const device_instance_type& alloc_;
+
+#ifdef GALLATIN_STATIC_COUNTER
+  int cidx_ = -1;          // cached static-counter slot index (-1 = none)
+  uint64_t cbase_ = 0;     // cached slot block base address
+  unsigned int cgen_ = 0;  // cached slot generation (validates cbase against swaps)
+  uint16_t tree_id_ = 0;   // tree for slab_size_ (resolved once)
+  uint64_t talloc_ = 0;    // tree slice size (slice stride within a block)
+#endif
 
   DEVICE_QUALIFIER pointer_type pointer_to_handle(uint64_t raw_addr) const {
     auto base_addr = gallatin_alloc_detail::global_memory_base();

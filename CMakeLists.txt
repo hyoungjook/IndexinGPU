@@ -7,6 +7,27 @@ endif()
 
 project(GpuBTree LANGUAGES CXX CUDA)
 
+# Global register cap. 32 is the shipped value: validated (no regression on slab /
+# other DS) and it keeps the lean static-counter hot path at high occupancy.
+set(GX_MAXRREG "32" CACHE STRING "global nvcc -maxrregcount value")
+
+# Gallatin opt: cache heap/block base pointers in __constant__ memory so the
+# malloc/free hot path skips table-> dependent global loads (memory_table.cuh).
+# Single live Gallatin instance only -- fine for these benchmarks. Default ON.
+option(GX_CONST_BASE "Enable GALLATIN_CONST_BASE base-pointer caching" ON)
+
+# Gallatin opt: stateful per-(tile-leader) static-counter fast path (one atomic on
+# a cached padded slot, no base load / no revalidate; safe via cached generation).
+# THE shipped allocator fast path. Default ON.
+option(GX_STATIC_COUNTER "Enable GALLATIN_STATIC_COUNTER stateful context fast path" ON)
+
+# rdc / separable compilation: lets ptxas keep the malloc hot path lean (cold paths
+# out of line) -> lower long_scoreboard. Validated win; shipped ON.
+option(GX_RDC "Enable CUDA separable compilation (-rdc) for the lean hot path" ON)
+if(GX_RDC)
+  set(CMAKE_CUDA_SEPARABLE_COMPILATION ON)
+endif()
+
 message(STATUS "CMAKE_CUDA_ARCHITECTURES=${CMAKE_CUDA_ARCHITECTURES}")
 
 set(CMAKE_CXX_STANDARD 17)
@@ -47,7 +68,9 @@ set(CUDA_FLAGS
     $<IF:$<CONFIG:Debug>,
         -G -dopt=on -src-in-ptx,
         -lineinfo>
-    -maxrregcount=64
+    -maxrregcount=${GX_MAXRREG}
+    $<$<BOOL:${GX_CONST_BASE}>:-DGALLATIN_CONST_BASE>
+    $<$<BOOL:${GX_STATIC_COUNTER}>:-DGALLATIN_STATIC_COUNTER>
 	--expt-extended-lambda
     --expt-relaxed-constexpr
     -Wno-deprecated-gpu-targets #silence deprecated architectures

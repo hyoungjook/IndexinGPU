@@ -26,7 +26,19 @@
 namespace cg = cooperative_groups;
 namespace kernels {
 
-static constexpr auto target_blocks_per_sm = 8;
+// Occupancy knob: __launch_bounds__(block_size_, target_blocks_per_sm) sizes the
+// kernel's register count to fit this many blocks/SM -- and __launch_bounds__
+// overrides -maxrregcount, so THIS (not GX_MAXRREG) is the real register/occupancy
+// lever. Higher -> fewer regs/thread -> more occupancy. Override with
+// -DGX_TARGET_BLOCKS=N.
+#ifndef GX_TARGET_BLOCKS
+// 8 -> ~64 regs/thread (65% occ). With the stateful allocator context, 12 (40
+// regs/95% occ) SPILLS the cached context to local memory (NCU: spill stores
+// 130M->380M, long_scoreboard 12->25); 8 keeps it register-resident and is
+// markedly faster despite lower occupancy (chain insert 0.60x->0.71x slab).
+#define GX_TARGET_BLOCKS 8
+#endif
+static constexpr auto target_blocks_per_sm = GX_TARGET_BLOCKS;
 
 template <bool do_reclaim, uint32_t tile_size, bool use_shmem_key, typename device_func, typename index_type>
 __launch_bounds__(index_type::host_reclaimer_type::block_size_, target_blocks_per_sm)
