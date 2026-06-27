@@ -81,8 +81,8 @@ __device__ inline void global_free(void* ptr) {
 
 #ifdef GALLATIN_STATIC_COUNTER
 // Stateful (per-thread context) fast path: ONE atomic on the cached slot.
-__device__ inline void* global_gstatic_fast(int cidx, uint64_t cbase,
-                                            unsigned int cgen, uint64_t alloc_size) {
+__device__ inline void* global_gstatic_fast(int cidx, uint64_t& cbase,
+                                            unsigned int& cgen, uint64_t alloc_size) {
   return global_gallatin->gstatic_fast(cidx, cbase, cgen, alloc_size);
 }
 __device__ inline void* global_gstatic_fast_grouped(int& cidx, uint64_t& cbase,
