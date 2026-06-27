@@ -21,6 +21,11 @@ option(GX_CONST_BASE "Enable GALLATIN_CONST_BASE base-pointer caching" ON)
 # THE shipped allocator fast path. Default ON.
 option(GX_STATIC_COUNTER "Enable GALLATIN_STATIC_COUNTER stateful context fast path" ON)
 
+# Gallatin opt: warp-coalesced reservation on the static-counter fast path (the
+# active tile leaders sharing a warp claim a contiguous run with ONE atomicAdd --
+# Gallatin's native spatial coalescing). Default ON.
+option(GX_GROUPED "Enable GALLATIN_GROUPED warp-coalesced static fast path" ON)
+
 # rdc / separable compilation: lets ptxas keep the malloc hot path lean (cold paths
 # out of line) -> lower long_scoreboard. Validated win; shipped ON.
 option(GX_RDC "Enable CUDA separable compilation (-rdc) for the lean hot path" ON)
@@ -71,6 +76,7 @@ set(CUDA_FLAGS
     -maxrregcount=${GX_MAXRREG}
     $<$<BOOL:${GX_CONST_BASE}>:-DGALLATIN_CONST_BASE>
     $<$<BOOL:${GX_STATIC_COUNTER}>:-DGALLATIN_STATIC_COUNTER>
+    $<$<BOOL:${GX_GROUPED}>:-DGALLATIN_GROUPED>
 	--expt-extended-lambda
     --expt-relaxed-constexpr
     -Wno-deprecated-gpu-targets #silence deprecated architectures

@@ -85,6 +85,13 @@ __device__ inline void* global_gstatic_fast(int cidx, uint64_t cbase,
                                             unsigned int cgen, uint64_t alloc_size) {
   return global_gallatin->gstatic_fast(cidx, cbase, cgen, alloc_size);
 }
+__device__ inline void* global_gstatic_fast_grouped(int& cidx, uint64_t& cbase,
+                                                    unsigned int& cgen,
+                                                    uint16_t tree_id,
+                                                    uint64_t alloc_size) {
+  return global_gallatin->gstatic_fast_grouped(cidx, cbase, cgen, tree_id,
+                                               alloc_size);
+}
 __device__ inline void* global_gstatic_slow(uint16_t tree_id, uint64_t alloc_size,
                                             int& ci, uint64_t& cb, unsigned int& cg) {
   return global_gallatin->gstatic_slow(tree_id, alloc_size, ci, cb, cg);
@@ -395,8 +402,24 @@ struct device_allocator_context<gallatin_allocator<slab_size>> {
 #ifdef GALLATIN_STATIC_COUNTER
       // Try the cached slot (1 atomic, no load); on miss re-resolve safely and
       // refresh the cached {cidx_, cbase_, cgen_}.
+#if defined(GALLATIN_GROUPED)
+      // Warp-coalesced reservation: the active tile leaders that share a warp
+      // (and tree) claim a contiguous run with ONE atomicAdd -- Gallatin's
+      // native coalescing, applied to the static counter. Only tile sizes < 32
+      // can have >1 leader per warp; tile32 (1 leader/warp) skips the coalescing
+      // machinery entirely (it would be pure overhead with nothing to coalesce).
+      void* raw_ptr;
+      if constexpr (tile_type::size() < 32) {
+        raw_ptr = gallatin_alloc_detail::global_gstatic_fast_grouped(
+            cidx_, cbase_, cgen_, tree_id_, effective_slab_size_);
+      } else {
+        raw_ptr = gallatin_alloc_detail::global_gstatic_fast(
+            cidx_, cbase_, cgen_, effective_slab_size_);
+      }
+#else
       void* raw_ptr = gallatin_alloc_detail::global_gstatic_fast(
           cidx_, cbase_, cgen_, effective_slab_size_);
+#endif
       if (raw_ptr == nullptr) {
         raw_ptr = gallatin_alloc_detail::global_gstatic_slow(
             tree_id_, talloc_, cidx_, cbase_, cgen_);
