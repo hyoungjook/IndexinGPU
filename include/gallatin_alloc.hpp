@@ -120,7 +120,16 @@ __device__ inline uint64_t global_tree_alloc_size(uint16_t tree_id) {
 #endif
 
 __device__ inline uint64_t global_memory_base() {
+#ifdef GALLATIN_CONST_BASE
+  // The heap base lives in __constant__ memory (single constant-cache read, no
+  // dependency chain) -> cheap to read per-op, so the context need NOT hold it in
+  // a loop-carried register. This both keeps Tier-1's no-load-chain win AND frees
+  // a register (vs caching it), helping occupancy.
+  return reinterpret_cast<uint64_t>(
+      gallatin::allocators::gallatin_const::g_table_bases.memory);
+#else
   return reinterpret_cast<uint64_t>(global_gallatin->table->memory);
+#endif
 }
 
 constexpr uint64_t max_u64(uint64_t a, uint64_t b) {
@@ -390,23 +399,22 @@ struct device_allocator_context<gallatin_allocator<slab_size>> {
                                             const tile_type& tile)
       : alloc_(alloc) {
     static_assert(tile_type::size() == 32 || tile_type::size() == 16);
-    // Cache the heap base ONCE per kernel. pointer_to_handle()/address() would
-    // otherwise chase global_gallatin->table->memory (3 dependent global loads)
-    // on every alloc/free -- a pure long_scoreboard cost. The base is constant
-    // for the kernel, so resolve it here and keep it register-resident.
-    mbase_ = gallatin_alloc_detail::global_memory_base();
+    // NOTE: the heap base is no longer cached in a member -- with GALLATIN_CONST_BASE
+    // it lives in __constant__ memory, so pointer_to_handle()/address() read it
+    // from the constant cache per-op (cheap, no dependency chain) WITHOUT holding a
+    // loop-carried register. Frees registers for occupancy.
 #ifdef GALLATIN_STATIC_COUNTER
     // Per-(tile-leader) resident context: cache the slot/base/gen across the
     // allocation loop so the hot path is one atomic + a register compare.
     cidx_ = -1;
     cbase_ = 0;
     cgen_ = 0;
-    tree_id_ = gallatin_alloc_detail::global_tree_id(slab_size_);
-    talloc_ = gallatin_alloc_detail::global_tree_alloc_size(tree_id_);
-    // The tree's slice size is provably the compile-time effective_slab_size_
-    // (smallest pow2 bucket >= slab_size). Verified here so the fast path can
-    // use the constant (folds the count*size multiply) instead of talloc_.
-    assert(talloc_ == effective_slab_size_);
+    // tree_id_ is a compile-time constant (smallest pow2 bucket >= slab_size) and
+    // the tree slice size is provably effective_slab_size_. Verified once here so
+    // no runtime members are needed for either (both freed from the context).
+    assert(tree_id_ == gallatin_alloc_detail::global_tree_id(slab_size_));
+    assert(effective_slab_size_ ==
+           gallatin_alloc_detail::global_tree_alloc_size(tree_id_));
 #ifdef GALLATIN_PREFETCH
     pf_valid_ = false;  // no reservation outstanding yet
 #endif
@@ -459,14 +467,14 @@ struct device_allocator_context<gallatin_allocator<slab_size>> {
       }
       if (raw_ptr == nullptr) {
         raw_ptr = gallatin_alloc_detail::global_gstatic_slow(
-            tree_id_, talloc_, cidx_, cbase_, cgen_);
+            tree_id_, effective_slab_size_, cidx_, cbase_, cgen_);
       }
 #else
       void* raw_ptr = gallatin_alloc_detail::global_gstatic_fast(
           cidx_, cbase_, cgen_, effective_slab_size_);
       if (raw_ptr == nullptr) {
         raw_ptr = gallatin_alloc_detail::global_gstatic_slow(
-            tree_id_, talloc_, cidx_, cbase_, cgen_);
+            tree_id_, effective_slab_size_, cidx_, cbase_, cgen_);
       }
 #endif
 #else
@@ -501,7 +509,8 @@ struct device_allocator_context<gallatin_allocator<slab_size>> {
 
   DEVICE_QUALIFIER void* address(pointer_type p) const {
     assert(p < alloc_.total_slots_);
-    auto raw_addr = mbase_ + static_cast<uint64_t>(p) * effective_slab_size_;
+    auto raw_addr = gallatin_alloc_detail::global_memory_base() +
+                    static_cast<uint64_t>(p) * effective_slab_size_;
     return reinterpret_cast<void*>(raw_addr);
   }
 
@@ -511,14 +520,18 @@ private:
       host_alloc_type::effective_slab_size_;
 
   const device_instance_type& alloc_;
-  uint64_t mbase_ = 0;     // cached heap base (global_gallatin->table->memory)
 
 #ifdef GALLATIN_STATIC_COUNTER
+  // tree_id for slab_size_ = smallest pow2 bucket >= max(slab_size, min_alloc),
+  // computed at compile time (== get_tree_id_from_size at runtime, asserted in
+  // ctor) so it costs no register and no construct-time load.
+  static constexpr uint16_t tree_id_ = static_cast<uint16_t>(
+      gallatin_alloc_detail::log2_power_of_two(effective_slab_size_) -
+      gallatin_alloc_detail::log2_power_of_two(
+          gallatin_alloc_detail::gallatin_min_alloc_size));
   int cidx_ = -1;          // cached static-counter slot index (-1 = none)
   uint64_t cbase_ = 0;     // cached slot block base address
   unsigned int cgen_ = 0;  // cached slot generation (validates cbase against swaps)
-  uint16_t tree_id_ = 0;   // tree for slab_size_ (resolved once)
-  uint64_t talloc_ = 0;    // tree slice size (slice stride within a block)
 #ifdef GALLATIN_PREFETCH
   // One outstanding pipelined reservation (leader-only): the raw atomic result
   // (undecoded -> its latency is hidden) plus the slot it was issued against.
@@ -531,7 +544,7 @@ private:
 #endif
 
   DEVICE_QUALIFIER pointer_type pointer_to_handle(uint64_t raw_addr) const {
-    auto base_addr = mbase_;
+    auto base_addr = gallatin_alloc_detail::global_memory_base();
     assert(raw_addr >= base_addr);
     auto offset = raw_addr - base_addr;
     assert((offset % effective_slab_size_) == 0);
