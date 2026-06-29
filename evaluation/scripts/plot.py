@@ -722,7 +722,7 @@ def tile_plots(configs_and_results, plot_file_prefix):
                 for metric_type in ['avg', 'min', 'max']:
                     tputs[(index_type, opt_idx)][metric_type].append(processed_result[metric_type])
     # plot
-    labels = ['FullWarp', 'HalfWarp', 'HalfWarp+SemiSort']
+    labels = ['FullWarp', 'HalfWarp', 'HalfWarp+PerOpQ']
     styles = [
         {"color": EXTRA_COLORS[0], "marker": "v", "linestyle": ":"},
         {"color": EXTRA_COLORS[1], "marker": "d", "linestyle": "-"},
