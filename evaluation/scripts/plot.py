@@ -1321,15 +1321,12 @@ def meme_plots(configs_and_results, plot_file_prefix):
     plt.close(fig)
 
     ycsb_tputs = {}
-    ycsb_index_types = [
-        IndexType.gpu_masstree,
-        IndexType.gpu_extendhashtable,
-        IndexType.cpu_masstree,
-        IndexType.cpu_libcuckoo,
-    ]
+    ycsb_index_types = INDEX_TYPES_ROBUST + INDEX_TYPES_CPU_BASELINE
     for index_type in ycsb_index_types:
         ycsb_tputs[index_type] = {}
         for read_ratio in EXP_YCSB_READ_RATIOS:
+            if index_type not in IS_INDEX_TYPE_SUPPORT_UPDATE and read_ratio < 1:
+                continue
             ycsb_tputs[index_type][read_ratio] = {
                 'avg': [], 'min': [], 'max': []
             }
@@ -1353,16 +1350,33 @@ def meme_plots(configs_and_results, plot_file_prefix):
 
     plot_names = ['A', 'B', 'C']
     ycsb_plot_spec = [
-        ('tree', [IndexType.gpu_masstree, IndexType.cpu_masstree], False),
-        ('ht', [IndexType.gpu_extendhashtable, IndexType.cpu_libcuckoo], True),
+        ('tree', [IndexType.cpu_art, IndexType.cpu_masstree, IndexType.gpu_masstree], False),
+        ('ht', [IndexType.gpu_chainhashtable, IndexType.gpu_cuckoohashtable, IndexType.gpu_extendhashtable, IndexType.cpu_libcuckoo, IndexType.cpu_onetbb], True),
     ]
+    legend_handles = []
+    legend_labels = []
+    for index_type in [IndexType.cpu_art, IndexType.gpu_masstree,
+                       IndexType.cpu_masstree, IndexType.gpu_cuckoohashtable,
+                       IndexType.cpu_libcuckoo, IndexType.gpu_chainhashtable,
+                       IndexType.cpu_onetbb, IndexType.gpu_extendhashtable]:
+        index_label = INDEX_LABELS[index_type]
+        if index_label in legend_labels:
+            continue
+        legend_handles.append(mline.Line2D(
+            [], [],
+            linewidth=2, markersize=6,
+            **INDEX_STYLES[index_type]
+        ))
+        legend_labels.append(index_label)
     for idx, (read_ratio, plot_name) in enumerate(zip(EXP_YCSB_READ_RATIOS, plot_names)):
         for plot_type, index_types, set_xlabel in ycsb_plot_spec:
-            fig, ax = _make_fixed_plot_area_figure(2, 1.1,
+            fig, ax = _make_fixed_plot_area_figure(1.8, 1,
                 include_xlabel=set_xlabel,
                 include_ylabel=(idx == 0),
             )
             for index_type in index_types:
+                if read_ratio < 1 and index_type not in IS_INDEX_TYPE_SUPPORT_UPDATE:
+                    continue
                 avg_values = _convert_mops_to_bops(ycsb_tputs[index_type][read_ratio]['avg'], index_type)
                 min_values = _convert_mops_to_bops(ycsb_tputs[index_type][read_ratio]['min'], index_type)
                 max_values = _convert_mops_to_bops(ycsb_tputs[index_type][read_ratio]['max'], index_type)
@@ -1399,6 +1413,12 @@ def meme_plots(configs_and_results, plot_file_prefix):
                 ax.set_ylabel(r'Throughput ($10^9$/s)')
             plt.savefig(f'{plot_file_prefix}-skew-{plot_name}-{plot_type}.pdf', bbox_inches='tight')
             plt.close(fig)
+    fig, ax = plt.subplots(1, 1, figsize=(6, 0.5), constrained_layout=True)
+    ax.legend(legend_handles, legend_labels, loc='center', ncol=len(legend_labels)/2,
+              handlelength=3, handletextpad=0.5)
+    ax.axis('off')
+    plt.savefig(f'{plot_file_prefix}-skew-legend.pdf', bbox_inches='tight')
+    plt.close(fig)
 
 
 def generate_plots(args, configs_and_results):
