@@ -891,8 +891,8 @@ def merge_plots(configs_and_results, plot_file_prefix):
     plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
     plt.close(fig)
     #tput plot
-    mt_xticklabels = ['Naive', 'Merge\nNodes\n(§4.2)', '+PPM\n(§4.3)', '+Root\nCollect\n(§4.3)']
-    et_xticklabels = ['Naive', 'Merge\nChains\n(§5.4)', '+Merge\nBuckets\n(§5.5)']
+    mt_xticklabels = ['Naive', 'Merge\nNodes', '+PPM', '+Root\nCollect']
+    et_xticklabels = ['Naive', 'Merge\nChains', '+Merge\nBuckets']
     for idx, index_type in enumerate(index_types):
         fig, ax = _make_fixed_plot_area_figure(0.6 * len(tputs[index_type]['avg']), 1.2,
             include_xlabel=False, include_ylabel=(idx == 0))
