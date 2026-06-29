@@ -53,8 +53,10 @@ def generate_configs(args):
                 common_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
                 common_config[ConfigType.rep_scan] = NUM_REPEATS
             configs.append(common_config)
-        for index_type in [IndexType.cpu_masstree, IndexType.cpu_libcuckoo]:
+        for index_type in INDEX_TYPES_CPU_BASELINE:
             for ycsb_read_ratio in EXP_YCSB_READ_RATIOS:
+                if ycsb_read_ratio < 1 and index_type not in IS_INDEX_TYPE_SUPPORT_UPDATE:
+                    continue
                 for ycsb_theta in EXP_YCSB_THETAS:
                     common_config = {
                         ConfigType.index_type: index_type,

@@ -214,7 +214,7 @@ def generate_configs(args):
                 common_config[ConfigType.rep_scan] = NUM_REPEATS
             common_config[OptionalConfigType.allocator_pool_ratio] = 0.7
             configs.append(common_config)
-        for index_type in [IndexType.gpu_masstree, IndexType.gpu_extendhashtable]:
+        for index_type in INDEX_TYPES_ROBUST:
             for ycsb_read_ratio in EXP_YCSB_READ_RATIOS:
                 for ycsb_theta in EXP_YCSB_THETAS:
                     common_config = {
