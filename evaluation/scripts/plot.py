@@ -1320,6 +1320,86 @@ def meme_plots(configs_and_results, plot_file_prefix):
     plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
     plt.close(fig)
 
+    ycsb_tputs = {}
+    ycsb_index_types = [
+        IndexType.gpu_masstree,
+        IndexType.gpu_extendhashtable,
+        IndexType.cpu_masstree,
+        IndexType.cpu_libcuckoo,
+    ]
+    for index_type in ycsb_index_types:
+        ycsb_tputs[index_type] = {}
+        for read_ratio in EXP_YCSB_READ_RATIOS:
+            ycsb_tputs[index_type][read_ratio] = {
+                'avg': [], 'min': [], 'max': []
+            }
+            for ycsb_theta in EXP_YCSB_THETAS:
+                desired_config = {
+                    ConfigType.index_type: index_type,
+                    ConfigType.dataset_file: MEME_DATASET_PATH,
+                    ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH_OVERVIEW,
+                    ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH_OVERVIEW,
+                    ConfigType.num_ycsb: BATCH_SIZE_MEME,
+                    ConfigType.ycsb_read_ratio: read_ratio,
+                    ConfigType.lookup_theta: ycsb_theta,
+                    ConfigType.rep_ycsb: NUM_REPEATS,
+                }
+                if index_type in [IndexType.gpu_masstree, IndexType.gpu_extendhashtable]:
+                    desired_config[OptionalConfigType.allocator_pool_ratio] = 0.7
+                result = filter(configs_and_results, desired_config, ResultType.ycsb)
+                processed_result = _compute_avg_min_max_from_raw(result['ycsb']['raw'])
+                for metric_type in ['avg', 'min', 'max']:
+                    ycsb_tputs[index_type][read_ratio][metric_type].append(processed_result[metric_type])
+
+    plot_names = ['A', 'B', 'C']
+    ycsb_plot_spec = [
+        ('tree', [IndexType.gpu_masstree, IndexType.cpu_masstree], False),
+        ('ht', [IndexType.gpu_extendhashtable, IndexType.cpu_libcuckoo], True),
+    ]
+    for idx, (read_ratio, plot_name) in enumerate(zip(EXP_YCSB_READ_RATIOS, plot_names)):
+        for plot_type, index_types, set_xlabel in ycsb_plot_spec:
+            fig, ax = _make_fixed_plot_area_figure(2, 1.1,
+                include_xlabel=set_xlabel,
+                include_ylabel=(idx == 0),
+            )
+            for index_type in index_types:
+                avg_values = _convert_mops_to_bops(ycsb_tputs[index_type][read_ratio]['avg'], index_type)
+                min_values = _convert_mops_to_bops(ycsb_tputs[index_type][read_ratio]['min'], index_type)
+                max_values = _convert_mops_to_bops(ycsb_tputs[index_type][read_ratio]['max'], index_type)
+                ax.plot(
+                    EXP_YCSB_THETAS, avg_values,
+                    label=INDEX_LABELS[index_type],
+                    linewidth=2, markersize=6,
+                    **INDEX_STYLES[index_type]
+                )
+                _add_throughput_error_bars(
+                    ax,
+                    EXP_YCSB_THETAS,
+                    avg_values,
+                    min_values,
+                    max_values,
+                    color=INDEX_STYLES[index_type]['color']
+                )
+            ax.set_ylim(bottom=0)
+            _, ymax = ax.get_ylim()
+            ytick_candidates = [0.1, 0.2, 0.5]
+            for ytick in ytick_candidates:
+                num_ticks = int(ymax // ytick)
+                if 1 <= num_ticks and num_ticks <= 3:
+                    yticks = [ytick * x for x in range(num_ticks + 1)]
+                    break
+            ax.set_yticks(yticks)
+            ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
+            ax.set_xlim(left=0, right=1.0)
+            ax.set_xticks([0, 0.5, 1.0])
+            ax.grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
+            if set_xlabel:
+                ax.set_xlabel(r'Zipfian $\theta$')
+            if idx == 0:
+                ax.set_ylabel(r'Throughput ($10^9$/s)')
+            plt.savefig(f'{plot_file_prefix}-skew-{plot_name}-{plot_type}.pdf', bbox_inches='tight')
+            plt.close(fig)
+
 
 def generate_plots(args, configs_and_results):
     key_length_plots(configs_and_results, Path(args.result_dir) / 'plot_keylength')
