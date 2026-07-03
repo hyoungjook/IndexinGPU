@@ -39,6 +39,12 @@ IS_INDEX_TYPE_ORDERED = [
     IndexType.cpu_art,
     IndexType.cpu_masstree
 ]
+IS_INDEX_TYPE_SUPPORT_UPDATE = INDEX_TYPES_ROBUST + [
+    IndexType.cpu_masstree,
+    IndexType.cpu_libcuckoo,
+    IndexType.cpu_onetbb,
+    IndexType.gpu_blink_tree
+]
 IS_INDEX_TYPE_SUPPORT_MIX = INDEX_TYPES_ROBUST + INDEX_TYPES_CPU_BASELINE + [IndexType.gpu_blink_tree]
 IS_INDEX_TYPE_SUPPORT_LONGKEY = INDEX_TYPES_ROBUST + INDEX_TYPES_CPU_BASELINE + [IndexType.gpu_dycuckoo]
 def DO_TEST_FOR_INDEX_TYPE(index_type, key_length):
@@ -129,3 +135,30 @@ EXP_MERGE_ERASE_RATIOS = [
     float(x / DEFAULT_MAXKEY_LONG) for x in range(0, DEFAULT_MAXKEY_LONG + 1, DEFAULT_BATCH_SIZE)
 ]
 EXP_GPU_MASSTREE_MERGE_SKIP_LEVEL = [2]
+
+EXP_HT_LOADFACTORS = {
+    IndexType.gpu_cuckoohashtable: (
+        OptionalConfigType.initial_array_fill_factor,
+        [0.6, 0.7, 0.8, 0.9, 0.95]
+    ),
+    IndexType.gpu_chainhashtable: (
+        OptionalConfigType.initial_array_fill_factor,
+        [0.7, 0.8, 2, 3, 4, 6]
+    ),
+    IndexType.gpu_extendhashtable: (
+        OptionalConfigType.load_factor_threshold,
+        [0.7, 2, 5, 9]
+    ),
+}
+
+EXP_BATCHSIZES = [
+    int(1 * 1000),
+    int(10 * 1000),
+    int(100 * 1000),
+    int(1 * MILLION),
+    int(10 * MILLION),
+    int(100 * MILLION),
+]
+
+EXP_YCSB_READ_RATIOS = [0.5, 0.95, 1]
+EXP_YCSB_THETAS = [0, 0.25, 0.5, 0.75, 0.9, 0.99]

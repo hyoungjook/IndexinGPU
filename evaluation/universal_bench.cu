@@ -16,9 +16,11 @@
 
 #include <stdlib.h>
 #include <algorithm>
+#include <cstring>
 #include <execution>
 #include <cstdint>
 #include <numeric>
+#include <random>
 #include <vector>
 #include <cmd.hpp>
 #include <macros.hpp>
@@ -226,13 +228,17 @@ static void run_bench(adapter_type& adapter,
                       std::size_t result_buffer_size,
                       std::size_t result_length_buffer_size,
                       bool verbose,
-                      bool print_all_measurements) {
+                      bool print_all_measurements,
+                      bool ht_print_load_factor) {
   const bool use_null_keylength = (args.keylen_min == args.keylen_max);
   const bool use_null_valuelength = (args.valuelen_min == args.valuelen_max);
   // measure lookup & scan
   if (args.rep_lookup > 0 || args.rep_scan > 0) {
     cpu_lap_timer lookup_timer, scan_timer;
     prefill(adapter, h_keys, h_key_lengths, h_values, h_value_lengths, args.keylen_min, args.keylen_max, args.valuelen_min, args.valuelen_max, args.max_keys);
+    if (ht_print_load_factor) {
+      adapter.ht_print_load_factor(args.max_keys, args.keylen_max, args.valuelen_max);
+    }
     #if !defined(NOGPU)
     auto d_lookup_keys = device_vector<key_slice_type>(h_lookup_keys, args.use_pinned_host_memory);
     auto d_lookup_key_lengths = device_vector<size_type>(h_lookup_key_lengths, args.use_pinned_host_memory, use_null_keylength);
@@ -288,6 +294,44 @@ static void run_bench(adapter_type& adapter,
     if (adapter_type::is_ordered && args.rep_scan > 0) {
       scan_timer.print_rate_Mops("scan", args.num_scans, print_all_measurements);
     }
+  }
+
+  // measure update
+  if (args.rep_update > 0) {
+    cpu_lap_timer update_timer;
+    prefill(adapter, h_keys, h_key_lengths, h_values, h_value_lengths, args.keylen_min, args.keylen_max, args.valuelen_min, args.valuelen_max, args.max_keys);
+    #if !defined(NOGPU)
+    auto d_update_keys = device_vector<key_slice_type>(h_lookup_keys, args.use_pinned_host_memory);
+    auto d_update_key_lengths = device_vector<size_type>(h_lookup_key_lengths, args.use_pinned_host_memory, use_null_keylength);
+    auto d_update_values = device_vector<value_slice_type>(&h_values[0], static_cast<std::size_t>(args.num_updates) * args.valuelen_max, args.use_pinned_host_memory);
+    auto d_update_value_lengths = device_vector<size_type>(&h_value_lengths[0], args.num_updates, args.use_pinned_host_memory, use_null_valuelength);
+    cuda_try(cudaDeviceSynchronize());
+    #endif
+    for (uint32_t r = 0; r < args.rep_update; r++) {
+      update_timer.start();
+      #if !defined(NOGPU)
+      adapter.update(d_update_keys.data(), args.keylen_max, d_update_key_lengths.data(), d_update_values.data(), args.valuelen_max, d_update_value_lengths.data(), args.num_updates);
+      #else
+      helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
+          auto tuple_id = task_idx;
+          adapter.update(&h_lookup_keys[tuple_id * args.keylen_max],
+                         h_lookup_key_lengths[tuple_id],
+                         h_values[tuple_id],
+                         tuple_id,
+                         thread_id);
+        }, args.num_updates,
+        [&](unsigned thread_id) { adapter.thread_enter(thread_id); },
+        [&](unsigned thread_id) { adapter.thread_exit(thread_id); });
+      #endif
+      #if !defined(NOGPU)
+      cuda_try(cudaDeviceSynchronize());
+      #endif
+      update_timer.stop();
+      update_timer.record();
+      if (verbose) { std::cout << "update tested " << r + 1 << "/" << args.rep_update << std::endl; }
+    }
+    adapter.destroy();
+    update_timer.print_rate_Mops("update", args.num_updates, print_all_measurements);
   }
 
   // measure insert & delete
@@ -406,6 +450,13 @@ static void run_bench(adapter_type& adapter,
             else if (h_mix_types[task_idx] == kernels::request_type_insert) {
               adapter.insert(&h_mix_keys[task_idx * args.keylen_max], h_mix_key_lengths[task_idx], h_mix_values[task_idx], h_mix_key_tuple_ids[task_idx], thread_id);
             }
+            else if (h_mix_types[task_idx] == kernels::request_type_update) {
+              adapter.update(&h_mix_keys[task_idx * args.keylen_max],
+                             h_mix_key_lengths[task_idx],
+                             h_mix_values[task_idx],
+                             h_mix_key_tuple_ids[task_idx],
+                             thread_id);
+            }
             else {
               adapter.erase(&h_mix_keys[task_idx * args.keylen_max], h_mix_key_lengths[task_idx], thread_id);
             }
@@ -422,6 +473,65 @@ static void run_bench(adapter_type& adapter,
         if (verbose) { std::cout << "mix tested " << r + 1 << "/" << args.rep_mixed << std::endl; }
       }
       mix_timer.print_rate_Mops("mixed", args.num_mixed, print_all_measurements);
+    }
+
+    if (args.rep_ycsb > 0) {
+      std::vector<kernels::request_type> h_ycsb_types;
+      std::vector<key_slice_type> h_ycsb_keys;
+      std::vector<size_type> h_ycsb_key_lengths;
+      std::vector<value_slice_type> h_ycsb_values;
+      std::vector<size_type> h_ycsb_value_lengths;
+      std::vector<std::size_t> h_ycsb_key_tuple_ids;
+      generate_ycsb_keys(
+        h_ycsb_types, h_ycsb_keys, h_ycsb_key_lengths, h_ycsb_values, h_ycsb_value_lengths, h_ycsb_key_tuple_ids,
+        h_keys, h_key_lengths, h_values, h_value_lengths,
+        args.max_keys, args.keylen_max, args.valuelen_max, args.num_ycsb, args.ycsb_read_ratio, args.lookup_theta);
+      cpu_lap_timer ycsb_timer;
+      prefill(adapter, h_keys, h_key_lengths, h_values, h_value_lengths, args.keylen_min, args.keylen_max, args.valuelen_min, args.valuelen_max, args.max_keys);
+      #if !defined(NOGPU)
+      auto d_ycsb_types = device_vector<kernels::request_type>(h_ycsb_types, args.use_pinned_host_memory);
+      auto d_ycsb_keys = device_vector<key_slice_type>(h_ycsb_keys, args.use_pinned_host_memory);
+      auto d_ycsb_key_lengths = device_vector<size_type>(h_ycsb_key_lengths, args.use_pinned_host_memory, use_null_keylength);
+      auto d_ycsb_values = device_vector<value_slice_type>(h_ycsb_values, args.use_pinned_host_memory);
+      auto d_ycsb_value_lengths = device_vector<size_type>(h_ycsb_value_lengths, args.use_pinned_host_memory);
+      cuda_try(cudaDeviceSynchronize());
+      #endif
+      for (uint32_t r = 0; r < args.rep_ycsb; r++) {
+        ycsb_timer.start();
+        #if !defined(NOGPU)
+        adapter.mixed_batch(d_ycsb_types.data(), d_ycsb_keys.data(), args.keylen_max, d_ycsb_key_lengths.data(), d_ycsb_values.data(), args.valuelen_max, d_ycsb_value_lengths.data(), args.num_ycsb);
+        #else
+        helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
+            if (h_ycsb_types[task_idx] == kernels::request_type_find) {
+              h_ycsb_values[task_idx] = adapter.find(&h_ycsb_keys[task_idx * args.keylen_max], h_ycsb_key_lengths[task_idx], thread_id);
+            }
+            else if (h_ycsb_types[task_idx] == kernels::request_type_update) {
+              adapter.update(&h_ycsb_keys[task_idx * args.keylen_max],
+                             h_ycsb_key_lengths[task_idx],
+                             h_ycsb_values[task_idx],
+                             h_ycsb_key_tuple_ids[task_idx],
+                             thread_id);
+            }
+            else {
+              adapter.insert(&h_ycsb_keys[task_idx * args.keylen_max],
+                             h_ycsb_key_lengths[task_idx],
+                             h_ycsb_values[task_idx],
+                             h_ycsb_key_tuple_ids[task_idx],
+                             thread_id);
+            }
+          }, args.num_ycsb,
+          [&](unsigned thread_id) { adapter.thread_enter(thread_id); },
+          [&](unsigned thread_id) { adapter.thread_exit(thread_id); });
+        #endif
+        #if !defined(NOGPU)
+        cuda_try(cudaDeviceSynchronize());
+        #endif
+        ycsb_timer.stop();
+        ycsb_timer.record();
+        if (verbose) { std::cout << "ycsb tested " << r + 1 << "/" << args.rep_ycsb << std::endl; }
+      }
+      adapter.destroy();
+      ycsb_timer.print_rate_Mops("ycsb", args.num_ycsb, print_all_measurements);
     }
   }
 }
@@ -543,7 +653,8 @@ int main(int argc, char** argv) {
   if (!args.only_check_space) {
     check_argument(args.rep_lookup > 0 || args.rep_scan > 0 ||
                    args.rep_insdel > 0 || args.rep_mixed > 0 ||
-                   args.rep_space > 0);
+                   args.rep_update > 0 || args.rep_space > 0 ||
+                   args.rep_ycsb > 0);
     if (args.rep_space > 0) {
       check_argument(args.max_keys % args.num_space == 0);
     }
@@ -564,9 +675,10 @@ int main(int argc, char** argv) {
       universal::varlen_key_big_endian);
   }
   // 2. generate lookup keys: max(num_lookups, num_scans)
-  std::size_t num_lookups_keys = std::max<std::size_t>(
+  std::size_t num_lookups_keys = std::max<std::size_t>(std::max<std::size_t>(
     (args.rep_lookup > 0) ? args.num_lookups : 0,
-    (args.rep_scan > 0) ? args.num_scans : 0);
+    (args.rep_scan > 0) ? args.num_scans : 0),
+    (args.rep_update > 0) ? args.num_updates : 0);
   if (num_lookups_keys > 0) {
     universal::generate_lookup_keys(
       h_lookup_keys, h_lookup_key_lengths, h_keys, h_key_lengths,
@@ -622,7 +734,7 @@ int main(int argc, char** argv) {
     universal::bench_runner<index##_adapter>::run_bench(index##_adapter_, \
       h_keys, h_key_lengths, h_values, h_value_lengths, h_lookup_keys, h_lookup_key_lengths, h_scan_upper_keys_if_btree, \
       h_mix_types, h_mix_keys, h_mix_key_lengths, h_mix_values, h_mix_value_lengths, h_mix_key_tuple_ids, args, \
-      result_buffer_size, result_length_buffer_size, verbose, print_all_measurements); \
+      result_buffer_size, result_length_buffer_size, verbose, print_all_measurements, args.ht_print_load_factor); \
   }
   FORALL_INDEXES(ADAPTER_RUN_BENCH)
   #undef ADAPTER_RUN_BENCH

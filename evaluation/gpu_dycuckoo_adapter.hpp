@@ -80,6 +80,24 @@ struct gpu_dycuckoo_adapter {
       gpu_dycuckoo_dynamic_insert(index_, keys, values, num_keys);
     }
   }
+  void update(const key_slice_type* keys,
+              uint32_t keylen_max,
+              const size_type* key_lengths,
+              const value_type* values,
+              uint32_t valuelen_max,
+              const size_type* value_lengths,
+              std::size_t num_keys) {
+    (void)keylen_max;
+    (void)key_lengths;
+    (void)valuelen_max;
+    (void)value_lengths;
+    if (configs_.use_lock) {
+      gpu_dycuckoo_dynamic_lock_insert(index_, keys, values, num_keys);
+    }
+    else {
+      gpu_dycuckoo_dynamic_insert(index_, keys, values, num_keys);
+    }
+  }
   void erase(const key_slice_type* keys,
              uint32_t keylen_max,
              const size_type* key_lengths,
@@ -112,6 +130,11 @@ struct gpu_dycuckoo_adapter {
     }
   }
   void print_stats() {}
+  void ht_print_load_factor(std::size_t max_keys, uint32_t key_length, uint32_t value_length) {
+    (void)max_keys;
+    (void)key_length;
+    (void)value_length;
+  }
 
  private:
   #define FORALL_ARGUMENTS_GPU_DYCUCKOO(x) \

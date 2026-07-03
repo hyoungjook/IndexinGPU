@@ -25,6 +25,9 @@ def generate_configs(args):
                 common_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
                 common_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
                 common_config[ConfigType.rep_scan] = NUM_REPEATS
+            if index_type in IS_INDEX_TYPE_SUPPORT_UPDATE:
+                common_config[ConfigType.num_updates] = DEFAULT_BATCH_SIZE
+                common_config[ConfigType.rep_update] = NUM_REPEATS
             if index_type in IS_INDEX_TYPE_SUPPORT_MIX:
                 common_config[ConfigType.num_mixed] = DEFAULT_BATCH_SIZE
                 common_config[ConfigType.mix_read_ratio] = DEFAULT_MIX_READ_RATIO
@@ -148,6 +151,45 @@ def generate_configs(args):
                 OptionalConfigType.merge_level: merge_level
             }
             configs.append(common_config)
+    # HT load factor
+    for index_type in [IndexType.gpu_cuckoohashtable, IndexType.gpu_chainhashtable, IndexType.gpu_extendhashtable]:
+        factor_config_type, factors = EXP_HT_LOADFACTORS[index_type]
+        for factor in factors:
+            common_config = {
+                ConfigType.index_type: index_type,
+                ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+                ConfigType.keylen_min: 1,
+                ConfigType.keylen_max: 1,
+                ConfigType.valuelen_min: 1,
+                ConfigType.valuelen_max: 1,
+                ConfigType.num_lookups: DEFAULT_BATCH_SIZE,
+                ConfigType.num_insdel: DEFAULT_BATCH_SIZE,
+                ConfigType.rep_lookup: NUM_REPEATS,
+                ConfigType.rep_insdel: NUM_REPEATS,
+                OptionalConfigType.allocator_pool_ratio: ROBUST_INDEX_ALLOC_POOL_RATIO(index_type),
+                factor_config_type: factor,
+                ConfigType.ht_print_load_factor: 1,
+            }
+            configs.append(common_config)
+    # batch size
+    for index_type in INDEX_TYPES_ROBUST:
+        for batch_size in EXP_BATCHSIZES:
+            if batch_size == DEFAULT_BATCH_SIZE:
+                pass # already measured
+            common_config = {
+                ConfigType.index_type: index_type,
+                ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+                ConfigType.keylen_prefix: 0,
+                ConfigType.keylen_min: DEFAULT_KEY_LENGTH,
+                ConfigType.keylen_max: DEFAULT_KEY_LENGTH,
+                ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH,
+                ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH,
+                ConfigType.num_mixed: batch_size,
+                ConfigType.rep_mixed: NUM_REPEATS,
+                ConfigType.mix_read_ratio: DEFAULT_MIX_READ_RATIO,
+                OptionalConfigType.allocator_pool_ratio: ROBUST_INDEX_ALLOC_POOL_RATIO(index_type),
+            }
+            configs.append(common_config)
     if not args.skip_meme:
         # meme
         for index_type in INDEX_TYPES_ROBUST:
@@ -157,8 +199,10 @@ def generate_configs(args):
                 ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH_OVERVIEW,
                 ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH_OVERVIEW,
                 ConfigType.num_lookups: BATCH_SIZE_MEME,
+                ConfigType.num_updates: BATCH_SIZE_MEME,
                 ConfigType.num_insdel: BATCH_SIZE_MEME,
                 ConfigType.rep_lookup: NUM_REPEATS,
+                ConfigType.rep_update: NUM_REPEATS,
                 ConfigType.rep_insdel: NUM_REPEATS,
                 ConfigType.num_mixed: BATCH_SIZE_MEME,
                 ConfigType.mix_read_ratio: DEFAULT_MIX_READ_RATIO,
@@ -170,6 +214,21 @@ def generate_configs(args):
                 common_config[ConfigType.rep_scan] = NUM_REPEATS
             common_config[OptionalConfigType.allocator_pool_ratio] = 0.7
             configs.append(common_config)
+        for index_type in INDEX_TYPES_ROBUST:
+            for ycsb_read_ratio in EXP_YCSB_READ_RATIOS:
+                for ycsb_theta in EXP_YCSB_THETAS:
+                    common_config = {
+                        ConfigType.index_type: index_type,
+                        ConfigType.dataset_file: MEME_DATASET_PATH,
+                        ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH_OVERVIEW,
+                        ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH_OVERVIEW,
+                        ConfigType.num_ycsb: BATCH_SIZE_MEME,
+                        ConfigType.ycsb_read_ratio: ycsb_read_ratio,
+                        ConfigType.lookup_theta: ycsb_theta,
+                        ConfigType.rep_ycsb: NUM_REPEATS,
+                    }
+                    common_config[OptionalConfigType.allocator_pool_ratio] = 0.7
+                    configs.append(common_config)
     return configs
 
 if __name__ == "__main__":

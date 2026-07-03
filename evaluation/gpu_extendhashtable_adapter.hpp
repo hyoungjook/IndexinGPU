@@ -73,7 +73,24 @@ struct gpu_extendhashtable_adapter {
       adapter_util::dispatch_uint32<0, 1, 2>(configs_.hash_tag_level, [&](auto t2, auto h2) {
         adapter_util::dispatch_uint32<0, 1, 2>(configs_.merge_level, [&](auto t3, auto h3, auto m3) {
           adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t4, auto h4, auto m4, auto k4) {
-            do_insert<t4.value, h4.value, m4.value, k4.value>(keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, num_keys);
+            do_insert<t4.value, h4.value, m4.value, k4.value>(keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, num_keys, (cudaStream_t)0);
+          }, t3, h3, m3);
+        }, t2, h2);
+      }, t1);
+    });
+  }
+  void update(const key_slice_type* keys,
+              uint32_t keylen_max,
+              const size_type* key_lengths,
+              const value_slice_type* values,
+              uint32_t valuelen_max,
+              const size_type* value_lengths,
+              std::size_t num_keys) {
+    adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
+      adapter_util::dispatch_uint32<0, 1, 2>(configs_.hash_tag_level, [&](auto t2, auto h2) {
+        adapter_util::dispatch_uint32<0, 1, 2>(configs_.merge_level, [&](auto t3, auto h3, auto m3) {
+          adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t4, auto h4, auto m4, auto k4) {
+            do_update<t4.value, h4.value, m4.value, k4.value>(keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, num_keys, (cudaStream_t)0);
           }, t3, h3, m3);
         }, t2, h2);
       }, t1);
@@ -122,7 +139,7 @@ struct gpu_extendhashtable_adapter {
       adapter_util::dispatch_uint32<0, 1, 2>(configs_.hash_tag_level, [&](auto t2, auto h2) {
         adapter_util::dispatch_uint32<0, 1, 2>(configs_.merge_level, [&](auto t3, auto h3, auto m3) {
           adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t4, auto h4, auto m4, auto k4) {
-            do_mixed<t4.value, h4.value, m4.value, k4.value>(types, keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, nullptr, num_keys);
+            do_mixed<t4.value, h4.value, m4.value, k4.value>(types, keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, nullptr, num_keys, (cudaStream_t)0);
           }, t3, h3, m3);
         }, t2, h2);
       }, t1);
@@ -136,6 +153,18 @@ struct gpu_extendhashtable_adapter {
     //else {
     //  reinterpret_cast<index16_type*>(index_)->validate();
     //}
+  }
+  void ht_print_load_factor(std::size_t max_keys, uint32_t key_length, uint32_t value_length) {
+    check_argument(key_length == 1 && value_length == 1);
+    std::size_t num_nodes;
+    if (configs_.tile_size == 32) {
+      num_nodes = reinterpret_cast<index32_type*>(index_)->num_nodes_used();
+    }
+    else {
+      num_nodes = reinterpret_cast<index16_type*>(index_)->num_nodes_used();
+    }
+    double load_factor = static_cast<double>(max_keys) / num_nodes / hashtable_node_capacity;
+    std::cout << "LoadFactor: " << load_factor << std::endl;
   }
 
  private:
@@ -179,7 +208,13 @@ struct gpu_extendhashtable_adapter {
   template <uint32_t tile_size, uint32_t hash_tag_level, uint32_t merge_level, bool use_shmem_key, typename... arg_types>
   void do_insert(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template insert<hash_tag_level >= 1, hash_tag_level >= 2, merge_level >= 1, use_shmem_key>(args...);
+      ->template insert<false, hash_tag_level >= 1, hash_tag_level >= 2, merge_level >= 1, use_shmem_key>(args...);
+  }
+
+  template <uint32_t tile_size, uint32_t hash_tag_level, uint32_t merge_level, bool use_shmem_key, typename... arg_types>
+  void do_update(arg_types... args) {
+    reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
+      ->template update<hash_tag_level >= 1, hash_tag_level >= 2, merge_level >= 1, use_shmem_key>(args...);
   }
 
   template <uint32_t tile_size, uint32_t hash_tag_level, uint32_t merge_level, bool use_shmem_key, typename... arg_types>

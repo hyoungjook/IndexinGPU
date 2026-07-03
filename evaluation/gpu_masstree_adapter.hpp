@@ -70,7 +70,22 @@ struct gpu_masstree_adapter {
     adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
       adapter_util::dispatch_bool(configs_.enable_suffix, [&](auto t2, auto s2) {
         adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t3, auto s3, auto k3) {
-          do_insert<t3.value, s3.value, k3.value>(keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, num_keys);
+          do_insert<t3.value, s3.value, k3.value>(keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, num_keys, (cudaStream_t)0);
+        }, t2, s2);
+      }, t1);
+    });
+  }
+  void update(const key_slice_type* keys,
+              uint32_t keylen_max,
+              const size_type* key_lengths,
+              const value_slice_type* values,
+              uint32_t valuelen_max,
+              const size_type* value_lengths,
+              std::size_t num_keys) {
+    adapter_util::dispatch_uint32<32, 16>(configs_.tile_size, [&](auto t1) {
+      adapter_util::dispatch_bool(configs_.enable_suffix, [&](auto t2, auto s2) {
+        adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t3, auto s3, auto k3) {
+          do_update<t3.value, s3.value, k3.value>(keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, num_keys, (cudaStream_t)0);
         }, t2, s2);
       }, t1);
     });
@@ -133,7 +148,7 @@ struct gpu_masstree_adapter {
       adapter_util::dispatch_bool(configs_.enable_suffix, [&](auto t2, auto s2) {
         adapter_util::dispatch_uint32<0, 1, 2, 3, 4>(configs_.merge_level, [&](auto t3, auto s3, auto m3) {
           adapter_util::dispatch_bool(configs_.use_shmem_key, [&](auto t4, auto s4, auto m4, auto k4) {
-            do_mixed<t4.value, s4.value, m4.value, k4.value>(types, keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, nullptr, num_keys);
+            do_mixed<t4.value, s4.value, m4.value, k4.value>(types, keys, keylen_max, key_lengths, values, valuelen_max, value_lengths, nullptr, num_keys, (cudaStream_t)0);
           }, t3, s3, m3);
         }, t2, s2);
       }, t1);
@@ -147,6 +162,11 @@ struct gpu_masstree_adapter {
     //else {
     //  reinterpret_cast<index16_type*>(index_)->validate();
     //}
+  }
+  void ht_print_load_factor(std::size_t max_keys, uint32_t key_length, uint32_t value_length) {
+    (void)max_keys;
+    (void)key_length;
+    (void)value_length;
   }
 
  private:
@@ -183,7 +203,13 @@ struct gpu_masstree_adapter {
   template <uint32_t tile_size, bool enable_suffix, bool use_shmem_key, typename... arg_types>
   void do_insert(arg_types... args) {
     reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
-      ->template insert<enable_suffix, use_shmem_key>(args...);
+      ->template insert<false, enable_suffix, use_shmem_key>(args...);
+  }
+
+  template <uint32_t tile_size, bool enable_suffix, bool use_shmem_key, typename... arg_types>
+  void do_update(arg_types... args) {
+    reinterpret_cast<std::conditional_t<tile_size == 32, index32_type, index16_type>*>(index_)
+      ->template update<enable_suffix, use_shmem_key>(args...);
   }
 
   template <uint32_t tile_size, uint32_t merge_level, bool use_shmem_key, typename... arg_types>

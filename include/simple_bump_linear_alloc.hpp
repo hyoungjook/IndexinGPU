@@ -39,6 +39,11 @@ struct simple_bump_linear_allocator {
     void* pool_;
     two_counts* count_;
     pointer_type max_count_;
+    std::size_t num_allocated_slabs() const {
+      two_counts h_count;
+      cuda_try(cudaMemcpy(&h_count, count_, sizeof(two_counts), cudaMemcpyDeviceToHost));
+      return static_cast<std::size_t>(h_count.slab_count_);
+    }
   };
 
   simple_bump_linear_allocator(float pool_ratio = 0.9f) {

@@ -36,6 +36,21 @@ struct simple_slab_allocator {
   struct device_instance_type {
     void* pool_;
     pointer_type total_blocks_;
+    std::size_t num_allocated_slabs() const {
+      using bitmap_type = uint32_t;
+      auto total_bitmap_bytes = (static_cast<std::size_t>(total_blocks_) * num_slabs_in_block_) / 8;
+      bitmap_type *h_bitmap = new bitmap_type[total_bitmap_bytes / sizeof(bitmap_type)];
+      cuda_try(cudaMemcpy(h_bitmap,
+                          reinterpret_cast<void*>(reinterpret_cast<uint8_t*>(pool_) - total_bitmap_bytes),
+                          total_bitmap_bytes,
+                          cudaMemcpyDeviceToHost));
+      std::size_t slab_count = 0;
+      for (std::size_t i = 0; i < total_bitmap_bytes / sizeof(bitmap_type); i++) {
+        slab_count += __builtin_popcount(h_bitmap[i]);
+      }
+      delete[] h_bitmap;
+      return slab_count;
+    }
   };
 
   simple_slab_allocator(float pool_ratio = 0.9f) {
@@ -65,18 +80,8 @@ struct simple_slab_allocator {
   }
 
   void print_stats() const {
-    using bitmap_type = uint32_t;
-    auto total_bitmap_bytes = (static_cast<std::size_t>(total_blocks_) * num_slabs_in_block_) / 8;
-    bitmap_type *h_bitmap = new bitmap_type[total_bitmap_bytes / sizeof(bitmap_type)];
-    cuda_try(cudaMemcpy(h_bitmap,
-                        reinterpret_cast<void*>(reinterpret_cast<uint8_t*>(pool_) - total_bitmap_bytes),
-                        total_bitmap_bytes,
-                        cudaMemcpyDeviceToHost));
-    std::size_t slab_count = 0;
-    for (std::size_t i = 0; i < total_bitmap_bytes / sizeof(bitmap_type); i++) {
-      slab_count += __builtin_popcount(h_bitmap[i]);
-    }
-    delete[] h_bitmap;
+    auto device_instance = get_device_instance();
+    auto slab_count = device_instance.num_allocated_slabs();
     const uint64_t total_slabs = total_blocks_ * num_slabs_in_block_;
     std::cout << "simple_slab_allocator(" << slab_size_ << "B slabs): "
         << slab_count << "/" << total_slabs << " slabs allocated " 

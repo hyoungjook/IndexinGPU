@@ -66,6 +66,17 @@ struct cpu_art_adapter {
     Key art_key = make_key(key, key_length);
     tree_->insert(art_key, tid, current_threadinfo());
   }
+  void update(const key_slice_type* key, size_type key_length, value_type value, std::size_t tuple_id, unsigned thread_idx) {
+    (void)value;
+    (void)thread_idx;
+    Key art_key = make_key(key, key_length);
+    TID tid = tree_->lookup(art_key, current_threadinfo());
+    if (tid != 0) {
+      tree_->remove(art_key, tid, current_threadinfo());
+    }
+    auto new_tid = static_cast<TID>(tuple_id) + 1;
+    tree_->insert(art_key, new_tid, current_threadinfo());
+  }
   void erase(const key_slice_type* key, size_type key_length, [[maybe_unused]] unsigned thread_idx) {
     Key art_key = make_key(key, key_length);
     TID tid = tree_->lookup(art_key, current_threadinfo());
@@ -91,6 +102,11 @@ struct cpu_art_adapter {
                        current_threadinfo());
   }
   void print_stats() {}
+  void ht_print_load_factor(std::size_t max_keys, uint32_t key_length, uint32_t value_length) {
+    (void)max_keys;
+    (void)key_length;
+    (void)value_length;
+  }
 
  private:
   struct configs {

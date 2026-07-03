@@ -85,6 +85,11 @@ struct cpu_libcuckoo_adapter {
     (void)thread_idx;
     index_->insert_or_assign(key_type{key, key_length}, value);
   }
+  void update(const key_slice_type* key, size_type key_length, value_type value, std::size_t tuple_id, unsigned thread_idx) {
+    (void)tuple_id;
+    (void)thread_idx;
+    index_->update(key_type{key, key_length}, value);
+  }
   void erase(const key_slice_type* key, size_type key_length, [[maybe_unused]] unsigned thread_idx) {
     index_->erase(key_type{key, key_length});
   }
@@ -94,6 +99,11 @@ struct cpu_libcuckoo_adapter {
     return value;
   }
   void print_stats() {}
+  void ht_print_load_factor(std::size_t max_keys, uint32_t key_length, uint32_t value_length) {
+    (void)max_keys;
+    (void)key_length;
+    (void)value_length;
+  }
 
  private:
   #define FORALL_ARGUMENTS_CPU_LIBCUCKOO(x) \

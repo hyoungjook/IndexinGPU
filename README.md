@@ -9,7 +9,7 @@ IndexinGPU is a header-only CUDA/C++ library of GPU-resident indexes for workloa
 
 The library currently provides:
 
-- `GpuMasstree::gpu_masstree`: ordered index with point lookup, insert, erase, scan, and mixed batches
+- `GpuMasstree::gpu_masstree`: ordered index with point lookup, insert, update, erase, scan, and mixed batches
 - `GpuHashtable::gpu_cuckoohashtable`: fixed-capacity unordered index
 - `GpuHashtable::gpu_chainhashtable`: fixed-capacity unordered index
 - `GpuExtendHashtable::gpu_extendhashtable`: resizable unordered index
@@ -44,7 +44,7 @@ All four indexes use the same basic layout:
 - keys are flat arrays of `uint32_t` slices with shape `[num_requests * max_key_length]`
 - values are flat arrays of `uint32_t` slices with shape `[num_requests * max_value_length]`
 - `key_lengths` is optional; passing `nullptr` means "treat every key as fixed-length using `max_key_length`"
-- insert-side `value_lengths` is also optional; passing `nullptr` means "treat every value as fixed-length using `max_value_length`"
+- insert/update-side `value_lengths` is also optional; passing `nullptr` means "treat every value as fixed-length using `max_value_length`"
 - lookup and scan outputs write their result lengths to `value_lengths`
 
 For lookups, `value_lengths[i] == 0` means the key was not found.
@@ -70,6 +70,10 @@ index.insert(d_keys, max_key_length, d_key_lengths,
              d_values, max_value_length, d_value_lengths,
              num_keys);
 
+index.update(d_keys, max_key_length, d_key_lengths,
+             d_values, max_value_length, d_value_lengths,
+             num_keys);
+
 index.find(d_keys, max_key_length, d_key_lengths,
            d_out_values, max_value_length, d_out_value_lengths,
            num_keys);
@@ -80,9 +84,10 @@ index.erase(d_keys, max_key_length, d_key_lengths, num_keys);
 Common host methods:
 
 - `find(..., cudaStream_t stream = 0)`
-- `insert(..., cudaStream_t stream = 0, bool update_if_exists = false)`
+- `insert<update_if_exists = false>(..., cudaStream_t stream = 0)`
+- `update(..., cudaStream_t stream = 0)`
 - `erase(..., cudaStream_t stream = 0)`
-- `mixed_batch(..., bool* results, ..., cudaStream_t stream = 0, bool insert_update_if_exists = false)`
+- `mixed_batch(..., bool* results, ..., cudaStream_t stream = 0)`
 - `scan(...)` on `gpu_masstree` only
 
 Constructor differences:
@@ -92,7 +97,7 @@ Constructor differences:
 - `gpu_cuckoohashtable(allocator, reclaimer, expected_elements, fill_factor)` or explicit buckets-per-hash-function count
 - `gpu_extendhashtable(allocator, reclaimer, initial_directory_size, resize_policy, load_factor_threshold)`
 
-For mixed batches, use `kernels::request_type_insert`, `kernels::request_type_find`, and `kernels::request_type_erase`. Lookup requests write back `values` and `value_lengths`; insert and erase requests report success through `results` when provided.
+For mixed batches, use `kernels::request_type_insert`, `kernels::request_type_update`, `kernels::request_type_find`, and `kernels::request_type_erase`. Lookup requests write back `values` and `value_lengths`; insert, update, and erase requests report success through `results` when provided.
 
 `gpu_masstree` also supports range scans from the host:
 
@@ -148,6 +153,7 @@ The main device-side entry points are:
 
 - `cooperative_find(...)`
 - `cooperative_insert(...)`
+- `cooperative_update(...)`
 - `cooperative_erase(...)`
 - `cooperative_scan(...)` on `gpu_masstree`
 
@@ -155,7 +161,7 @@ Important details:
 
 - device-side calls are cooperative and expect a `cooperative_groups` tile of `16` or `32` threads, matching the index template parameter
 - read-only calls need a `device_allocator_context_type`
-- inserts and erases also need a `device_reclaimer_context_type`
+- inserts, updates, and erases also need a `device_reclaimer_context_type`
 
 If you just want batched operations on arrays of keys, prefer the CPU-side API above. If you want to fuse index operations into a larger CUDA kernel, use the cooperative device API.
 

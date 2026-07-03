@@ -39,19 +39,25 @@ class ConfigType(Enum):
     lookup_theta = auto()
     num_scans = auto()
     scan_count = auto()
+    num_updates = auto()
     num_insdel = auto()
     num_mixed = auto()
     num_space = auto()
+    num_ycsb = auto()
+    ycsb_read_ratio = auto()
     mix_read_ratio = auto()
     mix_presort = auto()
     rep_lookup = auto()
     rep_scan = auto()
+    rep_update = auto()
     rep_insdel = auto()
     rep_mixed = auto()
     rep_space = auto()
+    rep_ycsb = auto()
     index_type = auto()
     only_check_space = auto()
     use_pinned_host_memory = auto()
+    ht_print_load_factor = auto()
 
 class OptionalConfigType(Enum):
     allocator_pool_ratio = auto()
@@ -77,8 +83,11 @@ class ResultType(Enum):
     delete = auto()
     lookup = auto()
     scan = auto()
+    update = auto()
     mixed = auto()
     space = auto()
+    load_factor = auto()
+    ycsb = auto()
 
 EXECUTABLE_INFO = {
     BenchExecutable.robust: {
@@ -250,6 +259,9 @@ def run_one(args, config):
                 if '%' in token:
                     space_results.append(float(re.sub(r'[()%]', '', token)))
                     break
+        elif 'LoadFactor' in result_line:
+            result_tokens = result_line.split(' ')
+            result['load_factor'] = float(result_tokens[1])
     if len(space_results) > 0:
         result['space'] = space_results
     print(f'parsed_config: {parsed_config}, result: {result}')

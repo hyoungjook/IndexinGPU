@@ -128,7 +128,8 @@ struct gpu_extendhashtable {
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
 
-  template <bool use_hash_tag = true,
+  template <bool update_if_exists = false,
+            bool use_hash_tag = true,
             bool tag_use_same_hash = true,
             bool do_merge_chains = true,
             bool use_shmem_key = false>
@@ -139,10 +140,26 @@ struct gpu_extendhashtable {
               const size_type max_value_length,
               const size_type* value_lengths,
               const size_type num_keys,
-              cudaStream_t stream = 0,
-              bool update_if_exists = false) {
-    kernels::GpuExtendHashtable::insert_device_func<gpu_extendhashtable, use_hash_tag, tag_use_same_hash, do_merge_chains>
-      func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths, .update_if_exists = update_if_exists};
+              cudaStream_t stream = 0) {
+    kernels::GpuExtendHashtable::insert_device_func<gpu_extendhashtable, update_if_exists, use_hash_tag, tag_use_same_hash, do_merge_chains>
+      func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths};
+    kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
+  }
+
+  template <bool use_hash_tag = true,
+            bool tag_use_same_hash = true,
+            bool do_merge_chains = true,
+            bool use_shmem_key = false>
+  void update(const key_slice_type* keys,
+              const size_type max_key_length,
+              const size_type* key_lengths,
+              const value_slice_type* values,
+              const size_type max_value_length,
+              const size_type* value_lengths,
+              const size_type num_keys,
+              cudaStream_t stream = 0) {
+    kernels::GpuExtendHashtable::update_device_func<gpu_extendhashtable, use_hash_tag, tag_use_same_hash, do_merge_chains>
+      func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths};
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_keys, stream);
   }
 
@@ -175,10 +192,9 @@ struct gpu_extendhashtable {
                    size_type* value_lengths,
                    bool* results,
                    const size_type num_requests,
-                   cudaStream_t stream = 0,
-                   bool insert_update_if_exists = false) {
+                   cudaStream_t stream = 0) {
     kernels::GpuExtendHashtable::mixed_device_func<gpu_extendhashtable, use_hash_tag, tag_use_same_hash, do_merge_chains, erase_do_merge_buckets>
-      func{.d_types = request_types, .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths, .d_results = results, .insert_update_if_exists = insert_update_if_exists};
+      func{.d_types = request_types, .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .max_value_length = max_value_length, .d_value_lengths = value_lengths, .d_results = results};
     kernels::launch_batch_kernel<use_shmem_key>(*this, func, num_requests, stream);
   }
 
@@ -244,15 +260,20 @@ struct gpu_extendhashtable {
     }
   }
 
-  template <bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains, typename tile_type, typename keyptr_or_keystore, typename valptr_or_valstore>
+  template <bool update_if_exists = false,
+            bool use_hash_tag = true,
+            bool tag_use_same_hash = true,
+            bool do_merge_chains = true,
+            typename tile_type,
+            typename keyptr_or_keystore,
+            typename valptr_or_valstore>
   DEVICE_QUALIFIER bool cooperative_insert(keyptr_or_keystore& key,
                                            const size_type key_length,
                                            valptr_or_valstore& value,
                                            const size_type value_length,
                                            const tile_type& tile,
                                            device_allocator_context_type& allocator,
-                                           device_reclaimer_context_type& reclaimer,
-                                           bool update_if_exists = false) {
+                                           device_reclaimer_context_type& reclaimer) {
     using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     key_slice_type first_slice;
@@ -294,7 +315,7 @@ struct gpu_extendhashtable {
           node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator, num_keys_in_chain);
       }
       if (location_if_found >= 0) { // already exists
-        if (update_if_exists) {
+        if constexpr (update_if_exists) {
           auto keystate = node.get_keystate_from_location(location_if_found);
           value_slice_type update_value;
           if (keystate == node_type::KEYSTATE_VALUE) {
@@ -498,6 +519,93 @@ struct gpu_extendhashtable {
       return true;
     }
     assert(false);
+  }
+
+  template <bool use_hash_tag = true,
+            bool tag_use_same_hash = true,
+            bool do_merge_chains = true,
+            typename tile_type,
+            typename keyptr_or_keystore,
+            typename valptr_or_valstore>
+  DEVICE_QUALIFIER bool cooperative_update(keyptr_or_keystore& key,
+                                           const size_type key_length,
+                                           valptr_or_valstore& value,
+                                           const size_type value_length,
+                                           const tile_type& tile,
+                                           device_allocator_context_type& allocator,
+                                           device_reclaimer_context_type& reclaimer) {
+    using node_type = hashtable_node<tile_type, device_allocator_context_type>;
+    using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
+    key_slice_type first_slice;
+    size_type bucket_index_hash;
+    const bool more_key = (key_length > 1);
+    if (use_hash_tag && !tag_use_same_hash && more_key) {
+      auto hash = utils::compute_hashx2<utils::PRIME0, utils::PRIME1>(key, key_length, tile);
+      bucket_index_hash = hash.x;
+      first_slice = hash.y;
+    }
+    else {
+      bucket_index_hash = utils::compute_hash<utils::PRIME0>(key, key_length, tile);
+      first_slice = (tag_use_same_hash && more_key) ? bucket_index_hash : key[0];
+    }
+    size_type directory_size = d_global_state_->
+      template load_directory_size<utils::memory_order::acq_rel>(tile);
+    while (true) {
+      // find the bucket
+      node_type node(tile, allocator);
+      find_valid_bucket<utils::memory_order::acq_rel>(node, bucket_index_hash, directory_size, tile, allocator);
+      auto head_index = node.get_node_index();
+      node_type::lock(head_index, tile, allocator);
+      node.template load_from_allocator<utils::memory_order::acq_rel>();
+      if (node.is_garbage()) {
+        // this bucket just splitted by other thread; retry
+        node_type::unlock(head_index, tile, allocator);
+        directory_size = d_global_state_->template load_directory_size<utils::memory_order::acq_rel>(tile);
+        continue;
+      }
+      int location_if_found;
+      suffix_type suffix_if_found(tile, allocator);
+      [[maybe_unused]] uint32_t dummy;
+      location_if_found = coop_traverse_until_found<utils::memory_order::weak_tilesync, use_hash_tag, false>( // use weak load here b/c the first load did memory_order_acquire
+        node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator, dummy);
+      if (location_if_found >= 0) {
+        auto keystate = node.get_keystate_from_location(location_if_found);
+        value_slice_type update_value;
+        if (keystate == node_type::KEYSTATE_VALUE) {
+          if (value_length == 1) {
+            update_value = value[0];
+            keystate = node_type::KEYSTATE_VALUE;
+          }
+          else {
+            update_value = allocator.allocate(tile);
+            auto suffix = suffix_type(update_value, tile, allocator);
+            suffix.template create_from<const key_slice_type*>(nullptr, 0, value, value_length);
+            suffix.store_head();
+            keystate = node_type::KEYSTATE_LONGVAL;
+          }
+        }
+        else {
+          if (keystate == node_type::KEYSTATE_LONGVAL && value_length == 1) {
+            update_value = value[0];
+            suffix_if_found.retire(reclaimer);
+            keystate = node_type::KEYSTATE_VALUE;
+          }
+          else {
+            update_value = allocator.allocate(tile);
+            auto new_suffix = suffix_type(update_value, tile, allocator);
+            new_suffix.switch_value_from(suffix_if_found, value, value_length, reclaimer);
+            new_suffix.store_head();
+            // keystate = keystate;
+          }
+        }
+        node.update(location_if_found, update_value, keystate);
+        node.template store_to_allocator<utils::memory_order::weak_tilesync>();
+        node_type::unlock(head_index, tile, allocator);
+        return true;
+      }
+      node_type::unlock(head_index, tile, allocator);
+      return false;
+    }
   }
 
   template <bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains, bool do_merge_buckets, typename tile_type, typename keyptr_or_keystore>
@@ -939,6 +1047,11 @@ struct gpu_extendhashtable {
   void print() {
     print_nodes_task task;
     traverse_nodes(task);
+  }
+
+  std::size_t num_nodes_used() {
+    std::size_t num_slabs_in_alloc = allocator_.num_allocated_slabs();
+    return num_slabs_in_alloc;
   }
 
   struct validate_nodes_task {

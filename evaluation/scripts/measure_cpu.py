@@ -23,6 +23,9 @@ def generate_configs(args):
                 common_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
                 common_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
                 common_config[ConfigType.rep_scan] = NUM_REPEATS
+            if index_type in IS_INDEX_TYPE_SUPPORT_UPDATE:
+                common_config[ConfigType.num_updates] = DEFAULT_BATCH_SIZE
+                common_config[ConfigType.rep_update] = NUM_REPEATS
             common_config[ConfigType.num_mixed] = DEFAULT_BATCH_SIZE
             common_config[ConfigType.mix_read_ratio] = DEFAULT_MIX_READ_RATIO
             common_config[ConfigType.rep_mixed] = NUM_REPEATS
@@ -36,8 +39,10 @@ def generate_configs(args):
                 ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH_OVERVIEW,
                 ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH_OVERVIEW,
                 ConfigType.num_lookups: BATCH_SIZE_MEME,
+                ConfigType.num_updates: BATCH_SIZE_MEME,
                 ConfigType.num_insdel: BATCH_SIZE_MEME,
                 ConfigType.rep_lookup: NUM_REPEATS,
+                ConfigType.rep_update: NUM_REPEATS,
                 ConfigType.rep_insdel: NUM_REPEATS,
                 ConfigType.num_mixed: BATCH_SIZE_MEME,
                 ConfigType.mix_read_ratio: DEFAULT_MIX_READ_RATIO,
@@ -48,6 +53,22 @@ def generate_configs(args):
                 common_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
                 common_config[ConfigType.rep_scan] = NUM_REPEATS
             configs.append(common_config)
+        for index_type in INDEX_TYPES_CPU_BASELINE:
+            for ycsb_read_ratio in EXP_YCSB_READ_RATIOS:
+                if ycsb_read_ratio < 1 and index_type not in IS_INDEX_TYPE_SUPPORT_UPDATE:
+                    continue
+                for ycsb_theta in EXP_YCSB_THETAS:
+                    common_config = {
+                        ConfigType.index_type: index_type,
+                        ConfigType.dataset_file: MEME_DATASET_PATH,
+                        ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH_OVERVIEW,
+                        ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH_OVERVIEW,
+                        ConfigType.num_ycsb: BATCH_SIZE_MEME,
+                        ConfigType.ycsb_read_ratio: ycsb_read_ratio,
+                        ConfigType.lookup_theta: ycsb_theta,
+                        ConfigType.rep_ycsb: NUM_REPEATS,
+                    }
+                    configs.append(common_config)
     return configs
 
 if __name__ == "__main__":
