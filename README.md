@@ -14,7 +14,7 @@ The library currently provides:
 - `GpuHashtable::gpu_chainhashtable`: fixed-capacity unordered index
 - `GpuExtendHashtable::gpu_extendhashtable`: resizable unordered index
 
-For most users, the main entry points are the headers in [`include/`](/Users/hyoungjoo/workspace/IndexinGPU/include).
+For most users, the main entry points are the headers in [`include/`](include/).
 
 Source code started from [MVGpuBTree](https://github.com/owensgroup/MVGpuBTree).
 
@@ -109,7 +109,7 @@ tree.scan(lower_keys, lower_key_lengths,
           out_keys, out_key_lengths);
 ```
 
-For end-to-end host-side examples, see [`test/`](/Users/hyoungjoo/workspace/IndexinGPU/test) and [`benchmarks/`](/Users/hyoungjoo/workspace/IndexinGPU/benchmarks).
+For end-to-end host-side examples, see [`test/`](test/) and [`benchmarks/`](benchmarks/).
 
 ## GPU-side API
 
