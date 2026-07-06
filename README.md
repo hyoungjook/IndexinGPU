@@ -169,7 +169,7 @@ If you just want batched operations on arrays of keys, prefer the CPU-side API a
 
 IndexinGPU relies on NVIDIA GPU cache-line atomicity behavior. It has been verified on A100, H100, H200, and B200 GPUs.
 
-To check this behavior on your hardware, see [cuda_cacheline_atomicity_tester](https://github.com/hyoungjook/cuda_cacheline_atomicity_tester).
+To check this behavior on your hardware, see cuda_cacheline_atomicity_tester.
 
 ## Reproducing Experiment Results
 
