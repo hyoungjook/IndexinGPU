@@ -30,8 +30,28 @@
 namespace gallatin_alloc_detail {
 
 constexpr uint64_t gallatin_segment_bytes = 16ULL * 1024ULL * 1024ULL;
-constexpr uint64_t gallatin_min_alloc_size = 128ULL;
-constexpr uint64_t gallatin_max_alloc_size = 4096ULL;
+// GAL_BLOCKS_EXPLICIT: boot the full 16..4096 slice range and explicitly pin the per-tree
+// wavefronts to PREFER 128B (the common hashtable node size) -- every size class stays on
+// the fast path, but 128B gets a large pinned wavefront (less atomic contention where the
+// workload concentrates). Sets the slice range unless the caller overrode GX_MIN/MAX.
+#ifdef GAL_BLOCKS_EXPLICIT
+#ifndef GX_MIN_ALLOC
+#define GX_MIN_ALLOC 16ULL
+#endif
+#ifndef GX_MAX_ALLOC
+#define GX_MAX_ALLOC 4096ULL
+#endif
+#endif
+// Slice-size range overridable for config A/B (e.g. lean small-alloc range
+// -DGX_MIN_ALLOC=16 -DGX_MAX_ALLOC=128 vs the current 128..4096).
+#ifndef GX_MIN_ALLOC
+#define GX_MIN_ALLOC 128ULL
+#endif
+#ifndef GX_MAX_ALLOC
+#define GX_MAX_ALLOC 4096ULL
+#endif
+constexpr uint64_t gallatin_min_alloc_size = GX_MIN_ALLOC;
+constexpr uint64_t gallatin_max_alloc_size = GX_MAX_ALLOC;
 
 using global_allocator_type =
     gallatin::allocators::Gallatin<gallatin_segment_bytes,
@@ -43,8 +63,21 @@ static __device__ global_allocator_type* global_gallatin = nullptr;
 __host__ inline bool init_global_allocator(uint64_t num_bytes,
                                            uint64_t seed,
                                            bool print_info = true) {
+#ifdef GAL_BLOCKS_EXPLICIT
+  // 16..4096 -> 9 trees: 16 32 64 128 256 512 1k 2k 4k  (128B == tree 3).
+  // Explicit per-tree pinned wavefront preferring 128B: all classes get some pinned
+  // blocks (fast path for every size) while 128B gets a large wavefront.
+  static_assert(global_allocator_type::num_trees_c == 9,
+                "GAL_BLOCKS_EXPLICIT expects the 16..4096 (9-tree) slice range");
+  static_assert(global_allocator_type::tree_id_for_size(128) == 3,
+                "GAL_BLOCKS_EXPLICIT: 128B is expected to be tree 3");
+  //                           16 32 64  128  256 512 1k 2k 4k
+  auto* local_copy = global_allocator_type::generate_on_device(
+      num_bytes, seed, print_info, {8, 8, 8, 256, 8, 4, 4, 2, 2});
+#else
   auto* local_copy =
       global_allocator_type::generate_on_device(num_bytes, seed, print_info);
+#endif
   cudaMemcpyToSymbol(global_gallatin, &local_copy,
                      sizeof(global_allocator_type*));
   cudaDeviceSynchronize();
@@ -394,112 +427,55 @@ struct device_allocator_context<gallatin_allocator<slab_size>> {
   using size_type = typename host_alloc_type::size_type;
   using pointer_type = typename host_alloc_type::pointer_type;
 
+  // Thin adapter over Gallatin's general allocator_context, specialized on the
+  // COMPILE-TIME slice size so tree_id/slice_size are constexpr (no runtime members ->
+  // lean registers, same as the previous hand-written context). All reservation,
+  // coalescing, cached-slot, and compact-index logic now lives in Gallatin as the single
+  // source of truth; this maps it onto IndexinGPU's handle/tile API -- the same adapter
+  // pattern used for simple_slab_allocator / simple_bump_allocator.
+  static constexpr uint32_t slab_size_ = host_alloc_type::slab_size_;
+  static constexpr uint64_t effective_slab_size_ =
+      host_alloc_type::effective_slab_size_;
+  using gallatin_context_type = gallatin::allocators::allocator_context<
+      gallatin_alloc_detail::global_allocator_type, effective_slab_size_>;
+
+#ifdef GALLATIN_PREFETCH
+#warning \
+    "GALLATIN_PREFETCH is not yet wired through the shared allocator_context; \
+building without pipelined prefetch. (Follow-up: add a prefetch mode to \
+gallatin::allocators::allocator_context.)"
+#endif
+
   template <typename tile_type>
   DEVICE_QUALIFIER device_allocator_context(const device_instance_type& alloc,
                                             const tile_type& tile)
-      : alloc_(alloc) {
+      : alloc_(alloc), ctx_(gallatin_alloc_detail::global_gallatin) {
     static_assert(tile_type::size() == 32 || tile_type::size() == 16);
-    // NOTE: the heap base is no longer cached in a member -- with GALLATIN_CONST_BASE
-    // it lives in __constant__ memory, so pointer_to_handle()/address() read it
-    // from the constant cache per-op (cheap, no dependency chain) WITHOUT holding a
-    // loop-carried register. Frees registers for occupancy.
-#ifdef GALLATIN_STATIC_COUNTER
-    // Per-(tile-leader) resident context: cache the slot/base/gen across the
-    // allocation loop so the hot path is one atomic + a register compare.
-    cidx_ = -1;
-    cbase_ = 0;
-    cgen_ = 0;
-    // tree_id_ is a compile-time constant (smallest pow2 bucket >= slab_size) and
-    // the tree slice size is provably effective_slab_size_. Verified once here so
-    // no runtime members are needed for either (both freed from the context).
-    assert(tree_id_ == gallatin_alloc_detail::global_tree_id(slab_size_));
-    assert(effective_slab_size_ ==
-           gallatin_alloc_detail::global_tree_alloc_size(tree_id_));
-#ifdef GALLATIN_PREFETCH
-    pf_valid_ = false;  // no reservation outstanding yet
-#endif
-#endif
+    // The heap base is not cached in a member -- under GALLATIN_CONST_BASE the shared
+    // context reads it from __constant__ memory per-op (no loop-carried register).
   }
-
-#ifdef GALLATIN_PREFETCH
-  // Return the one outstanding (issued-but-unconsumed) reservation so no
-  // allocation is ever lost. pf_valid_ is only ever set on the tile leader, so
-  // this is implicitly leader-only. Freeing the reserved-but-unwritten slice is
-  // identical to an app alloc+free -> the block's recycle accounting stays exact.
-  DEVICE_QUALIFIER ~device_allocator_context() {
-    if (pf_valid_) {
-      void* leftover = gallatin_alloc_detail::global_gstatic_prefetch_drain(
-          pf_merged_, pf_cbase_, pf_cgen_, effective_slab_size_);
-      if (leftover != nullptr) gallatin_alloc_detail::global_free(leftover);
-    }
-  }
-#endif
 
   template <typename tile_type>
   DEVICE_QUALIFIER pointer_type allocate(const tile_type& tile) {
-    uint64_t raw_addr = 0;
-    if (tile.thread_rank() == 0) {
-#ifdef GALLATIN_STATIC_COUNTER
-      // Try the cached slot (1 atomic, no load); on miss re-resolve safely and
-      // refresh the cached {cidx_, cbase_, cgen_}.
-#if defined(GALLATIN_PREFETCH)
-      // Software-pipelined: consume the reservation issued LAST call (its atomic
-      // has retired -> no stall) and issue the next undecoded, so its latency
-      // overlaps the caller's insert work. Runs fast+slow internally and always
-      // returns a valid slice (or genuine-exhaustion null). The one outstanding
-      // reservation is returned at teardown (~device_allocator_context).
-      void* raw_ptr = gallatin_alloc_detail::global_gstatic_prefetch(
-          cidx_, cbase_, cgen_, pf_merged_, pf_cidx_, pf_cbase_, pf_cgen_,
-          pf_valid_, tree_id_, effective_slab_size_);
-#elif defined(GALLATIN_GROUPED)
-      // Warp-coalesced reservation: the active tile leaders that share a warp
-      // (and tree) claim a contiguous run with ONE atomicAdd -- Gallatin's
-      // native coalescing, applied to the static counter. Only tile sizes < 32
-      // can have >1 leader per warp; tile32 (1 leader/warp) skips the coalescing
-      // machinery entirely (it would be pure overhead with nothing to coalesce).
-      void* raw_ptr;
-      if constexpr (tile_type::size() < 32) {
-        raw_ptr = gallatin_alloc_detail::global_gstatic_fast_grouped(
-            cidx_, cbase_, cgen_, tree_id_, effective_slab_size_);
-      } else {
-        raw_ptr = gallatin_alloc_detail::global_gstatic_fast(
-            cidx_, cbase_, cgen_, effective_slab_size_);
-      }
-      if (raw_ptr == nullptr) {
-        raw_ptr = gallatin_alloc_detail::global_gstatic_slow(
-            tree_id_, effective_slab_size_, cidx_, cbase_, cgen_);
-      }
-#else
-      void* raw_ptr = gallatin_alloc_detail::global_gstatic_fast(
-          cidx_, cbase_, cgen_, effective_slab_size_);
-      if (raw_ptr == nullptr) {
-        raw_ptr = gallatin_alloc_detail::global_gstatic_slow(
-            tree_id_, effective_slab_size_, cidx_, cbase_, cgen_);
-      }
-#endif
-#else
-      auto* raw_ptr = gallatin_alloc_detail::global_malloc(slab_size_);
-#endif
-      if (raw_ptr == nullptr) {
-        printf("gallatin_allocator: allocation failed for %u bytes\n",
-               slab_size_);
-        asm volatile("trap;");
-      }
-      raw_addr = reinterpret_cast<uint64_t>(raw_ptr);
+    // Leader reserves (coalesced grouped path for tile<32) off the cached slot and
+    // broadcasts the slice to the whole tile; every lane converts to the compact handle.
+    void* raw = ctx_.malloc(tile);
+    if (raw == nullptr) {
+      printf("gallatin_allocator: allocation failed for %u bytes\n", slab_size_);
+      asm volatile("trap;");
     }
-    raw_addr = tile.shfl(raw_addr, 0);
-    return pointer_to_handle(raw_addr);
+    return pointer_to_handle(reinterpret_cast<uint64_t>(raw));
   }
 
   template <typename tile_type>
   DEVICE_QUALIFIER void deallocate_coop(pointer_type p, const tile_type& tile) {
     if (tile.thread_rank() == 0) {
-      gallatin_alloc_detail::global_free(address(p));
+      ctx_.free(address(p));
     }
   }
 
   DEVICE_QUALIFIER uint32_t deallocate_perlane(pointer_type p) {
-    gallatin_alloc_detail::global_free(address(p));
+    ctx_.free(address(p));
     return 0;
   }
 
@@ -509,46 +485,15 @@ struct device_allocator_context<gallatin_allocator<slab_size>> {
 
   DEVICE_QUALIFIER void* address(pointer_type p) const {
     assert(p < alloc_.total_slots_);
-    auto raw_addr = gallatin_alloc_detail::global_memory_base() +
-                    static_cast<uint64_t>(p) * effective_slab_size_;
-    return reinterpret_cast<void*>(raw_addr);
+    return ctx_.address(static_cast<uint64_t>(p));
   }
 
-private:
-  static constexpr uint32_t slab_size_ = host_alloc_type::slab_size_;
-  static constexpr uint64_t effective_slab_size_ =
-      host_alloc_type::effective_slab_size_;
-
+ private:
   const device_instance_type& alloc_;
-
-#ifdef GALLATIN_STATIC_COUNTER
-  // tree_id for slab_size_ = smallest pow2 bucket >= max(slab_size, min_alloc),
-  // computed at compile time (== get_tree_id_from_size at runtime, asserted in
-  // ctor) so it costs no register and no construct-time load.
-  static constexpr uint16_t tree_id_ = static_cast<uint16_t>(
-      gallatin_alloc_detail::log2_power_of_two(effective_slab_size_) -
-      gallatin_alloc_detail::log2_power_of_two(
-          gallatin_alloc_detail::gallatin_min_alloc_size));
-  int cidx_ = -1;          // cached static-counter slot index (-1 = none)
-  uint64_t cbase_ = 0;     // cached slot block base address
-  unsigned int cgen_ = 0;  // cached slot generation (validates cbase against swaps)
-#ifdef GALLATIN_PREFETCH
-  // One outstanding pipelined reservation (leader-only): the raw atomic result
-  // (undecoded -> its latency is hidden) plus the slot it was issued against.
-  unsigned long long pf_merged_ = 0;
-  int pf_cidx_ = -1;
-  uint64_t pf_cbase_ = 0;
-  unsigned int pf_cgen_ = 0;
-  bool pf_valid_ = false;
-#endif
-#endif
+  gallatin_context_type ctx_;
 
   DEVICE_QUALIFIER pointer_type pointer_to_handle(uint64_t raw_addr) const {
-    auto base_addr = gallatin_alloc_detail::global_memory_base();
-    assert(raw_addr >= base_addr);
-    auto offset = raw_addr - base_addr;
-    assert((offset % effective_slab_size_) == 0);
-    auto handle = offset / effective_slab_size_;
+    auto handle = ctx_.index_of(reinterpret_cast<void*>(raw_addr));
     assert(handle < alloc_.total_slots_);
     return static_cast<pointer_type>(handle);
   }

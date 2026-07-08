@@ -19,3 +19,4 @@
 [submodule "baselines/gallatin"]
 	path = baselines/gallatin
 	url = https://github.com/saltsystemslab/gallatin.git
+	branch = static-counter-fastpath

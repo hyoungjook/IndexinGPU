@@ -100,14 +100,36 @@ void launch_batch_kernel(index_type& index, const device_func& func, uint32_t nu
                   utils::varlenkv::shmem_buffer_size * device_func::num_shmem_buffers *
                   (block_size / index_type::tile_size_);
   }
-  int num_blocks_per_sm;
+  int natural_blocks_per_sm;
   cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-    &num_blocks_per_sm,
+    &natural_blocks_per_sm,
     kernels::batch_kernel<do_reclaim, index_type::tile_size_, use_shmem_key, device_func, index_type>,
     block_size,
     shmem_size);
   cudaDeviceProp device_prop;
   cudaGetDeviceProperties(&device_prop, 0);
+  // Resident blocks/SM (grid sizing). Defaults to GX_FORCE_BLOCKS_PER_SM=8, which a full
+  // block-size sweep found maximizes Gallatin's absolute batch throughput (peak for chain
+  // t16/t32; near-peak for cuckoo) -- so slab and gallatin are compared best-vs-best rather
+  // than each at its own reg-limited natural max. Override with -DGX_FORCE_BLOCKS_PER_SM=N,
+  // or =0 to use the kernel's natural occupancy.
+#ifndef GX_FORCE_BLOCKS_PER_SM
+#define GX_FORCE_BLOCKS_PER_SM 8
+#endif
+  int num_blocks_per_sm = natural_blocks_per_sm;
+#if (GX_FORCE_BLOCKS_PER_SM > 0)
+  num_blocks_per_sm = (GX_FORCE_BLOCKS_PER_SM < natural_blocks_per_sm)
+                          ? GX_FORCE_BLOCKS_PER_SM
+                          : natural_blocks_per_sm;  // never exceed the hw/reg max
+#endif
+#ifdef GX_OCC_REPORT
+  // Report the kernel's natural occupancy vs what we launch, once per distinct kernel.
+  { static bool reported = false;
+    if (!reported) { reported = true;
+      printf("[OCC] block_size=%d natural_blocks_per_sm=%d used_blocks_per_sm=%d SMs=%d\n",
+             block_size, natural_blocks_per_sm, num_blocks_per_sm, device_prop.multiProcessorCount);
+    } }
+#endif
   uint32_t num_blocks = num_blocks_per_sm * device_prop.multiProcessorCount;
 
   kernels::batch_kernel<do_reclaim, index_type::tile_size_, use_shmem_key><<<num_blocks, block_size, shmem_size, stream>>>(
