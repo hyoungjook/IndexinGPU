@@ -930,27 +930,19 @@ def merge_plots(configs_and_results, plot_file_prefix):
 def intro_plots(configs_and_results, plot_file_prefix):
     tputs = {}
     tree_indexes = [IndexType.cpu_art, IndexType.cpu_masstree, IndexType.gpu_masstree,]
-    hashtable_indexes = [IndexType.cpu_libcuckoo, IndexType.cpu_onetbb, IndexType.gpu_extendhashtable,]
+    hashtable_indexes = [
+        IndexType.cpu_libcuckoo,
+        IndexType.cpu_onetbb,
+        IndexType.gpu_cuckoohashtable,
+        IndexType.gpu_chainhashtable,
+        IndexType.gpu_extendhashtable,
+    ]
     plot_spec = [
         (0, tree_indexes, [ResultType.lookup, ResultType.scan, ResultType.mixed]),
         (1, hashtable_indexes, [ResultType.lookup, ResultType.mixed]),
     ]
     intro_plot_key_length = 8
     plot_names = ['tree', 'ht']
-    legend_handles = []
-    legend_labels = []
-    for _, index_types, _ in plot_spec:
-        for index_type in index_types:
-            index_label = INDEX_LABELS[index_type]
-            if index_label in legend_labels:
-                continue
-            legend_handles.append(mpatch.Patch(
-                fill=False,
-                edgecolor=INDEX_STYLES[index_type]['color'],
-                hatch=HATCH_STYLES[index_type],
-                linewidth=(2 if index_type in INDEX_TYPES_ROBUST else 1),
-            ))
-            legend_labels.append(index_label)
     for _, index_types, result_types in plot_spec:
         for result_type in result_types:
             for index_type in index_types:
@@ -979,7 +971,7 @@ def intro_plots(configs_and_results, plot_file_prefix):
     for idx, index_types, result_types in plot_spec:
         fig, ax = _make_fixed_plot_area_figure(0.8 * len(result_types), 1.2,
             include_xlabel=False, include_ylabel=(idx == 0))
-        bar_width = 0.22 if len(index_types) == 3 else 0.28
+        bar_width = 0.22 if idx == 0 else 0.22 * 3 / len(index_types)
         bar_spacing = bar_width * 1.2
         group_centers = [group_idx for group_idx in range(len(result_types))]
         bar_offsets = [
@@ -990,7 +982,7 @@ def intro_plots(configs_and_results, plot_file_prefix):
         for group_center, result_type in zip(group_centers, result_types):
             our_ymax = 0
             baseline_ymax = 0
-            our_x = 0
+            our_x = []
             for bar_offset, index_type in zip(bar_offsets, index_types):
                 avg_values = _convert_mops_to_bops(tputs[(index_type, result_type)]['avg'], index_type)
                 min_values = _convert_mops_to_bops(tputs[(index_type, result_type)]['min'], index_type)
@@ -1000,7 +992,7 @@ def intro_plots(configs_and_results, plot_file_prefix):
                 xdata = [group_center + bar_offset]
                 if index_type in INDEX_TYPES_ROBUST:
                     our_ymax = max(our_ymax, ydata[0])
-                    our_x = xdata[0]
+                    our_x.append(xdata[0])
                 else:
                     baseline_ymax = max(baseline_ymax, ydata[0])
                 ax.bar(xdata, ydata,
@@ -1019,7 +1011,7 @@ def intro_plots(configs_and_results, plot_file_prefix):
                     color=INDEX_STYLES[index_type]['color'],
                     for_barplot=True
                 )
-            ax.text(our_x, our_ymax, f'{our_ymax / baseline_ymax:.1f}x', fontsize=12, ha='center', va='bottom')
+            ax.text(sum(our_x) / len(our_x), our_ymax, f'{our_ymax / baseline_ymax:.1f}x', fontsize=12, ha='center', va='bottom')
         ax.set_ylim(bottom=0, top=plot_top * 1.2)
         xmargin = bar_spacing * len(index_types)
         ax.set_xlim(group_centers[0] - xmargin, group_centers[-1] + xmargin)
@@ -1030,12 +1022,6 @@ def intro_plots(configs_and_results, plot_file_prefix):
             ax.set_ylabel(r'Throughput ($10^9$/s)')
         plt.savefig(f'{plot_file_prefix}-{plot_names[idx]}.pdf', bbox_inches='tight')
         plt.close(fig)
-    fig, ax = plt.subplots(1, 1, figsize=(7, 0.3), constrained_layout=True)
-    ax.legend(legend_handles, legend_labels, loc='center', ncol=len(legend_labels),
-              handlelength=1, handletextpad=0.5)
-    ax.axis('off')
-    plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
-    plt.close(fig)
 
 def load_factor_plots(configs_and_results, plot_file_prefix):
     tputs = {}
