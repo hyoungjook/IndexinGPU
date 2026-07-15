@@ -29,7 +29,7 @@ set(json_output_directory "${CMAKE_CURRENT_SOURCE_DIR}/outputs")
 
 
 # library
-add_library(indexingpu INTERFACE)
+add_library(libgpu__ INTERFACE)
 
 # CUDA and C++ compiler flags
 set(CXX_FLAGS
@@ -57,14 +57,14 @@ set(CUDA_FLAGS
     )
 
 
-set(indexingpu_includes "${CMAKE_CURRENT_SOURCE_DIR}/include")
+set(libgpu__includes "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 add_library(developer_flags INTERFACE)
 target_compile_options(developer_flags INTERFACE
     $<$<COMPILE_LANGUAGE:CXX>:${CXX_FLAGS}>
     $<$<COMPILE_LANGUAGE:CUDA>:${CUDA_FLAGS}>)
 
-target_link_libraries(indexingpu
+target_link_libraries(libgpu__
     INTERFACE $<BUILD_INTERFACE:developer_flags>
     INTERFACE $<IF:$<CXX_COMPILER_ID:MSVC>,,-lstdc++fs>)
 
@@ -72,11 +72,11 @@ target_link_libraries(indexingpu
 
 # Visual studio setup
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
-file(TO_NATIVE_PATH ${indexingpu_includes} indexingpu_includes_native)
+file(TO_NATIVE_PATH ${libgpu__includes} libgpu__includes_native)
 set(CMAKE_VS_SDK_INCLUDE_DIRECTORIES
     $(VC_IncludePath)
     $(WindowsSDK_IncludePath)
-    ${indexingpu_includes_native}
+    ${libgpu__includes_native}
     )
 
 

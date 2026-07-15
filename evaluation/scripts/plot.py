@@ -13,10 +13,10 @@ CPU_VM_HOURLY_PRICE = 3.648
 CPU_BASELINE_ADJUST = 1
 
 INDEX_LABELS = {
-    IndexType.gpu_masstree: "GPUMasstree",
-    IndexType.gpu_chainhashtable: "GPUChainHT",
-    IndexType.gpu_cuckoohashtable: "GPUCuckooHT",
-    IndexType.gpu_extendhashtable: "GPUExtendHT",
+    IndexType.gpu_masstree: "★Masstree",
+    IndexType.gpu_chainhashtable: "★ChainHT",
+    IndexType.gpu_cuckoohashtable: "★CuckooHT",
+    IndexType.gpu_extendhashtable: "★ExtendHT",
     IndexType.gpu_blink_tree: "GPUBtree",
     IndexType.gpu_dycuckoo: "DyCuckoo",
     IndexType.cpu_art: "ART",

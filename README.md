@@ -1,6 +1,6 @@
-# IndexinGPU
+# LibGPU-*
 
-IndexinGPU is a header-only CUDA/C++ library of GPU-resident indexes for workloads that need more than fixed-width key/value lookups. It is designed for:
+LibGPU-* is a header-only CUDA/C++ library of GPU-resident indexes for workloads that need more than fixed-width key/value lookups. It is designed for:
 
 - variable-length keys and values
 - fully GPU-managed inserts and deletes
@@ -15,8 +15,6 @@ The library currently provides:
 - `GpuExtendHashtable::gpu_extendhashtable`: resizable unordered index
 
 For most users, the main entry points are the headers in [`include/`](include/).
-
-Source code started from [MVGpuBTree](https://github.com/owensgroup/MVGpuBTree).
 
 ## Build
 
@@ -33,7 +31,7 @@ make -j
 
 This builds the unit tests in `bin/unittest_*` and the simple benchmarks in `bin/*_bench`.
 
-If you use this repo as a CMake subproject, link against `indexingpu`.
+If you use this repo as a CMake subproject, link against `libgpu__`.
 
 ## CPU-side API
 
@@ -167,7 +165,7 @@ If you just want batched operations on arrays of keys, prefer the CPU-side API a
 
 ## Hardware Note
 
-IndexinGPU relies on NVIDIA GPU cache-line atomicity behavior. It has been verified on A100, H100, H200, and B200 GPUs.
+LibGPU-* relies on NVIDIA GPU cache-line atomicity behavior. It has been verified on A100, H100, H200, and B200 GPUs.
 
 To check this behavior on your hardware, see cuda_cacheline_atomicity_tester.
 
@@ -180,7 +178,7 @@ The result file should have 91114167 entries.
 
 If you want to evaluate only with synthetic workloads, add `--skip-meme` command line option to all `python3` commands below.
 
-To evaluate GPU indexes (IndexinGPU + GPU baselines):
+To evaluate GPU indexes (LibGPU-* + GPU baselines):
 
 ```shell
 # EXPERIMENTS TUNED FOR GPU WITH MEMORY >= 80GiB
@@ -188,8 +186,8 @@ To evaluate GPU indexes (IndexinGPU + GPU baselines):
 # Assume Ubuntu 24.04 and CUDA 13.2
 apt update
 apt install -y build-essential cmake git
-git clone https://github.com/hyoungjook/IndexinGPU
-cd IndexinGPU
+git clone ${ANONYMIZED_REPO}
+cd ${ANONYMIZED_REPO}
 # copy memetracker dataset
 mkdir dataset
 cp path/to/memetracker/dataset dataset/meme.txt
@@ -206,8 +204,8 @@ To evaluate CPU indexes (CPU baselines):
 # Assume Ubuntu 24.04, no CUDA required
 apt update
 apt install -y build-essential cmake git autoconf libboost-all-dev libjemalloc-dev
-git clone https://github.com/hyoungjook/IndexinGPU
-cd IndexinGPU
+git clone ${ANONYMIZED_REPO}
+cd ${ANONYMIZED_REPO}
 # copy memetracker dataset
 mkdir dataset
 cp path/to/memetracker/dataset dataset/meme.txt
