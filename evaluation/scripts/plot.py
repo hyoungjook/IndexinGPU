@@ -19,6 +19,7 @@ INDEX_LABELS = {
     IndexType.gpu_extendhashtable: "GPUExtendHT",
     IndexType.gpu_blink_tree: "GPUBtree",
     IndexType.gpu_dycuckoo: "DyCuckoo",
+    IndexType.gpu_cuco_static: "CuCollections",
     IndexType.cpu_art: "ART",
     IndexType.cpu_masstree: "Masstree",
     IndexType.cpu_libcuckoo: "libcuckoo",
@@ -31,6 +32,7 @@ INDEX_STYLES = {
     IndexType.gpu_extendhashtable: {"color": "#EDAE49", "marker": "D", "linestyle": "-"},
     IndexType.gpu_blink_tree: {"color": "#9C6644", "marker": "<", "linestyle": ":"},
     IndexType.gpu_dycuckoo: {"color": "#3B60E4", "marker": "h", "linestyle": ":"},
+    IndexType.gpu_cuco_static: {"color": "#E43BCD", "marker": ">", "linestyle": ":"},
     IndexType.cpu_art: {"color": "#5C4D7D", "marker": "P", "linestyle": "--"},
     IndexType.cpu_masstree: {"color": "#6C9A8B", "marker": "X", "linestyle": "--"},
     IndexType.cpu_libcuckoo: {"color": "#8F2D56", "marker": "v", "linestyle": "--"},
@@ -213,10 +215,7 @@ def key_length_plots(configs_and_results, plot_file_prefix):
             result_types.append(ResultType.mixed)
         if index_type in IS_INDEX_TYPE_ORDERED:
             result_types.append(ResultType.scan)
-        if index_type in IS_INDEX_TYPE_SUPPORT_LONGKEY:
-            key_lengths = EXP_KEY_LENGTHS
-        else:
-            key_lengths = [1]
+        key_lengths = [l for l in EXP_KEY_LENGTHS if DO_TEST_FOR_INDEX_TYPE(index_type, l)]
         for result_type in result_types:
             tputs[index_type][result_type] = {
                 'avg': [], 'min': [], 'max': []
@@ -263,7 +262,7 @@ def key_length_plots(configs_and_results, plot_file_prefix):
             return 'cpu_baseline'
         assert False
     tree_indexes = [i for i in all_index_types if i in IS_INDEX_TYPE_ORDERED]
-    hashtable_indexes = [i for i in all_index_types if i not in IS_INDEX_TYPE_ORDERED]
+    hashtable_indexes = [i for i in all_index_types if i not in IS_INDEX_TYPE_ORDERED and i != IndexType.gpu_cuco_static]
     plot_spec = [
         (tree_indexes, ResultType.lookup, False, True),
         (tree_indexes, ResultType.insert, False, False),
@@ -280,6 +279,9 @@ def key_length_plots(configs_and_results, plot_file_prefix):
     plot_names = [
         'tree-lookup', 'tree-insert', 'tree-update', 'tree-delete', 'tree-mixed', 'tree-scan',
         'ht-lookup', 'ht-insert', 'ht-update', 'ht-delete', 'ht-mixed'
+    ]
+    cuco_inset_result_types = [
+        ResultType.lookup, ResultType.insert, ResultType.update, ResultType.delete
     ]
     for idx, (index_types, result_type, set_xlabel, set_ylabel) in enumerate(plot_spec):
         fig, ax = _make_fixed_plot_area_figure(2, 1.3,
@@ -331,6 +333,54 @@ def key_length_plots(configs_and_results, plot_file_prefix):
             if index_label not in legends[get_index_group(index_type)]['labels']:
                 legends[get_index_group(index_type)]['labels'].append(index_label)
                 legends[get_index_group(index_type)]['handles'].append(line)
+        if plot_names[idx].startswith('ht-') and result_type in cuco_inset_result_types:
+            cuco_index_type = IndexType.gpu_cuco_static
+            cuco_avg_values = _convert_mops_to_bops(
+                tputs[cuco_index_type][result_type]['avg'], cuco_index_type
+            )
+            cuco_min_values = _convert_mops_to_bops(
+                tputs[cuco_index_type][result_type]['min'], cuco_index_type
+            )
+            cuco_max_values = _convert_mops_to_bops(
+                tputs[cuco_index_type][result_type]['max'], cuco_index_type
+            )
+            _record_max_tput(cuco_index_type, cuco_avg_values, gpu_baseline_max)
+
+            cuco_xdata = [4, 8, 16]
+            inset_ax = ax.inset_axes([0.6, 0.65, 0.35, 0.3])
+            cuco_line, = inset_ax.plot(
+                cuco_xdata, cuco_avg_values + [0],
+                label=INDEX_LABELS[cuco_index_type],
+                linewidth=2, markersize=6,
+                markevery=range(2),
+                **INDEX_STYLES[cuco_index_type]
+            )
+            _add_throughput_error_bars(
+                inset_ax,
+                cuco_xdata,
+                cuco_avg_values,
+                cuco_min_values,
+                cuco_max_values,
+                color=INDEX_STYLES[cuco_index_type]['color']
+            )
+            inset_ax.text(
+                16, 0, "X",
+                fontsize=10, color='red', fontweight='bold',
+                ha='center', va='center', zorder=10
+            )
+            inset_ylim = (1.1 * max(cuco_avg_values) + 1) // 2 * 2
+            inset_ax.set_xlim(left=0, right=20)
+            inset_ax.set_ylim(bottom=0, top=inset_ylim)
+            inset_ax.set_xticks([0, 10, 20])
+            inset_ax.set_yticks([0, inset_ylim // 2, inset_ylim])
+            inset_ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
+            inset_ax.grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
+
+            cuco_label = INDEX_LABELS[cuco_index_type]
+            cuco_group = get_index_group(cuco_index_type)
+            if cuco_label not in legends[cuco_group]['labels']:
+                legends[cuco_group]['labels'].append(cuco_label)
+                legends[cuco_group]['handles'].append(cuco_line)
         ax.set_ylim(bottom = 0)
         ax.set_xlim(left = 0)
         _, ymax = ax.get_ylim()
@@ -1409,7 +1459,7 @@ def meme_plots(configs_and_results, plot_file_prefix):
 
 def generate_plots(args, configs_and_results):
     key_length_plots(configs_and_results, Path(args.result_dir) / 'plot_keylength')
-    key_length_cpu_plots(configs_and_results, Path(args.result_dir) / 'plot_keylength_cpu')
+    #key_length_cpu_plots(configs_and_results, Path(args.result_dir) / 'plot_keylength_cpu')
     average_slowdown_cpu(configs_and_results)
     value_length_plots(configs_and_results, Path(args.result_dir) / 'plot_valuelength')
     suffix_plots(configs_and_results, Path(args.result_dir) / 'plot_suffix')
