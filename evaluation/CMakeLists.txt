@@ -26,6 +26,7 @@ set(UNIVERSAL_BENCH_WITH_GPU_BASELINE_SOURCES
 
 set(UNIVERSAL_BENCH_WITH_GPU_BASELINE_REQUIRED_PATHS
   ${CMAKE_CURRENT_SOURCE_DIR}/../baselines/MVGpuBTree/include/gpu_blink_tree.hpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../baselines/cuCollections/include/cuco/static_map.cuh
   ${UNIVERSAL_BENCH_WITH_GPU_BASELINE_SOURCES}
 )
 
@@ -45,6 +46,7 @@ if(UNIVERSAL_BENCH_WITH_GPU_BASELINE_MISSING_COUNT EQUAL 0)
   target_include_directories(universal_bench_with_gpu_baseline PRIVATE
     ${EVALUATION_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}/../baselines/MVGpuBTree/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../baselines/cuCollections/include
     ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}
   )
   target_sources(universal_bench_with_gpu_baseline PRIVATE

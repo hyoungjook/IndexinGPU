@@ -16,3 +16,6 @@
 [submodule "baselines/oneTBB"]
 	path = baselines/oneTBB
 	url = https://github.com/uxlfoundation/oneTBB.git
+[submodule "baselines/cuCollections"]
+	path = baselines/cuCollections
+	url = https://github.com/NVIDIA/cuCollections.git

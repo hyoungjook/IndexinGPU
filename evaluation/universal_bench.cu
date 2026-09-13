@@ -35,6 +35,7 @@
 #include <cpu_art_adapter.hpp>
 #elif defined(UNIVERSAL_BENCH_WITH_GPU_BASELINE)
 #include <gpu_blink_tree_adapter.hpp>
+#include <gpu_cuco_static_adapter.hpp>
 #include <gpu_dycuckoo_adapter.hpp>
 #elif defined(UNIVERSAL_BENCH_INSTANTIATE_GPU_MASSTREE)
 #include <gpu_masstree_adapter.hpp>
@@ -589,7 +590,7 @@ int main(int argc, char** argv) {
     x(cpu_libcuckoo) x(cpu_onetbb) x(cpu_masstree) x(cpu_art)
   #elif defined(UNIVERSAL_BENCH_WITH_GPU_BASELINE)
   #define FORALL_INDEXES(x) \
-    x(gpu_blink_tree) x(gpu_dycuckoo)
+    x(gpu_blink_tree) x(gpu_cuco_static) x(gpu_dycuckoo)
   #else
   #define FORALL_INDEXES(x) \
     x(gpu_masstree) x(gpu_chainhashtable) \

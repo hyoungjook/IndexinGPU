@@ -24,7 +24,8 @@ INDEX_TYPES_ROBUST = [
 ]
 INDEX_TYPES_GPU_BASELINE = [
     IndexType.gpu_blink_tree,
-    IndexType.gpu_dycuckoo
+    IndexType.gpu_dycuckoo,
+    IndexType.gpu_cuco_static
 ]
 INDEX_TYPES_CPU_BASELINE = [
     IndexType.cpu_art,
@@ -43,13 +44,16 @@ IS_INDEX_TYPE_SUPPORT_UPDATE = INDEX_TYPES_ROBUST + [
     IndexType.cpu_masstree,
     IndexType.cpu_libcuckoo,
     IndexType.cpu_onetbb,
-    IndexType.gpu_blink_tree
+    IndexType.gpu_blink_tree,
+    IndexType.gpu_cuco_static
 ]
 IS_INDEX_TYPE_SUPPORT_MIX = INDEX_TYPES_ROBUST + INDEX_TYPES_CPU_BASELINE + [IndexType.gpu_blink_tree]
 IS_INDEX_TYPE_SUPPORT_LONGKEY = INDEX_TYPES_ROBUST + INDEX_TYPES_CPU_BASELINE + [IndexType.gpu_dycuckoo]
 def DO_TEST_FOR_INDEX_TYPE(index_type, key_length):
     if index_type == IndexType.gpu_blink_tree and key_length > 1:
         # not support longkeys
+        return False
+    if index_type == IndexType.gpu_cuco_static and key_length > 2:
         return False
     return True
 
