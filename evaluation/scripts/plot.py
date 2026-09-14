@@ -587,16 +587,18 @@ def average_slowdown_cpu(configs_and_results):
 
 def value_length_plots(configs_and_results, plot_file_prefix):
     tputs = {}
-    for index_type in INDEX_TYPES_ROBUST:
+    all_index_types = INDEX_TYPES_ROBUST + INDEX_TYPES_GPU_BASELINE + INDEX_TYPES_CPU_BASELINE
+    for index_type in all_index_types:
         tputs[index_type] = {}
         result_types = [ResultType.lookup]
         if index_type in IS_INDEX_TYPE_ORDERED:
             result_types.append(ResultType.scan)
+        value_lengths = [l for l in EXP_VALUE_LENGTHS if DO_TEST_FOR_INDEX_TYPE_VALUELEN(index_type, l)]
         for result_type in result_types:
             tputs[index_type][result_type] = {
                 'avg': [], 'min': [], 'max': []
             }
-            for value_length in EXP_VALUE_LENGTHS:
+            for value_length in value_lengths:
                 desired_config = {
                     ConfigType.index_type: index_type,
                     ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
@@ -617,8 +619,8 @@ def value_length_plots(configs_and_results, plot_file_prefix):
                     tputs[index_type][result_type][metric_type].append(processed_result[metric_type])
     # plot
     value_lengths_bytes = [4 * l for l in EXP_VALUE_LENGTHS]
-    tree_indexes = [i for i in INDEX_TYPES_ROBUST if i in IS_INDEX_TYPE_ORDERED]
-    hashtable_indexes = [i for i in INDEX_TYPES_ROBUST if i not in IS_INDEX_TYPE_ORDERED]
+    tree_indexes = [i for i in all_index_types if i in IS_INDEX_TYPE_ORDERED]
+    hashtable_indexes = [i for i in all_index_types if i not in IS_INDEX_TYPE_ORDERED and i != IndexType.gpu_cuco_static]
     plot_spec = [
         (tree_indexes, ResultType.lookup),
         (tree_indexes, ResultType.scan),
@@ -627,37 +629,90 @@ def value_length_plots(configs_and_results, plot_file_prefix):
     plot_names = [
         'tree-lookup', 'tree-scan', 'ht-lookup'
     ]
-    legend_indexes = set()
-    legend_handles = []
-    legend_labels = []
+    legend_indexes = [
+        IndexType.gpu_masstree, IndexType.cpu_art, IndexType.gpu_blink_tree,
+        IndexType.gpu_chainhashtable, IndexType.cpu_masstree, IndexType.gpu_dycuckoo,
+        IndexType.gpu_cuckoohashtable, IndexType.cpu_libcuckoo, IndexType.gpu_cuco_static,
+        IndexType.gpu_extendhashtable, IndexType.cpu_onetbb
+    ]
+    legend_handles = {}
     for idx, (index_types, result_type) in enumerate(plot_spec):
         fig, ax = _make_fixed_plot_area_figure(1.3, 1.1,
             include_xlabel=True,
             include_ylabel=(idx == 0),
         )
+        ylim_max = 0
         for index_type in index_types:
             avg_values = _convert_mops_to_bops(tputs[index_type][result_type]['avg'], index_type)
             min_values = _convert_mops_to_bops(tputs[index_type][result_type]['min'], index_type)
             max_values = _convert_mops_to_bops(tputs[index_type][result_type]['max'], index_type)
+            ydata = avg_values.copy()
+            ylim_max = max(ylim_max, max(ydata))
+            markevery = range(len(ydata))
+            if len(markevery) < len(value_lengths_bytes):
+                ydata.append(0)
+            xdata = value_lengths_bytes[0:len(ydata)]
             line, = ax.plot(
-                value_lengths_bytes, avg_values,
+                xdata, ydata,
                 label=INDEX_LABELS[index_type],
+                markevery=markevery,
                 linewidth=2, markersize=6,
                 **INDEX_STYLES[index_type]
             )
             _add_throughput_error_bars(
                 ax,
-                value_lengths_bytes,
+                xdata,
                 avg_values,
                 min_values,
                 max_values,
                 color=INDEX_STYLES[index_type]['color']
             )
-            if index_type not in legend_indexes:
-                legend_indexes.add(index_type)
-                legend_labels.append(INDEX_LABELS[index_type])
-                legend_handles.append(line)
-        ax.set_ylim(bottom=0)
+            if len(markevery) < len(value_lengths_bytes):
+                reason = "OOM" if index_type == IndexType.gpu_dycuckoo else "X"
+                ax.text(xdata[len(markevery)], ydata[len(markevery)], reason, fontsize=10, color='red', fontweight='bold', ha='center', va='center', zorder=10)
+            legend_handles[index_type] = line
+        if plot_names[idx].startswith('ht-'):
+            cuco_index_type = IndexType.gpu_cuco_static
+            cuco_avg_values = _convert_mops_to_bops(
+                tputs[cuco_index_type][result_type]['avg'], cuco_index_type
+            )
+            cuco_min_values = _convert_mops_to_bops(
+                tputs[cuco_index_type][result_type]['min'], cuco_index_type
+            )
+            cuco_max_values = _convert_mops_to_bops(
+                tputs[cuco_index_type][result_type]['max'], cuco_index_type
+            )
+            cuco_xdata = [4, 8, 16]
+            inset_ax = ax.inset_axes([0.6, 0.7, 0.35, 0.25])
+            cuco_line, = inset_ax.plot(
+                cuco_xdata, cuco_avg_values + [0],
+                label=INDEX_LABELS[cuco_index_type],
+                linewidth=2, markersize=6,
+                markevery=range(2),
+                **INDEX_STYLES[cuco_index_type]
+            )
+            _add_throughput_error_bars(
+                inset_ax,
+                cuco_xdata,
+                cuco_avg_values,
+                cuco_min_values,
+                cuco_max_values,
+                color=INDEX_STYLES[cuco_index_type]['color']
+            )
+            inset_ax.text(
+                16, 0, "X",
+                fontsize=10, color='red', fontweight='bold',
+                ha='center', va='center', zorder=10
+            )
+            inset_ylim = (1.1 * max(cuco_avg_values) + 1) // 2 * 2
+            inset_ax.set_xlim(left=0, right=20)
+            inset_ax.set_ylim(bottom=0, top=inset_ylim)
+            inset_ax.set_xticks([0, 10, 20])
+            inset_ax.set_yticks([0, inset_ylim // 2, inset_ylim])
+            inset_ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
+            inset_ax.grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
+            legend_handles[cuco_index_type] = cuco_line
+        ax.set_ylim(bottom=0, top=ylim_max * 1.2)
         ax.set_xlim(left=0)
         ax.grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
         ax.set_xlabel('Value Length (B)')
@@ -665,8 +720,10 @@ def value_length_plots(configs_and_results, plot_file_prefix):
             ax.set_ylabel(r'Throughput ($10^9$/s)')
         fig.savefig(f'{plot_file_prefix}-{plot_names[idx]}.pdf', bbox_inches='tight')
         plt.close(fig)
-    fig, ax = plt.subplots(1, 1, figsize=(6, 0.3), constrained_layout=True)
-    ax.legend(legend_handles, legend_labels, loc='center', ncol=len(legend_labels))
+    fig, ax = plt.subplots(1, 1, figsize=(6, 1), constrained_layout=True)
+    legend_labels = [INDEX_LABELS[i] for i in legend_indexes]
+    legend_handles_list = [legend_handles[i] for i in legend_indexes]
+    ax.legend(legend_handles_list, legend_labels, loc='center', ncol=4, handlelength=2.5)
     ax.axis("off")
     plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
     plt.close(fig)
