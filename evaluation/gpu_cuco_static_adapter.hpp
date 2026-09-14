@@ -40,6 +40,7 @@ struct gpu_cuco_static_pair_generator {
 struct gpu_cuco_static_adapter {
   static constexpr bool is_ordered = false;
   static constexpr bool support_mixed = false;
+  static constexpr bool support_update = true;
   using key_slice_type = uint32_t;
   using value_slice_type = uint32_t;
   using size_type = uint32_t;
@@ -52,19 +53,24 @@ struct gpu_cuco_static_adapter {
   }
   void initialize() {
     adapter_util::dispatch_uint32<1, 2>(configs_.keylen_max, [&](auto t) {
-      using key_type = key_type_t<t.value>;
-      auto capacity = static_cast<std::size_t>(
-        std::ceil(configs_.num_keys / configs_.initial_array_fill_factor));
-      index_ = new index_type<t.value>(
-        capacity,
-        cuco::empty_key<key_type>{std::numeric_limits<key_type>::max()},
-        cuco::empty_value<value_slice_type>{std::numeric_limits<value_slice_type>::max()},
-        cuco::erased_key<key_type>{std::numeric_limits<key_type>::max() - 1});
+      adapter_util::dispatch_uint32<1, 2>(configs_.valuelen_max, [&](auto v) {
+        using key_type = key_type_t<t.value>;
+        using value_type = value_type_t<v.value>;
+        auto capacity = static_cast<std::size_t>(
+          std::ceil(configs_.num_keys / configs_.initial_array_fill_factor));
+        index_ = new index_type<t.value, v.value>(
+          capacity,
+          cuco::empty_key<key_type>{std::numeric_limits<key_type>::max()},
+          cuco::empty_value<value_type>{std::numeric_limits<value_type>::max()},
+          cuco::erased_key<key_type>{std::numeric_limits<key_type>::max() - 1});
+      });
     });
   }
   void destroy() {
     adapter_util::dispatch_uint32<1, 2>(configs_.keylen_max, [&](auto t) {
-      delete reinterpret_cast<index_type<t.value>*>(index_);
+      adapter_util::dispatch_uint32<1, 2>(configs_.valuelen_max, [&](auto v) {
+        delete reinterpret_cast<index_type<t.value, v.value>*>(index_);
+      });
     });
   }
   void insert(const key_slice_type* keys,
@@ -79,12 +85,16 @@ struct gpu_cuco_static_adapter {
     (void)valuelen_max;
     (void)value_lengths;
     adapter_util::dispatch_uint32<1, 2>(configs_.keylen_max, [&](auto t) {
-      using key_type = key_type_t<t.value>;
-      auto typed_keys = reinterpret_cast<const key_type*>(keys);
-      auto pairs = cuda::make_transform_iterator(
-        cuda::counting_iterator<std::size_t>{0},
-        gpu_cuco_static_pair_generator<key_type, value_slice_type>{typed_keys, values});
-      get_index<t.value>()->insert_async(pairs, pairs + num_keys);
+      adapter_util::dispatch_uint32<1, 2>(configs_.valuelen_max, [&](auto v) {
+        using key_type = key_type_t<t.value>;
+        using value_type = value_type_t<v.value>;
+        auto typed_keys = reinterpret_cast<const key_type*>(keys);
+        auto typed_values = reinterpret_cast<const value_type*>(values);
+        auto pairs = cuda::make_transform_iterator(
+          cuda::counting_iterator<std::size_t>{0},
+          gpu_cuco_static_pair_generator<key_type, value_type>{typed_keys, typed_values});
+        get_index<t.value, v.value>()->insert_async(pairs, pairs + num_keys);
+      });
     });
   }
   void update(const key_slice_type* keys,
@@ -99,12 +109,16 @@ struct gpu_cuco_static_adapter {
     (void)valuelen_max;
     (void)value_lengths;
     adapter_util::dispatch_uint32<1, 2>(configs_.keylen_max, [&](auto t) {
-      using key_type = key_type_t<t.value>;
-      auto typed_keys = reinterpret_cast<const key_type*>(keys);
-      auto pairs = cuda::make_transform_iterator(
-        cuda::counting_iterator<std::size_t>{0},
-        gpu_cuco_static_pair_generator<key_type, value_slice_type>{typed_keys, values});
-      get_index<t.value>()->insert_or_assign_async(pairs, pairs + num_keys);
+      adapter_util::dispatch_uint32<1, 2>(configs_.valuelen_max, [&](auto v) {
+        using key_type = key_type_t<t.value>;
+        using value_type = value_type_t<v.value>;
+        auto typed_keys = reinterpret_cast<const key_type*>(keys);
+        auto typed_values = reinterpret_cast<const value_type*>(values);
+        auto pairs = cuda::make_transform_iterator(
+          cuda::counting_iterator<std::size_t>{0},
+          gpu_cuco_static_pair_generator<key_type, value_type>{typed_keys, typed_values});
+        get_index<t.value, v.value>()->insert_or_assign_async(pairs, pairs + num_keys);
+      });
     });
   }
   void erase(const key_slice_type* keys,
@@ -114,8 +128,10 @@ struct gpu_cuco_static_adapter {
     (void)keylen_max;
     (void)key_lengths;
     adapter_util::dispatch_uint32<1, 2>(configs_.keylen_max, [&](auto t) {
-      auto typed_keys = reinterpret_cast<const key_type_t<t.value>*>(keys);
-      get_index<t.value>()->erase_async(typed_keys, typed_keys + num_keys);
+      adapter_util::dispatch_uint32<1, 2>(configs_.valuelen_max, [&](auto v) {
+        auto typed_keys = reinterpret_cast<const key_type_t<t.value>*>(keys);
+        get_index<t.value, v.value>()->erase_async(typed_keys, typed_keys + num_keys);
+      });
     });
   }
   void find(const key_slice_type* keys,
@@ -130,8 +146,12 @@ struct gpu_cuco_static_adapter {
     (void)valuelen_max;
     (void)result_lengths;
     adapter_util::dispatch_uint32<1, 2>(configs_.keylen_max, [&](auto t) {
-      auto typed_keys = reinterpret_cast<const key_type_t<t.value>*>(keys);
-      get_index<t.value>()->find_async(typed_keys, typed_keys + num_keys, results);
+      adapter_util::dispatch_uint32<1, 2>(configs_.valuelen_max, [&](auto v) {
+        auto typed_keys = reinterpret_cast<const key_type_t<t.value>*>(keys);
+        auto typed_results = reinterpret_cast<value_type_t<v.value>*>(results);
+        get_index<t.value, v.value>()->find_async(
+          typed_keys, typed_keys + num_keys, typed_results);
+      });
     });
   }
   void print_stats() {}
@@ -139,9 +159,12 @@ struct gpu_cuco_static_adapter {
     (void)key_length;
     (void)value_length;
     adapter_util::dispatch_uint32<1, 2>(configs_.keylen_max, [&](auto t) {
-      std::cout << "LoadFactor: "
-                << static_cast<double>(max_keys) / get_index<t.value>()->capacity()
-                << std::endl;
+      adapter_util::dispatch_uint32<1, 2>(configs_.valuelen_max, [&](auto v) {
+        std::cout << "LoadFactor: "
+                  << static_cast<double>(max_keys) /
+                       get_index<t.value, v.value>()->capacity()
+                  << std::endl;
+      });
     });
   }
 
@@ -154,6 +177,7 @@ struct gpu_cuco_static_adapter {
     #undef DECLARE_ARGUMENTS
     std::size_t num_keys;
     uint32_t keylen_max;
+    uint32_t valuelen_max;
     configs() {}
     configs(std::vector<std::string>& arguments) {
       #define PARSE_ARGUMENTS(arg, type, default_value) \
@@ -166,9 +190,12 @@ struct gpu_cuco_static_adapter {
       #undef PARSE_DEFAULT_ARGUMENTS
       num_keys = tmp_max_keys;
       keylen_max = tmp_keylen_max;
+      valuelen_max = tmp_valuelen_max;
       check_argument(tmp_keylen_min == tmp_keylen_max);
-      check_argument(tmp_keylen_max == 1 || tmp_keylen_max == 2);
-      check_argument(tmp_valuelen_max == 1);
+      check_argument(tmp_valuelen_min == tmp_valuelen_max);
+      check_argument((tmp_keylen_max == 1 &&
+                      (tmp_valuelen_max == 1 || tmp_valuelen_max == 2)) ||
+                     (tmp_keylen_max == 2 && tmp_valuelen_max == 1));
       check_argument(0 < initial_array_fill_factor && initial_array_fill_factor < 1.0f);
     }
     void print() const {
@@ -182,12 +209,14 @@ struct gpu_cuco_static_adapter {
 
   template <uint32_t key_length>
   using key_type_t = std::conditional_t<key_length == 1, uint32_t, uint64_t>;
-  template <uint32_t key_length>
-  using index_type = cuco::static_map<key_type_t<key_length>, value_slice_type>;
+  template <uint32_t value_length>
+  using value_type_t = std::conditional_t<value_length == 1, uint32_t, uint64_t>;
+  template <uint32_t key_length, uint32_t value_length>
+  using index_type = cuco::static_map<key_type_t<key_length>, value_type_t<value_length>>;
 
-  template <uint32_t key_length>
-  index_type<key_length>* get_index() {
-    return reinterpret_cast<index_type<key_length>*>(index_);
+  template <uint32_t key_length, uint32_t value_length>
+  index_type<key_length, value_length>* get_index() {
+    return reinterpret_cast<index_type<key_length, value_length>*>(index_);
   }
 
   configs configs_;

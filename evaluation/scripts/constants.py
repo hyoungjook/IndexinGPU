@@ -13,9 +13,6 @@ DEFAULT_MIX_READ_RATIO = 0.5
 DEFAULT_SCAN_BATCH_SIZE = int(DEFAULT_BATCH_SIZE // DEFAULT_SCAN_COUNT)
 MEME_DATASET_PATH = 'dataset/meme.txt'
 
-# capacity * 16 * 0.8 > 500M so that no resize occurs
-DYCUCKOO_INITIAL_CAPACITY = 40000000
-
 INDEX_TYPES_ROBUST = [
     IndexType.gpu_masstree,
     IndexType.gpu_chainhashtable,
@@ -55,6 +52,15 @@ def DO_TEST_FOR_INDEX_TYPE(index_type, key_length):
         return False
     if index_type == IndexType.gpu_cuco_static and key_length > 2:
         return False
+    return True
+def DO_TEST_FOR_INDEX_TYPE_VALUELEN(index_type, value_length):
+    if index_type == IndexType.gpu_blink_tree and value_length > 1:
+        # not support longkeys
+        return False
+    if index_type == IndexType.gpu_cuco_static and value_length > 2:
+        return False
+    if index_type == IndexType.gpu_dycuckoo and value_length > 8:
+        return False # OOM
     return True
 
 def ROBUST_INDEX_ALLOC_POOL_RATIO(index_type):

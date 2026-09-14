@@ -29,6 +29,7 @@
 struct gpu_dycuckoo_adapter {
   static constexpr bool is_ordered = false;
   static constexpr bool support_mixed = false;
+  static constexpr bool support_update = false;
   using key_slice_type = uint32_t;
   using value_type = uint32_t;
   using size_type = uint32_t;
@@ -45,7 +46,8 @@ struct gpu_dycuckoo_adapter {
                                                 configs_.initial_capacity,
                                                 configs_.fill_factor_lower_bound,
                                                 configs_.fill_factor_upper_bound,
-                                                configs_.keylen_max);
+                                                configs_.keylen_max,
+                                                configs_.valuelen_max);
     }
     else {
       index_ = gpu_dycuckoo_dynamic_create(configs_.initial_capacity,
@@ -63,24 +65,6 @@ struct gpu_dycuckoo_adapter {
     }
   }
   void insert(const key_slice_type* keys,
-              uint32_t keylen_max,
-              const size_type* key_lengths,
-              const value_type* values,
-              uint32_t valuelen_max,
-              const size_type* value_lengths,
-              std::size_t num_keys) {
-    (void)keylen_max;
-    (void)key_lengths;
-    (void)valuelen_max;
-    (void)value_lengths;
-    if (configs_.use_lock) {
-      gpu_dycuckoo_dynamic_lock_insert(index_, keys, values, num_keys);
-    }
-    else {
-      gpu_dycuckoo_dynamic_insert(index_, keys, values, num_keys);
-    }
-  }
-  void update(const key_slice_type* keys,
               uint32_t keylen_max,
               const size_type* key_lengths,
               const value_type* values,
@@ -147,6 +131,7 @@ struct gpu_dycuckoo_adapter {
     FORALL_ARGUMENTS_GPU_DYCUCKOO(DECLARE_ARGUMENTS)
     #undef DECLARE_ARGUMENTS
     uint32_t keylen_max;
+    uint32_t valuelen_max;
     configs() {}
     configs(std::vector<std::string>& arguments) {
       #define PARSE_ARGUMENTS(arg, type, default_value) \
@@ -162,10 +147,16 @@ struct gpu_dycuckoo_adapter {
       FORALL_ARGUMENTS(PARSE_DEFAULT_ARGUMENTS)
       #undef PARSE_DEFAULT_ARGUMENTS
       check_argument(tmp_keylen_min == tmp_keylen_max);
-      check_argument(tmp_keylen_max == 1 || tmp_keylen_max == 2 || tmp_keylen_max == 4 || tmp_keylen_max == 8 || tmp_keylen_max == 16);
-      check_argument(tmp_valuelen_max == 1);
+      check_argument(tmp_valuelen_min == tmp_valuelen_max);
+      check_argument((tmp_valuelen_max == 1 &&
+                      (tmp_keylen_max == 1 || tmp_keylen_max == 2 || tmp_keylen_max == 4 ||
+                       tmp_keylen_max == 8 || tmp_keylen_max == 16)) ||
+                     (tmp_keylen_max == 1 &&
+                      (tmp_valuelen_max == 2 || tmp_valuelen_max == 4 ||
+                       tmp_valuelen_max == 8 || tmp_valuelen_max == 16)));
       keylen_max = tmp_keylen_max;
-      if (keylen_max > 1) {
+      valuelen_max = tmp_valuelen_max;
+      if (keylen_max > 1 || valuelen_max > 1) {
         use_lock = true;
       }
     }

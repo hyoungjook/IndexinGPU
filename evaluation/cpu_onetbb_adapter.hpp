@@ -24,12 +24,15 @@
 #include <utility>
 #include <vector>
 
+#include <adapter_util.hpp>
 #include <cmd.hpp>
+#include <generate_workload.hpp>
 #include <tbb/concurrent_hash_map.h>
 
 struct cpu_onetbb_adapter {
   static constexpr bool is_ordered = false;
   static constexpr bool support_mixed = true;
+  static constexpr bool support_update = true;
   using key_slice_type = uint32_t;
   using value_type = uint32_t;
   using size_type = uint32_t;
@@ -70,8 +73,6 @@ struct cpu_onetbb_adapter {
     }
   };
 
-  using index_type = tbb::concurrent_hash_map<key_type, value_type, key_compare>;
-
   void parse(std::vector<std::string>& arguments) {
     configs_ = configs(arguments);
   }
@@ -80,46 +81,87 @@ struct cpu_onetbb_adapter {
     configs_.print();
   }
 
-  void register_dataset(const key_slice_type* key, const size_type* key_lengths, const value_type* values) {}
+  void register_dataset(const key_slice_type* keys,
+                        const size_type* key_lengths,
+                        const value_type* values,
+                        const size_type* value_lengths) {
+    (void)keys;
+    (void)key_lengths;
+    (void)values;
+    (void)value_lengths;
+  }
 
   void initialize() {
-    index_ = std::make_unique<index_type>(configs_.initial_capacity, key_compare{});
+    dispatch_value_length([&](auto t) {
+      index_ = new index_type<t.value>(configs_.initial_capacity, key_compare{});
+    });
   }
 
   void destroy() {
-    index_.reset();
+    dispatch_value_length([&](auto t) {
+      delete get_index<t.value>();
+    });
+    index_ = nullptr;
   }
 
   void thread_enter([[maybe_unused]] unsigned thread_idx) noexcept {}
 
   void thread_exit([[maybe_unused]] unsigned thread_idx) noexcept {}
 
-  void insert(const key_slice_type* key, size_type key_length, value_type value, std::size_t tuple_id, unsigned thread_idx) {
+  void insert(const key_slice_type* key,
+              size_type key_length,
+              const value_type* value,
+              size_type value_length,
+              std::size_t tuple_id,
+              unsigned thread_idx) {
+    (void)value_length;
     (void)tuple_id;
     (void)thread_idx;
-    typename index_type::accessor accessor;
-    index_->insert(accessor, key_type{key, key_length});
-    accessor->second = value;
+    dispatch_value_length([&](auto t) {
+      typename index_type<t.value>::accessor accessor;
+      get_index<t.value>()->insert(accessor, key_type{key, key_length});
+      accessor->second = make_value<t.value>(value);
+    });
   }
 
-  void update(const key_slice_type* key, size_type key_length, value_type value, std::size_t tuple_id, unsigned thread_idx) {
+  void update(const key_slice_type* key,
+              size_type key_length,
+              const value_type* value,
+              size_type value_length,
+              std::size_t tuple_id,
+              unsigned thread_idx) {
+    (void)value_length;
     (void)tuple_id;
     (void)thread_idx;
-    typename index_type::accessor accessor;
-    index_->find(accessor, key_type{key, key_length});
-    accessor->second = value;
+    dispatch_value_length([&](auto t) {
+      typename index_type<t.value>::accessor accessor;
+      get_index<t.value>()->find(accessor, key_type{key, key_length});
+      accessor->second = make_value<t.value>(value);
+    });
   }
 
   void erase(const key_slice_type* key, size_type key_length, [[maybe_unused]] unsigned thread_idx) {
-    index_->erase(key_type{key, key_length});
+    dispatch_value_length([&](auto t) {
+      get_index<t.value>()->erase(key_type{key, key_length});
+    });
   }
 
-  value_type find(const key_slice_type* key, size_type key_length, [[maybe_unused]] unsigned thread_idx) {
-    typename index_type::const_accessor accessor;
-    if (index_->find(accessor, key_type{key, key_length})) {
-      return accessor->second;
-    }
-    return invalid_value;
+  void find(const key_slice_type* key,
+            size_type key_length,
+            value_type* result,
+            size_type* result_length,
+            [[maybe_unused]] unsigned thread_idx) {
+    dispatch_value_length([&](auto t) {
+      typename index_type<t.value>::const_accessor accessor;
+      if (get_index<t.value>()->find(accessor, key_type{key, key_length})) {
+        std::memcpy(result, accessor->second.data, sizeof(accessor->second));
+        *result_length = t.value;
+      }
+      else {
+        result[0] = invalid_value;
+        *result_length = 0;
+      }
+    });
   }
 
   void print_stats() {}
@@ -136,13 +178,25 @@ struct cpu_onetbb_adapter {
     #define DECLARE_ARGUMENTS(arg, type, default_value) type arg;
     FORALL_ARGUMENTS_CPU_ONETBB(DECLARE_ARGUMENTS)
     #undef DECLARE_ARGUMENTS
+    uint32_t valuelen_max;
     configs() {}
     configs(std::vector<std::string>& arguments) {
       #define PARSE_ARGUMENTS(arg, type, default_value) \
       arg = get_arg_value<type>(arguments, #arg).value_or(default_value);
       FORALL_ARGUMENTS_CPU_ONETBB(PARSE_ARGUMENTS)
       #undef PARSE_ARGUMENTS
+      #define PARSE_DEFAULT_ARGUMENTS(arg, type, default_value) \
+      [[maybe_unused]] auto tmp_##arg = get_arg_value<type>(arguments, #arg).value_or(default_value);
+      FORALL_ARGUMENTS(PARSE_DEFAULT_ARGUMENTS)
+      #undef PARSE_DEFAULT_ARGUMENTS
+      valuelen_max = tmp_valuelen_max;
       check_argument(0 < initial_capacity);
+      check_argument(tmp_valuelen_min == tmp_valuelen_max);
+      check_argument(valuelen_max == 1 || valuelen_max == 2 ||
+                     valuelen_max == 4 || valuelen_max == 8 ||
+                     valuelen_max == 16);
+      check_argument(valuelen_max == 1 ||
+                     (tmp_keylen_min == 1 && tmp_keylen_max == 1));
     }
     void print() const {
       #define PRINT_ARGUMENTS(arg, type, default_value) \
@@ -153,6 +207,33 @@ struct cpu_onetbb_adapter {
   };
   #undef FORALL_ARGUMENTS_CPU_ONETBB
 
+  template <uint32_t value_length>
+  struct stored_value {
+    value_type data[value_length];
+  };
+
+  template <uint32_t value_length>
+  using index_type = tbb::concurrent_hash_map<
+    key_type, stored_value<value_length>, key_compare>;
+
+  template <typename function_type>
+  void dispatch_value_length(function_type&& function) {
+    adapter_util::dispatch_uint32<1, 2, 4, 8, 16>(
+      configs_.valuelen_max, std::forward<function_type>(function));
+  }
+
+  template <uint32_t value_length>
+  index_type<value_length>* get_index() {
+    return reinterpret_cast<index_type<value_length>*>(index_);
+  }
+
+  template <uint32_t value_length>
+  static stored_value<value_length> make_value(const value_type* value) {
+    stored_value<value_length> result;
+    std::memcpy(result.data, value, sizeof(result));
+    return result;
+  }
+
   configs configs_;
-  std::unique_ptr<index_type> index_;
+  void* index_ = nullptr;
 };

@@ -45,7 +45,9 @@ def generate_configs(args):
     for value_length in EXP_VALUE_LENGTHS:
         if value_length == DEFAULT_VALUE_LENGTH_OVERVIEW:
             continue # already measured above
-        for index_type in INDEX_TYPES_ROBUST:
+        for index_type in INDEX_TYPES_ROBUST + INDEX_TYPES_GPU_BASELINE:
+            if not DO_TEST_FOR_INDEX_TYPE_VALUELEN(index_type, value_length):
+                continue
             common_config = {
                 ConfigType.index_type: index_type,
                 ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
@@ -56,8 +58,9 @@ def generate_configs(args):
                 ConfigType.valuelen_max: value_length,
                 ConfigType.num_lookups: DEFAULT_BATCH_SIZE,
                 ConfigType.rep_lookup: NUM_REPEATS,
-                OptionalConfigType.allocator_pool_ratio: ROBUST_INDEX_ALLOC_POOL_RATIO(index_type),
             }
+            if index_type in INDEX_TYPES_ROBUST:
+                common_config[OptionalConfigType.allocator_pool_ratio] = ROBUST_INDEX_ALLOC_POOL_RATIO(index_type)
             if index_type in IS_INDEX_TYPE_ORDERED:
                 common_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
                 common_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT

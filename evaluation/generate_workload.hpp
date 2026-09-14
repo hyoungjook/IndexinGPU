@@ -267,9 +267,9 @@ void generate_key_values(std::vector<key_slice_type>& keys,
       // decide key length
       uint32_t length = length_dist(rng);
       key_lengths[key_idx] = length;
-      // unique_id is random permutation of [0, num_keys)
+      // unique_id is random permutation of [1, num_keys]
       // this replaces single-threaded std::shuffle().
-      auto unique_id = feistel_permute(key_idx, num_keys, 0);
+      auto unique_id = feistel_permute(key_idx, num_keys, 0) + 1;
       // fill slices
       for (uint32_t slice = 0; slice < length; slice++) {
         //  key[0:keylen_prefix) = prefix[]

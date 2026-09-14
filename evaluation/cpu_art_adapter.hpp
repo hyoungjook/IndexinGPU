@@ -16,6 +16,7 @@
 #pragma once
 #include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -28,6 +29,7 @@
 struct cpu_art_adapter {
   static constexpr bool is_ordered = true;
   static constexpr bool support_mixed = true;
+  static constexpr bool support_update = false;
   using key_slice_type = uint32_t;
   using value_type = uint32_t;
   using size_type = uint32_t;
@@ -39,11 +41,14 @@ struct cpu_art_adapter {
   void print_args() const {
     configs_.print();
   }
-  void register_dataset(const key_slice_type* keys, const size_type* key_lengths, const value_type* values) {
+  void register_dataset(const key_slice_type* keys, const size_type* key_lengths,
+                        const value_type* values, const size_type* value_lengths) {
     keys_ = keys;
     key_lengths_ = key_lengths;
     values_ = values;
+    value_lengths_ = value_lengths;
     key_stride_ = configs_.keylen_max;
+    value_stride_ = configs_.valuelen_max;
   }
   void initialize() {
     tree_ = std::make_unique<ART_ROWEX::Tree>(&load_key);
@@ -59,23 +64,15 @@ struct cpu_art_adapter {
     state.threadinfo.reset();
     state.tree = nullptr;
   }
-  void insert(const key_slice_type* key, size_type key_length, value_type value, std::size_t tuple_id, unsigned thread_idx) {
+  void insert(const key_slice_type* key, size_type key_length,
+              const value_type* value, size_type value_length,
+              std::size_t tuple_id, unsigned thread_idx) {
     (void)value;
+    (void)value_length;
     (void)thread_idx;
     auto tid = static_cast<TID>(tuple_id) + 1;
     Key art_key = make_key(key, key_length);
     tree_->insert(art_key, tid, current_threadinfo());
-  }
-  void update(const key_slice_type* key, size_type key_length, value_type value, std::size_t tuple_id, unsigned thread_idx) {
-    (void)value;
-    (void)thread_idx;
-    Key art_key = make_key(key, key_length);
-    TID tid = tree_->lookup(art_key, current_threadinfo());
-    if (tid != 0) {
-      tree_->remove(art_key, tid, current_threadinfo());
-    }
-    auto new_tid = static_cast<TID>(tuple_id) + 1;
-    tree_->insert(art_key, new_tid, current_threadinfo());
   }
   void erase(const key_slice_type* key, size_type key_length, [[maybe_unused]] unsigned thread_idx) {
     Key art_key = make_key(key, key_length);
@@ -84,22 +81,38 @@ struct cpu_art_adapter {
       tree_->remove(art_key, tid, current_threadinfo());
     }
   }
-  value_type find(const key_slice_type* key, size_type key_length, [[maybe_unused]] unsigned thread_idx) {
+  void find(const key_slice_type* key, size_type key_length,
+            value_type* result, size_type* result_length,
+            [[maybe_unused]] unsigned thread_idx) {
     Key art_key = make_key(key, key_length);
     TID tid = tree_->lookup(art_key, current_threadinfo());
     if (tid == 0) {
-      return invalid_value;
+      result[0] = invalid_value;
+      *result_length = 0;
+      return;
     }
-    return values_[tid - 1];
+    auto tuple_idx = static_cast<std::size_t>(tid - 1);
+    *result_length = value_lengths_[tuple_idx];
+    std::memcpy(result, &values_[tuple_idx * value_stride_],
+                sizeof(value_type) * *result_length);
   }
-  void scan(const key_slice_type* key, size_type key_length, uint32_t count, value_type* results, [[maybe_unused]] unsigned thread_idx) {
+  void scan(const key_slice_type* key, size_type key_length, uint32_t count,
+            value_type* results, size_type result_stride,
+            size_type* result_lengths, [[maybe_unused]] unsigned thread_idx) {
     Key start_key = make_key(key, key_length);
     Key end_key = make_upper_bound_key();
     Key continue_key;
+    thread_local std::vector<TID> tids;
+    tids.resize(count);
     std::size_t num_results = 0;
-    tree_->lookupRange(start_key, end_key, continue_key,
-                       reinterpret_cast<TID*>(results), count, num_results,
+    tree_->lookupRange(start_key, end_key, continue_key, tids.data(), count, num_results,
                        current_threadinfo());
+    for (std::size_t i = 0; i < num_results; i++) {
+      auto tuple_idx = static_cast<std::size_t>(tids[i] - 1);
+      result_lengths[i] = value_lengths_[tuple_idx];
+      std::memcpy(&results[i * result_stride], &values_[tuple_idx * value_stride_],
+                  sizeof(value_type) * result_lengths[i]);
+    }
   }
   void print_stats() {}
   void ht_print_load_factor(std::size_t max_keys, uint32_t key_length, uint32_t value_length) {
@@ -111,6 +124,7 @@ struct cpu_art_adapter {
  private:
   struct configs {
     std::size_t keylen_max; // parse again here; do not print
+    std::size_t valuelen_max;
     configs() {}
     configs(std::vector<std::string>& arguments) {
       #define PARSE_DEFAULT_ARGUMENTS(arg, type, default_value) \
@@ -118,6 +132,11 @@ struct cpu_art_adapter {
       FORALL_ARGUMENTS(PARSE_DEFAULT_ARGUMENTS)
       #undef PARSE_DEFAULT_ARGUMENTS
       keylen_max = tmp_keylen_max;
+      valuelen_max = tmp_valuelen_max;
+      check_argument(tmp_valuelen_min == tmp_valuelen_max);
+      check_argument(valuelen_max == 1 || valuelen_max == 2 || valuelen_max == 4 ||
+                     valuelen_max == 8 || valuelen_max == 16);
+      check_argument(valuelen_max == 1 || (tmp_keylen_min == 1 && tmp_keylen_max == 1));
     }
     void print() const {}
   };
@@ -161,10 +180,14 @@ struct cpu_art_adapter {
   static const key_slice_type* keys_;
   static const size_type* key_lengths_;
   static const value_type* values_;
+  static const size_type* value_lengths_;
   static size_type key_stride_;
+  static size_type value_stride_;
 };
 
 const cpu_art_adapter::key_slice_type* cpu_art_adapter::keys_;
 const cpu_art_adapter::size_type* cpu_art_adapter::key_lengths_;
 const cpu_art_adapter::value_type* cpu_art_adapter::values_;
+const cpu_art_adapter::size_type* cpu_art_adapter::value_lengths_;
 cpu_art_adapter::size_type cpu_art_adapter::key_stride_;
+cpu_art_adapter::size_type cpu_art_adapter::value_stride_;
