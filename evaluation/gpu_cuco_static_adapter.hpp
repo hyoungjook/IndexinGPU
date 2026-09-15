@@ -24,6 +24,7 @@
 #include <adapter_util.hpp>
 #include <cmd.hpp>
 #include <generate_workload.hpp>
+#include <cooperative_groups.h>
 #include <cuco/static_map.cuh>
 #include <cuda/iterator>
 
@@ -37,9 +38,43 @@ struct gpu_cuco_static_pair_generator {
   }
 };
 
+template <typename ref_type, typename key_type, typename value_type>
+__global__ void gpu_cuco_static_mixed_batch_kernel(
+    const kernels::request_type* types,
+    const key_type* keys,
+    value_type* values,
+    std::size_t num_keys,
+    ref_type map_ref) {
+  namespace cg = cooperative_groups;
+  constexpr auto cg_size = ref_type::cg_size;
+  auto tile = cg::tiled_partition<cg_size>(cg::this_thread_block());
+  auto request_idx =
+    (static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x) / cg_size;
+  if (request_idx >= num_keys) { return; }
+
+  auto type = types[request_idx];
+  auto key = keys[request_idx];
+  if (type == kernels::request_type_insert) {
+    map_ref.insert(tile, cuco::pair<key_type, value_type>{key, values[request_idx]});
+  }
+  else if (type == kernels::request_type_update) {
+    map_ref.insert_or_assign(tile, cuco::pair<key_type, value_type>{key, values[request_idx]});
+  }
+  else if (type == kernels::request_type_erase) {
+    map_ref.erase(tile, key);
+  }
+  else {
+    auto found = map_ref.find(tile, key);
+    if (tile.thread_rank() == 0) {
+      values[request_idx] =
+        found == map_ref.end() ? map_ref.empty_value_sentinel() : found->second;
+    }
+  }
+}
+
 struct gpu_cuco_static_adapter {
   static constexpr bool is_ordered = false;
-  static constexpr bool support_mixed = false;
+  static constexpr bool support_mixed = true;
   static constexpr bool support_update = true;
   using key_slice_type = uint32_t;
   using value_slice_type = uint32_t;
@@ -151,6 +186,36 @@ struct gpu_cuco_static_adapter {
         auto typed_results = reinterpret_cast<value_type_t<v.value>*>(results);
         get_index<t.value, v.value>()->find_async(
           typed_keys, typed_keys + num_keys, typed_results);
+      });
+    });
+  }
+  void mixed_batch(const kernels::request_type* types,
+                   const key_slice_type* keys,
+                   uint32_t keylen_max,
+                   const size_type* key_lengths,
+                   value_slice_type* values,
+                   uint32_t valuelen_max,
+                   size_type* value_lengths,
+                   std::size_t num_keys) {
+    (void)keylen_max;
+    (void)key_lengths;
+    (void)valuelen_max;
+    (void)value_lengths;
+    if (num_keys == 0) { return; }
+    adapter_util::dispatch_uint32<1, 2>(configs_.keylen_max, [&](auto t) {
+      adapter_util::dispatch_uint32<1, 2>(configs_.valuelen_max, [&](auto v) {
+        using key_type = key_type_t<t.value>;
+        using value_type = value_type_t<v.value>;
+        constexpr uint32_t block_size = 128;
+        constexpr uint32_t cg_size = index_type<t.value, v.value>::cg_size;
+        auto num_blocks = static_cast<uint32_t>(
+          (num_keys * cg_size + block_size - 1) / block_size);
+        auto typed_keys = reinterpret_cast<const key_type*>(keys);
+        auto typed_values = reinterpret_cast<value_type*>(values);
+        auto map_ref = get_index<t.value, v.value>()->ref(
+          cuco::insert, cuco::insert_or_assign, cuco::erase, cuco::find);
+        gpu_cuco_static_mixed_batch_kernel<<<num_blocks, block_size>>>(
+          types, typed_keys, typed_values, num_keys, map_ref);
       });
     });
   }
