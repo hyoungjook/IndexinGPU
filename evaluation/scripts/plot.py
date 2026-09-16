@@ -280,9 +280,6 @@ def key_length_plots(configs_and_results, plot_file_prefix):
         'tree-lookup', 'tree-insert', 'tree-update', 'tree-delete', 'tree-mixed', 'tree-scan',
         'ht-lookup', 'ht-insert', 'ht-update', 'ht-delete', 'ht-mixed'
     ]
-    cuco_inset_result_types = [
-        ResultType.lookup, ResultType.insert, ResultType.update, ResultType.delete
-    ]
     for idx, (index_types, result_type, set_xlabel, set_ylabel) in enumerate(plot_spec):
         fig, ax = _make_fixed_plot_area_figure(2, 1.3,
             include_xlabel=set_xlabel,
@@ -291,6 +288,7 @@ def key_length_plots(configs_and_results, plot_file_prefix):
         our_max = [None for _ in range(len(EXP_KEY_LENGTHS))]
         gpu_baseline_max = [None for _ in range(len(EXP_KEY_LENGTHS))]
         cpu_baseline_max = [None for _ in range(len(EXP_KEY_LENGTHS))]
+        ylim_top = 0
         for index_type in index_types:
             if result_type not in tputs[index_type]:
                 continue
@@ -304,6 +302,7 @@ def key_length_plots(configs_and_results, plot_file_prefix):
             else:
                 _record_max_tput(index_type, avg_values, cpu_baseline_max)
             ydata = avg_values.copy()
+            ylim_top = max(ylim_top, max(ydata))
             markevery = range(len(ydata))
             if len(markevery) == 1:
                 ydata.append(0)
@@ -333,7 +332,7 @@ def key_length_plots(configs_and_results, plot_file_prefix):
             if index_label not in legends[get_index_group(index_type)]['labels']:
                 legends[get_index_group(index_type)]['labels'].append(index_label)
                 legends[get_index_group(index_type)]['handles'].append(line)
-        if plot_names[idx].startswith('ht-') and result_type in cuco_inset_result_types:
+        if plot_names[idx].startswith('ht-'):
             cuco_index_type = IndexType.gpu_cuco_static
             cuco_avg_values = _convert_mops_to_bops(
                 tputs[cuco_index_type][result_type]['avg'], cuco_index_type
@@ -381,7 +380,10 @@ def key_length_plots(configs_and_results, plot_file_prefix):
             if cuco_label not in legends[cuco_group]['labels']:
                 legends[cuco_group]['labels'].append(cuco_label)
                 legends[cuco_group]['handles'].append(cuco_line)
-        ax.set_ylim(bottom = 0)
+        if plot_names[idx] == 'ht-mixed':
+            ax.set_ylim(bottom = 0, top = ylim_top * 1.4)
+        else:
+            ax.set_ylim(bottom = 0)
         ax.set_xlim(left = 0)
         _, ymax = ax.get_ylim()
         ytick_candidates = [0.2, 0.5, 1.0]
