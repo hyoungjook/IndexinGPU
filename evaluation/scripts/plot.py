@@ -203,7 +203,7 @@ def _save_grouped_legend_pdf(legend_groups, output_file):
     fig.savefig(output_file, bbox_inches='tight', pad_inches=0.02)
     plt.close(fig)
 
-def key_length_plots(configs_and_results, plot_file_prefix):
+def key_length_plots(configs_and_results, plot_file_prefix, cpu_input_plot=False):
     tputs = {}
     all_index_types = INDEX_TYPES_ROBUST + INDEX_TYPES_GPU_BASELINE + INDEX_TYPES_CPU_BASELINE
     for index_type in all_index_types:
@@ -230,6 +230,8 @@ def key_length_plots(configs_and_results, plot_file_prefix):
                     ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH_OVERVIEW,
                     ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH_OVERVIEW,
                 }
+                if cpu_input_plot and index_type in INDEX_TYPES_ROBUST + INDEX_TYPES_GPU_BASELINE:
+                    desired_config[ConfigType.use_pinned_host_memory] = 1
                 if result_type == ResultType.lookup:
                     desired_config[ConfigType.num_lookups] = DEFAULT_BATCH_SIZE
                 elif result_type in [ResultType.insert, ResultType.delete]:
@@ -410,143 +412,188 @@ def key_length_plots(configs_and_results, plot_file_prefix):
                   f'over gpu: {speedup_over_gpu:.1f}')
     _save_grouped_legend_pdf(legends, f'{plot_file_prefix}-legend.pdf')
 
-def key_length_cpu_plots(configs_and_results, plot_file_prefix):
+def cpu_input_plots(configs_and_results, plot_file_prefix):
     tputs = {}
-    all_index_types = INDEX_TYPES_ROBUST + INDEX_TYPES_GPU_BASELINE + INDEX_TYPES_CPU_BASELINE
-    for index_type in all_index_types:
-        tputs[index_type] = {}
-        result_types = [ResultType.lookup, ResultType.insert, ResultType.delete]
-        if index_type in IS_INDEX_TYPE_SUPPORT_MIX:
-            result_types.append(ResultType.mixed)
-        if index_type in IS_INDEX_TYPE_ORDERED:
-            result_types.append(ResultType.scan)
-        if index_type in IS_INDEX_TYPE_SUPPORT_UPDATE:
-            result_types.append(ResultType.update)
-        if index_type in IS_INDEX_TYPE_SUPPORT_LONGKEY:
-            key_lengths = EXP_KEY_LENGTHS
-        else:
-            key_lengths = [1]
-        for result_type in result_types:
-            tputs[index_type][result_type] = {
-                'avg': [], 'min': [], 'max': []
-            }
-            for key_length in key_lengths:
-                desired_config = {
-                    ConfigType.index_type: index_type,
-                    ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
-                    ConfigType.keylen_prefix: 0,
-                    ConfigType.keylen_min: key_length,
-                    ConfigType.keylen_max: key_length,
-                    ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH_OVERVIEW,
-                    ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH_OVERVIEW,
-                }
-                if index_type in INDEX_TYPES_ROBUST + INDEX_TYPES_GPU_BASELINE:
-                    desired_config[ConfigType.use_pinned_host_memory] = 1
-                if result_type == ResultType.lookup:
-                    desired_config[ConfigType.num_lookups] = DEFAULT_BATCH_SIZE
-                elif result_type in [ResultType.insert, ResultType.delete]:
-                    desired_config[ConfigType.num_insdel] = DEFAULT_BATCH_SIZE
-                elif result_type == ResultType.mixed:
-                    desired_config[ConfigType.num_mixed] = DEFAULT_BATCH_SIZE
-                    desired_config[ConfigType.mix_read_ratio] = DEFAULT_MIX_READ_RATIO
-                elif result_type == ResultType.scan:
-                    desired_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
-                    desired_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
-                elif result_type == ResultType.update:
-                    desired_config[ConfigType.num_updates] = DEFAULT_BATCH_SIZE
-                result = filter(configs_and_results, desired_config, result_type)
-                processed_result = _compute_avg_min_max_from_raw(result[result_type.name]['raw'])
-                for metric_type in ['avg', 'min', 'max']:
-                    tputs[index_type][result_type][metric_type].append(processed_result[metric_type])
-    # plot
-    key_lengths_bytes = [4 * l for l in EXP_KEY_LENGTHS]
-    tree_indexes = [i for i in all_index_types if i in IS_INDEX_TYPE_ORDERED]
-    hashtable_indexes = [i for i in all_index_types if i not in IS_INDEX_TYPE_ORDERED]
+    tree_indexes = [
+        IndexType.cpu_art,
+        IndexType.cpu_masstree,
+        IndexType.gpu_masstree,
+    ]
+    hashtable_indexes = [
+        IndexType.cpu_libcuckoo,
+        IndexType.cpu_onetbb,
+        IndexType.gpu_cuckoohashtable,
+        IndexType.gpu_chainhashtable,
+        IndexType.gpu_extendhashtable,
+    ]
     plot_spec = [
-        (tree_indexes, ResultType.lookup, False, True),
-        (tree_indexes, ResultType.insert, False, False),
-        (tree_indexes, ResultType.update, False, False),
-        (tree_indexes, ResultType.delete, False, False),
-        (tree_indexes, ResultType.mixed, False, False),
-        (tree_indexes, ResultType.scan, False, False),
-        (hashtable_indexes, ResultType.lookup, True, True),
-        (hashtable_indexes, ResultType.insert, True, False),
-        (hashtable_indexes, ResultType.update, True, False),
-        (hashtable_indexes, ResultType.delete, True, False),
-        (hashtable_indexes, ResultType.mixed, True, False),
+        ('tree', tree_indexes, [
+            ResultType.lookup,
+            ResultType.scan,
+            ResultType.insert,
+            ResultType.update,
+            ResultType.delete,
+            ResultType.mixed,
+        ]),
+        ('ht', hashtable_indexes, [
+            ResultType.lookup,
+            ResultType.insert,
+            ResultType.update,
+            ResultType.delete,
+            ResultType.mixed,
+        ]),
     ]
-    plot_names = [
-        'tree-lookup', 'tree-insert', 'tree-update', 'tree-delete', 'tree-mixed', 'tree-scan',
-        'ht-lookup', 'ht-insert', 'ht-update', 'ht-delete', 'ht-mixed'
-    ]
-    for idx, (index_types, result_type, set_xlabel, set_ylabel) in enumerate(plot_spec):
-        fig, ax = _make_fixed_plot_area_figure(2, 1.3,
-            include_xlabel=set_xlabel,
-            include_ylabel=set_ylabel,
-        )
-        our_max = [None for _ in range(len(EXP_KEY_LENGTHS))]
-        gpu_baseline_max = [None for _ in range(len(EXP_KEY_LENGTHS))]
-        cpu_baseline_max = [None for _ in range(len(EXP_KEY_LENGTHS))]
+
+    key_length = 8
+    for _, index_types, result_types in plot_spec:
         for index_type in index_types:
-            if result_type not in tputs[index_type]:
-                continue
-            avg_values = _convert_mops_to_bops(tputs[index_type][result_type]['avg'], index_type)
-            min_values = _convert_mops_to_bops(tputs[index_type][result_type]['min'], index_type)
-            max_values = _convert_mops_to_bops(tputs[index_type][result_type]['max'], index_type)
-            if index_type in INDEX_TYPES_ROBUST:
-                _record_max_tput(index_type, avg_values, our_max)
-            elif index_type in INDEX_TYPES_GPU_BASELINE:
-                _record_max_tput(index_type, avg_values, gpu_baseline_max)
-            else:
-                _record_max_tput(index_type, avg_values, cpu_baseline_max)
-            ydata = avg_values.copy()
-            markevery = range(len(ydata))
-            if len(markevery) == 1:
-                ydata.append(0)
-            xdata = key_lengths_bytes[0:len(ydata)]
-            index_label = INDEX_LABELS[index_type]
-            line, = ax.plot(
-                xdata, ydata,
-                label=index_label,
-                markevery=markevery,
-                linewidth=2, markersize=6,
-                **INDEX_STYLES[index_type]
-            )
-            _add_throughput_error_bars(
-                ax,
-                xdata[0:len(avg_values)],
-                avg_values,
-                min_values,
-                max_values,
-                color=INDEX_STYLES[index_type]['color']
-            )
-            if len(markevery) == 1:
-                ax.text(xdata[1], ydata[1], "X", fontsize=10, color='red', fontweight='bold', ha='center', va='center', zorder=10)
-        ax.set_ylim(bottom = 0)
-        ax.set_xlim(left = 0)
-        _, ymax = ax.get_ylim()
-        ytick_candidates = [0.2, 0.5, 1.0]
-        for ytick in ytick_candidates:
-            num_ticks = int(ymax // ytick)
-            if 2 <= num_ticks and num_ticks <= 4:
-                yticks = [ytick * x for x in range(num_ticks + 1)]
-                break
-        ax.set_yticks(yticks)
-        ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
-        ax.set_xticks([0, 20, 40, 60])
-        ax.grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.5)
-        if set_xlabel:
-            ax.set_xlabel('Key Length (B)')
-        if set_ylabel:
+            input_locations = [0, 1] if index_type in INDEX_TYPES_ROBUST else [None]
+            for input_location in input_locations:
+                for result_type in result_types:
+                    if result_type == ResultType.update and index_type not in IS_INDEX_TYPE_SUPPORT_UPDATE:
+                        tputs[(index_type, input_location, result_type)] = {
+                            'avg': 0.0, 'min': 0.0, 'max': 0.0
+                        }
+                        continue
+                    desired_config = {
+                        ConfigType.index_type: index_type,
+                        ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+                        ConfigType.keylen_prefix: 0,
+                        ConfigType.keylen_min: key_length,
+                        ConfigType.keylen_max: key_length,
+                        ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH_OVERVIEW,
+                        ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH_OVERVIEW,
+                    }
+                    if input_location is not None:
+                        desired_config[ConfigType.use_pinned_host_memory] = input_location
+                    if result_type == ResultType.lookup:
+                        desired_config[ConfigType.num_lookups] = DEFAULT_BATCH_SIZE
+                    elif result_type in [ResultType.insert, ResultType.delete]:
+                        desired_config[ConfigType.num_insdel] = DEFAULT_BATCH_SIZE
+                    elif result_type == ResultType.update:
+                        desired_config[ConfigType.num_updates] = DEFAULT_BATCH_SIZE
+                    elif result_type == ResultType.mixed:
+                        desired_config[ConfigType.num_mixed] = DEFAULT_BATCH_SIZE
+                        desired_config[ConfigType.mix_read_ratio] = DEFAULT_MIX_READ_RATIO
+                    elif result_type == ResultType.scan:
+                        desired_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
+                        desired_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
+                    result = filter(configs_and_results, desired_config, result_type)
+                    tputs[(index_type, input_location, result_type)] = \
+                        _compute_avg_min_max_from_raw(result[result_type.name]['raw'])
+
+    legend_handles = []
+    legend_labels = []
+    for plot_name, index_types, result_types in plot_spec:
+        fig, ax = _make_fixed_plot_area_figure(3.2, 1.5,
+            include_xlabel=False, include_ylabel=(plot_name == 'tree'))
+        bar_width = 0.72 / len(index_types)
+        bar_spacing = bar_width * 1.2
+        group_centers = list(range(len(result_types)))
+        bar_offsets = [
+            (index_idx - (len(index_types) - 1) / 2) * bar_spacing
+            for index_idx in range(len(index_types))
+        ]
+        plot_top = 0
+        for group_center, result_type in zip(group_centers, result_types):
+            our_ymax = 0
+            our_gpu_ymax = 0
+            baseline_ymax = 0
+            our_x = []
+            for bar_offset, index_type in zip(bar_offsets, index_types):
+                xdata = [group_center + bar_offset]
+                color = INDEX_STYLES[index_type]['color']
+                input_locations = [0, 1] if index_type in INDEX_TYPES_ROBUST else [None]
+                gpu_resident_avg = None
+                for input_location in input_locations:
+                    result_tputs = tputs[(index_type, input_location, result_type)]
+                    avg_values = _convert_mops_to_bops([result_tputs['avg']], index_type)
+                    min_values = _convert_mops_to_bops([result_tputs['min']], index_type)
+                    max_values = _convert_mops_to_bops([result_tputs['max']], index_type)
+                    gpu_resident_input = input_location == 0
+                    if input_location == 1:
+                        our_ymax = max(our_ymax, avg_values[0])
+                        our_x.append(xdata[0])
+                    elif input_location == 0:
+                        our_gpu_ymax = max(our_gpu_ymax, avg_values[0])
+                    elif input_location is None:
+                        baseline_ymax = max(baseline_ymax, avg_values[0])
+                    facecolor = f'{color}33' if gpu_resident_input else 'none'
+                    edgecolor = 'none' if gpu_resident_input else color
+                    hatch = None if gpu_resident_input else HATCH_STYLES[index_type]
+                    linewidth = 0 if gpu_resident_input else (2 if index_type in INDEX_TYPES_ROBUST else 1)
+                    ax.bar(
+                        xdata, avg_values,
+                        width=bar_width,
+                        facecolor=facecolor,
+                        edgecolor=edgecolor,
+                        hatch=hatch,
+                        linewidth=linewidth,
+                        zorder=2 if gpu_resident_input else 3,
+                    )
+                    if gpu_resident_input:
+                        gpu_resident_avg = avg_values[0]
+                    if not gpu_resident_input:
+                        _add_throughput_error_bars(
+                            ax,
+                            xdata,
+                            avg_values,
+                            min_values,
+                            max_values,
+                            color=color,
+                            for_barplot=True,
+                        )
+                    if input_location == 1 and gpu_resident_avg > avg_values[0]:
+                        bar_center = xdata[0]
+                        ax.plot(
+                            [bar_center - bar_width / 2, bar_center + bar_width / 2],
+                            [gpu_resident_avg, gpu_resident_avg],
+                            color=color,
+                            linewidth=1,
+                            zorder=4,
+                        )
+                    plot_top = max(plot_top, max_values[0])
+
+                    if input_location is None:
+                        legend_label = INDEX_LABELS[index_type]
+                    else:
+                        input_label = 'CPU input' if input_location == 1 else 'GPU input'
+                        legend_label = f'{INDEX_LABELS[index_type]} ({input_label})'
+                    if legend_label not in legend_labels:
+                        legend_handles.append(mpatch.Patch(
+                            facecolor=facecolor,
+                            edgecolor=edgecolor,
+                            hatch=hatch,
+                            linewidth=linewidth,
+                        ))
+                        legend_labels.append(legend_label)
+            if baseline_ymax > 0 and our_ymax > 0:
+                text_y = our_ymax * 1.1 if our_gpu_ymax > our_ymax * 1.8 else our_gpu_ymax * 1.1
+                ax.text(sum(our_x) / len(our_x), text_y, f'{our_ymax / baseline_ymax:.1f}x', fontsize=10, ha='center', va='bottom', zorder=10)
+
+        ax.set_ylim(bottom=0, top=plot_top * 1.2)
+        xmargin = bar_spacing * len(index_types)
+        ax.set_xlim(group_centers[0] - xmargin, group_centers[-1] + xmargin)
+        ax.set_xticks(group_centers)
+        ax.set_xticklabels([result_type.name for result_type in result_types])
+        ax.grid(True, axis='y', which='major', linestyle='--', linewidth=0.6, alpha=0.5)
+        if plot_name == 'tree':
             ax.set_ylabel(r'Throughput ($10^9$/s)')
-        fig.savefig(f'{plot_file_prefix}-{plot_names[idx]}.pdf', bbox_inches='tight')
+        plt.savefig(f'{plot_file_prefix}-{plot_name}.pdf', bbox_inches='tight')
         plt.close(fig)
-        for i in range(len(EXP_KEY_LENGTHS)):
-            speedup_over_cpu = our_max[i][0] / cpu_baseline_max[i][0]
-            speedup_over_gpu = our_max[i][0] / gpu_baseline_max[i][0] if gpu_baseline_max[i] is not None else 0
-            print(f'{plot_names[idx]}-cpu: key={EXP_KEY_LENGTHS[i]} ' + \
-                  f'over cpu: {speedup_over_cpu:.1f} ({our_max[i][1]}, {cpu_baseline_max[i][1]})' + \
-                  f'over gpu: {speedup_over_gpu:.1f}')
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 1.1), constrained_layout=True)
+    ax.legend(
+        legend_handles,
+        legend_labels,
+        loc='center',
+        ncol=4,
+        handlelength=2,
+        handletextpad=0.5,
+    )
+    ax.axis('off')
+    plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
+    plt.close(fig)
 
 def average_slowdown_cpu(configs_and_results):
     slowdowns = []
@@ -1292,7 +1339,7 @@ def batch_plots(configs_and_results, plot_file_prefix):
     plt.savefig(f'{plot_file_prefix}-legend.pdf', bbox_inches='tight')
     plt.close(fig)
 
-def meme_plots(configs_and_results, plot_file_prefix):
+def meme_plots(configs_and_results, plot_file_prefix, cpu_input_plot=False):
     tputs = {}
     tree_indexes = [IndexType.cpu_art, IndexType.cpu_masstree, IndexType.gpu_masstree,]
     hashtable_indexes = [IndexType.cpu_libcuckoo, IndexType.cpu_onetbb, IndexType.gpu_cuckoohashtable, IndexType.gpu_chainhashtable, IndexType.gpu_extendhashtable,]
@@ -1311,6 +1358,8 @@ def meme_plots(configs_and_results, plot_file_prefix):
                 ConfigType.valuelen_min: DEFAULT_VALUE_LENGTH_OVERVIEW,
                 ConfigType.valuelen_max: DEFAULT_VALUE_LENGTH_OVERVIEW,
             }
+            if cpu_input_plot and index_type in INDEX_TYPES_ROBUST + INDEX_TYPES_GPU_BASELINE:
+                desired_config[ConfigType.use_pinned_host_memory] = 1
             if result_type == ResultType.lookup:
                 desired_config[ConfigType.num_lookups] = BATCH_SIZE_MEME
             elif result_type in [ResultType.insert, ResultType.delete]:
@@ -1518,7 +1567,7 @@ def meme_plots(configs_and_results, plot_file_prefix):
 
 def generate_plots(args, configs_and_results):
     key_length_plots(configs_and_results, Path(args.result_dir) / 'plot_keylength')
-    #key_length_cpu_plots(configs_and_results, Path(args.result_dir) / 'plot_keylength_cpu')
+    #key_length_plots(configs_and_results, Path(args.result_dir) / 'plot_keylength_cpu', cpu_input_plot=True)
     average_slowdown_cpu(configs_and_results)
     value_length_plots(configs_and_results, Path(args.result_dir) / 'plot_valuelength')
     suffix_plots(configs_and_results, Path(args.result_dir) / 'plot_suffix')
@@ -1529,6 +1578,8 @@ def generate_plots(args, configs_and_results):
     batch_plots(configs_and_results, Path(args.result_dir) / 'plot_batch')
     if not args.skip_meme:
         meme_plots(configs_and_results, Path(args.result_dir) / 'plot_meme')
+        #meme_plots(configs_and_results, Path(args.result_dir) / 'plot_meme_cpu', cpu_input_plot=True)
+    cpu_input_plots(configs_and_results, Path(args.result_dir) / 'plot_cpu_input')
 
 if __name__ == "__main__":
     args = parse_args_for_plot()
