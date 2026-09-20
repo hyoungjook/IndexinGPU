@@ -19,6 +19,7 @@ class IndexType(Enum):
     gpu_cuckoohashtable = auto()
     gpu_extendhashtable = auto()
     gpu_blink_tree = auto()
+    gpu_cuco_static = auto()
     gpu_dycuckoo = auto()
     cpu_libcuckoo = auto()
     cpu_onetbb = auto()
@@ -103,6 +104,7 @@ EXECUTABLE_INFO = {
         'path': 'bin/universal_bench_with_gpu_baseline',
         'indexes': [
             IndexType.gpu_blink_tree,
+            IndexType.gpu_cuco_static,
             IndexType.gpu_dycuckoo,
         ]
     },
@@ -157,6 +159,9 @@ INDEX_INFO = {
     IndexType.gpu_blink_tree: [
         OptionalConfigType.lookup_concurrent,
         OptionalConfigType.erase_concurrent
+    ],
+    IndexType.gpu_cuco_static: [
+        OptionalConfigType.initial_array_fill_factor
     ],
     IndexType.gpu_dycuckoo: [
         OptionalConfigType.use_lock,

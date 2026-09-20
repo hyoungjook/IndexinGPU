@@ -26,6 +26,7 @@
 struct gpu_masstree_adapter {
   static constexpr bool is_ordered = true;
   static constexpr bool support_mixed = true;
+  static constexpr bool support_update = true;
   using key_slice_type = uint32_t;
   using value_slice_type = uint32_t;
   using size_type = uint32_t;

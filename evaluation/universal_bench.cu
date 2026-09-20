@@ -35,6 +35,7 @@
 #include <cpu_art_adapter.hpp>
 #elif defined(UNIVERSAL_BENCH_WITH_GPU_BASELINE)
 #include <gpu_blink_tree_adapter.hpp>
+#include <gpu_cuco_static_adapter.hpp>
 #include <gpu_dycuckoo_adapter.hpp>
 #elif defined(UNIVERSAL_BENCH_INSTANTIATE_GPU_MASSTREE)
 #include <gpu_masstree_adapter.hpp>
@@ -191,7 +192,9 @@ static void prefill(adapter_type& adapter,
   }
   #else
   helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
-      adapter.insert(&h_keys[task_idx * keylen_max], h_key_lengths[task_idx], h_values[task_idx], task_idx, thread_id);
+      adapter.insert(&h_keys[task_idx * keylen_max], h_key_lengths[task_idx],
+                     &h_values[task_idx * valuelen_max], h_value_lengths[task_idx],
+                     task_idx, thread_id);
     }, num_keys,
     [&](unsigned thread_id) { adapter.thread_enter(thread_id); },
     [&](unsigned thread_id) { adapter.thread_exit(thread_id); });
@@ -248,6 +251,7 @@ static void run_bench(adapter_type& adapter,
     cuda_try(cudaDeviceSynchronize());
     #else
     std::vector<value_slice_type> h_results(result_buffer_size);
+    std::vector<size_type> h_result_lengths(result_length_buffer_size);
     #endif
     for (uint32_t r = 0; r < args.rep_lookup; r++) {
       lookup_timer.start();
@@ -255,7 +259,10 @@ static void run_bench(adapter_type& adapter,
       adapter.find(d_lookup_keys.data(), args.keylen_max, d_lookup_key_lengths.data(), d_results.data(), args.valuelen_max, d_result_lengths.data(), args.num_lookups);
       #else
       helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
-          h_results[task_idx] = adapter.find(&h_lookup_keys[task_idx * args.keylen_max], h_lookup_key_lengths[task_idx], thread_id);
+          adapter.find(&h_lookup_keys[task_idx * args.keylen_max],
+                       h_lookup_key_lengths[task_idx],
+                       &h_results[task_idx * args.valuelen_max],
+                       &h_result_lengths[task_idx], thread_id);
         }, args.num_lookups,
         [&](unsigned thread_id) { adapter.thread_enter(thread_id); },
         [&](unsigned thread_id) { adapter.thread_exit(thread_id); });
@@ -274,7 +281,11 @@ static void run_bench(adapter_type& adapter,
         adapter.scan(d_lookup_keys.data(), args.keylen_max, d_lookup_key_lengths.data(), args.scan_count, d_results.data(), args.valuelen_max, d_result_lengths.data(), args.num_scans, d_scan_upper_keys_if_btree.data());
         #else
         helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
-            adapter.scan(&h_lookup_keys[task_idx * args.keylen_max], h_lookup_key_lengths[task_idx], args.scan_count, &h_results[task_idx * args.scan_count], thread_id);
+            adapter.scan(&h_lookup_keys[task_idx * args.keylen_max],
+                         h_lookup_key_lengths[task_idx], args.scan_count,
+                         &h_results[task_idx * args.scan_count * args.valuelen_max],
+                         args.valuelen_max,
+                         &h_result_lengths[task_idx * args.scan_count], thread_id);
           }, args.num_scans,
           [&](unsigned thread_id) { adapter.thread_enter(thread_id); },
           [&](unsigned thread_id) { adapter.thread_exit(thread_id); });
@@ -297,41 +308,44 @@ static void run_bench(adapter_type& adapter,
   }
 
   // measure update
-  if (args.rep_update > 0) {
-    cpu_lap_timer update_timer;
-    prefill(adapter, h_keys, h_key_lengths, h_values, h_value_lengths, args.keylen_min, args.keylen_max, args.valuelen_min, args.valuelen_max, args.max_keys);
-    #if !defined(NOGPU)
-    auto d_update_keys = device_vector<key_slice_type>(h_lookup_keys, args.use_pinned_host_memory);
-    auto d_update_key_lengths = device_vector<size_type>(h_lookup_key_lengths, args.use_pinned_host_memory, use_null_keylength);
-    auto d_update_values = device_vector<value_slice_type>(&h_values[0], static_cast<std::size_t>(args.num_updates) * args.valuelen_max, args.use_pinned_host_memory);
-    auto d_update_value_lengths = device_vector<size_type>(&h_value_lengths[0], args.num_updates, args.use_pinned_host_memory, use_null_valuelength);
-    cuda_try(cudaDeviceSynchronize());
-    #endif
-    for (uint32_t r = 0; r < args.rep_update; r++) {
-      update_timer.start();
+  if constexpr (adapter_type::support_update) {
+    if (args.rep_update > 0) {
+      cpu_lap_timer update_timer;
+      prefill(adapter, h_keys, h_key_lengths, h_values, h_value_lengths, args.keylen_min, args.keylen_max, args.valuelen_min, args.valuelen_max, args.max_keys);
       #if !defined(NOGPU)
-      adapter.update(d_update_keys.data(), args.keylen_max, d_update_key_lengths.data(), d_update_values.data(), args.valuelen_max, d_update_value_lengths.data(), args.num_updates);
-      #else
-      helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
-          auto tuple_id = task_idx;
-          adapter.update(&h_lookup_keys[tuple_id * args.keylen_max],
-                         h_lookup_key_lengths[tuple_id],
-                         h_values[tuple_id],
-                         tuple_id,
-                         thread_id);
-        }, args.num_updates,
-        [&](unsigned thread_id) { adapter.thread_enter(thread_id); },
-        [&](unsigned thread_id) { adapter.thread_exit(thread_id); });
-      #endif
-      #if !defined(NOGPU)
+      auto d_update_keys = device_vector<key_slice_type>(h_lookup_keys, args.use_pinned_host_memory);
+      auto d_update_key_lengths = device_vector<size_type>(h_lookup_key_lengths, args.use_pinned_host_memory, use_null_keylength);
+      auto d_update_values = device_vector<value_slice_type>(&h_values[0], static_cast<std::size_t>(args.num_updates) * args.valuelen_max, args.use_pinned_host_memory);
+      auto d_update_value_lengths = device_vector<size_type>(&h_value_lengths[0], args.num_updates, args.use_pinned_host_memory, use_null_valuelength);
       cuda_try(cudaDeviceSynchronize());
       #endif
-      update_timer.stop();
-      update_timer.record();
-      if (verbose) { std::cout << "update tested " << r + 1 << "/" << args.rep_update << std::endl; }
+      for (uint32_t r = 0; r < args.rep_update; r++) {
+        update_timer.start();
+        #if !defined(NOGPU)
+        adapter.update(d_update_keys.data(), args.keylen_max, d_update_key_lengths.data(), d_update_values.data(), args.valuelen_max, d_update_value_lengths.data(), args.num_updates);
+        #else
+        helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
+            auto tuple_id = task_idx;
+            adapter.update(&h_lookup_keys[tuple_id * args.keylen_max],
+                           h_lookup_key_lengths[tuple_id],
+                           &h_values[tuple_id * args.valuelen_max],
+                           h_value_lengths[tuple_id],
+                           tuple_id,
+                           thread_id);
+          }, args.num_updates,
+          [&](unsigned thread_id) { adapter.thread_enter(thread_id); },
+          [&](unsigned thread_id) { adapter.thread_exit(thread_id); });
+        #endif
+        #if !defined(NOGPU)
+        cuda_try(cudaDeviceSynchronize());
+        #endif
+        update_timer.stop();
+        update_timer.record();
+        if (verbose) { std::cout << "update tested " << r + 1 << "/" << args.rep_update << std::endl; }
+      }
+      adapter.destroy();
+      update_timer.print_rate_Mops("update", args.num_updates, print_all_measurements);
     }
-    adapter.destroy();
-    update_timer.print_rate_Mops("update", args.num_updates, print_all_measurements);
   }
 
   // measure insert & delete
@@ -356,7 +370,8 @@ static void run_bench(adapter_type& adapter,
             auto tuple_id = num_prefill + task_idx;
             adapter.insert(&h_keys[tuple_id * args.keylen_max],
                            h_key_lengths[tuple_id],
-                           h_values[tuple_id],
+                           &h_values[tuple_id * args.valuelen_max],
+                           h_value_lengths[tuple_id],
                            tuple_id,
                            thread_id);
           }, args.num_insdel,
@@ -425,7 +440,7 @@ static void run_bench(adapter_type& adapter,
   #endif
 
   // measure mixed
-  if constexpr (adapter_type::support_mixed) {
+  if constexpr (adapter_type::support_mixed && adapter_type::support_update) {
     if (args.rep_mixed > 0) {
       std::size_t num_prefill = args.max_keys - mix_get_num_insdel(args.num_mixed, args.mix_read_ratio);
       cpu_lap_timer mix_timer;
@@ -443,19 +458,26 @@ static void run_bench(adapter_type& adapter,
         #if !defined(NOGPU)
         adapter.mixed_batch(d_mix_types.data(), d_mix_keys.data(), args.keylen_max, d_mix_key_lengths.data(), d_mix_values.data(), args.valuelen_max, d_mix_value_lengths.data(), args.num_mixed);
         #else
-        helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
+          helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
             if (h_mix_types[task_idx] == kernels::request_type_find) {
-              h_mix_values[task_idx] = adapter.find(&h_mix_keys[task_idx * args.keylen_max], h_mix_key_lengths[task_idx], thread_id);
+              adapter.find(&h_mix_keys[task_idx * args.keylen_max],
+                           h_mix_key_lengths[task_idx],
+                           &h_mix_values[task_idx * args.valuelen_max],
+                           &h_mix_value_lengths[task_idx], thread_id);
             }
             else if (h_mix_types[task_idx] == kernels::request_type_insert) {
-              adapter.insert(&h_mix_keys[task_idx * args.keylen_max], h_mix_key_lengths[task_idx], h_mix_values[task_idx], h_mix_key_tuple_ids[task_idx], thread_id);
+              adapter.insert(&h_mix_keys[task_idx * args.keylen_max],
+                             h_mix_key_lengths[task_idx],
+                             &h_mix_values[task_idx * args.valuelen_max],
+                             h_mix_value_lengths[task_idx],
+                             h_mix_key_tuple_ids[task_idx], thread_id);
             }
             else if (h_mix_types[task_idx] == kernels::request_type_update) {
               adapter.update(&h_mix_keys[task_idx * args.keylen_max],
                              h_mix_key_lengths[task_idx],
-                             h_mix_values[task_idx],
-                             h_mix_key_tuple_ids[task_idx],
-                             thread_id);
+                             &h_mix_values[task_idx * args.valuelen_max],
+                             h_mix_value_lengths[task_idx],
+                             h_mix_key_tuple_ids[task_idx], thread_id);
             }
             else {
               adapter.erase(&h_mix_keys[task_idx * args.keylen_max], h_mix_key_lengths[task_idx], thread_id);
@@ -501,23 +523,26 @@ static void run_bench(adapter_type& adapter,
         #if !defined(NOGPU)
         adapter.mixed_batch(d_ycsb_types.data(), d_ycsb_keys.data(), args.keylen_max, d_ycsb_key_lengths.data(), d_ycsb_values.data(), args.valuelen_max, d_ycsb_value_lengths.data(), args.num_ycsb);
         #else
-        helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
+          helper_multithread([&](std::size_t task_idx, unsigned thread_id) {
             if (h_ycsb_types[task_idx] == kernels::request_type_find) {
-              h_ycsb_values[task_idx] = adapter.find(&h_ycsb_keys[task_idx * args.keylen_max], h_ycsb_key_lengths[task_idx], thread_id);
+              adapter.find(&h_ycsb_keys[task_idx * args.keylen_max],
+                           h_ycsb_key_lengths[task_idx],
+                           &h_ycsb_values[task_idx * args.valuelen_max],
+                           &h_ycsb_value_lengths[task_idx], thread_id);
             }
             else if (h_ycsb_types[task_idx] == kernels::request_type_update) {
               adapter.update(&h_ycsb_keys[task_idx * args.keylen_max],
                              h_ycsb_key_lengths[task_idx],
-                             h_ycsb_values[task_idx],
-                             h_ycsb_key_tuple_ids[task_idx],
-                             thread_id);
+                             &h_ycsb_values[task_idx * args.valuelen_max],
+                             h_ycsb_value_lengths[task_idx],
+                             h_ycsb_key_tuple_ids[task_idx], thread_id);
             }
             else {
               adapter.insert(&h_ycsb_keys[task_idx * args.keylen_max],
                              h_ycsb_key_lengths[task_idx],
-                             h_ycsb_values[task_idx],
-                             h_ycsb_key_tuple_ids[task_idx],
-                             thread_id);
+                             &h_ycsb_values[task_idx * args.valuelen_max],
+                             h_ycsb_value_lengths[task_idx],
+                             h_ycsb_key_tuple_ids[task_idx], thread_id);
             }
           }, args.num_ycsb,
           [&](unsigned thread_id) { adapter.thread_enter(thread_id); },
@@ -589,7 +614,7 @@ int main(int argc, char** argv) {
     x(cpu_libcuckoo) x(cpu_onetbb) x(cpu_masstree) x(cpu_art)
   #elif defined(UNIVERSAL_BENCH_WITH_GPU_BASELINE)
   #define FORALL_INDEXES(x) \
-    x(gpu_blink_tree) x(gpu_dycuckoo)
+    x(gpu_blink_tree) x(gpu_cuco_static) x(gpu_dycuckoo)
   #else
   #define FORALL_INDEXES(x) \
     x(gpu_masstree) x(gpu_chainhashtable) \
@@ -659,11 +684,6 @@ int main(int argc, char** argv) {
       check_argument(args.max_keys % args.num_space == 0);
     }
   }
-  #if defined(NOGPU)
-  // We only implemented 4B value for CPU indexes
-  check_argument(args.valuelen_min == 1 && args.valuelen_max == 1);
-  #endif
-
   // generate keys and queries
   if (verbose) { std::cout << "Generating workload..." << std::endl; }
   // 1. generate keys: max_keys
@@ -693,7 +713,7 @@ int main(int argc, char** argv) {
   }
   // 3. result buffer: 1 per lookup, count per scan
   std::size_t scan_result_buffer_multiplier =
-    (args.index_type == "gpu_blink_tree" || args.index_type == "cpu_art") ? 2 : 1;
+    (args.index_type == "gpu_blink_tree") ? 2 : 1;
   std::size_t result_buffer_size = std::max<std::size_t>(
     (args.rep_lookup > 0) ? (args.num_lookups * args.valuelen_max) : 0,
     (args.rep_scan > 0) ? (scan_result_buffer_multiplier * args.num_scans * args.scan_count * args.valuelen_max) : 0);
@@ -723,7 +743,8 @@ int main(int argc, char** argv) {
   if (verbose) { std::cout << "Running benchmark..." << std::endl; }
   #define ADAPTER_REGISTER_DATASET(index) \
   if (args.index_type == #index) { \
-    index##_adapter_.register_dataset(h_keys.data(), h_key_lengths.data(), h_values.data()); \
+    index##_adapter_.register_dataset(h_keys.data(), h_key_lengths.data(), \
+                                      h_values.data(), h_value_lengths.data()); \
   }
   #if defined(UNIVERSAL_BENCH_WITH_CPU_BASELINE)
   FORALL_INDEXES(ADAPTER_REGISTER_DATASET)

@@ -30,6 +30,27 @@ def generate_configs(args):
             common_config[ConfigType.mix_read_ratio] = DEFAULT_MIX_READ_RATIO
             common_config[ConfigType.rep_mixed] = NUM_REPEATS
             configs.append(common_config)
+    # value length
+    for value_length in EXP_VALUE_LENGTHS:
+        if value_length == DEFAULT_VALUE_LENGTH_OVERVIEW:
+            continue # already measured above
+        for index_type in INDEX_TYPES_CPU_BASELINE:
+            common_config = {
+                ConfigType.index_type: index_type,
+                ConfigType.max_keys: DEFAULT_MAXKEY_LONG,
+                ConfigType.keylen_prefix: 0,
+                ConfigType.keylen_min: 1,
+                ConfigType.keylen_max: 1,
+                ConfigType.valuelen_min: value_length,
+                ConfigType.valuelen_max: value_length,
+                ConfigType.num_lookups: DEFAULT_BATCH_SIZE,
+                ConfigType.rep_lookup: NUM_REPEATS,
+            }
+            if index_type in IS_INDEX_TYPE_ORDERED:
+                common_config[ConfigType.num_scans] = DEFAULT_SCAN_BATCH_SIZE
+                common_config[ConfigType.scan_count] = DEFAULT_SCAN_COUNT
+                common_config[ConfigType.rep_scan] = NUM_REPEATS
+            configs.append(common_config)
     if not args.skip_meme:
         # meme
         for index_type in INDEX_TYPES_CPU_BASELINE:

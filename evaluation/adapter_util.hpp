@@ -14,6 +14,9 @@
  *   limitations under the License.
  */
 #pragma once
+#include <optional>
+#include <stdexcept>
+#include <type_traits>
 #include <utility>
 #include <stdint.h>
 
@@ -64,4 +67,3 @@ decltype(auto) dispatch_uint32(uint32_t x, F&& f, Chosen... chosen) {
 }
 
 } // namespace adapter_util
-
