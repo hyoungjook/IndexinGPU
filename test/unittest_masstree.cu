@@ -707,6 +707,43 @@ void test_concurrentmix(map_type* map, uint32_t min_key_length, uint32_t max_key
   mix_results.free();
 }
 
+TYPED_TEST(MapTest, ScanUpperPrefixAcrossSiblings) {
+  constexpr uint32_t key_slices = 2;
+  constexpr uint32_t count = 96;
+  mapped_vector<key_slice_type> keys(count * key_slices), lower(key_slices), upper(key_slices),
+                                output_keys(count * key_slices);
+  mapped_vector<value_slice_type> values(count), output_values(count);
+  mapped_vector<size_type> lengths(count), value_lengths(count), bound_length(1), result_count(1);
+  for (uint32_t index = 0; index < count; index++) {
+    for (uint32_t slice = 0; slice < key_slices; slice++) { keys[index * key_slices + slice] = 0; }
+    keys[index * key_slices + key_slices - 2] = 0x10 + index / 32;
+    keys[index * key_slices + key_slices - 1] = index % 32;
+    values[index] = index;
+    lengths[index] = key_slices;
+    value_lengths[index] = 1;
+  }
+  for (uint32_t slice = 0; slice < key_slices; slice++) {
+    lower[slice] = keys[slice];
+    upper[slice] = keys[(count - 1) * key_slices + slice];
+  }
+  bound_length[0] = key_slices;
+  this->map_->insert(keys.data(), key_slices, lengths.data(), values.data(), 1, value_lengths.data(), count);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  this->map_->scan(lower.data(), bound_length.data(), key_slices, count, 1,
+           upper.data(), bound_length.data(), result_count.data(), output_values.data(),
+           1, nullptr, output_keys.data(), nullptr);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  ASSERT_EQ(result_count[0], count);
+  for (uint32_t index = 0; index < result_count[0]; index++) {
+    EXPECT_EQ(output_values[index], values[index]);
+    for (uint32_t slice = 0; slice < key_slices; slice++)
+      EXPECT_EQ(output_keys[index * key_slices + slice], keys[index * key_slices + slice]);
+  }
+  keys.free(); lower.free(); upper.free(); output_keys.free();
+  values.free(); output_values.free(); lengths.free(); value_lengths.free();
+  bound_length.free(); result_count.free();
+}
+
 #define DECLARE_TESTS_FOR_KEY_LENGTHS(min_length, max_length, min_val_length, max_val_length) \
 TYPED_TEST(MapTest, Validate__K##min_length##_##max_length##__V##min_val_length##_##max_val_length) { \
   validate(this->map_, min_length, max_length, min_val_length, max_val_length); \

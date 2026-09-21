@@ -90,7 +90,7 @@ struct dynamic_stack_u32_warp {
     }
   }
 
-private:
+protected:
   static constexpr element_type invalid_index = std::numeric_limits<element_type>::max();
   static constexpr uint32_t loc_of_next_in_node_ = elems_per_node_ - 1;
   struct stack_node {

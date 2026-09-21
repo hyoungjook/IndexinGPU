@@ -324,7 +324,7 @@ struct gpu_masstree {
             // if it's end of this layer, go to prev layer
             if (!current_node.has_sibling()) { scan_op = (layer == 0) ? -3 : -2; }
             // if reached upper key, end scanning
-            else if (use_upper_key && upper_key_slice <= current_node.get_high_key()) { scan_op = -3; }
+            else if (use_upper_key && !ignore_upper_key && upper_key_slice <= current_node.get_high_key()) { scan_op = -3; }
             // else: continue side traversal
             else { assert(scan_op == -1); }
           }
@@ -970,7 +970,9 @@ struct gpu_masstree {
     return false;
   }
 
- private:
+ protected:
+  DEVICE_QUALIFIER size_type root_index() const { return root_index_; }
+
   // device-side helper functions
   template <typename node_type>
   struct dummy_early_exit_check {
@@ -1017,6 +1019,7 @@ struct gpu_masstree {
     assert(false);
   }
 
+ private:
   template <typename tile_type, typename early_exit_check>
   DEVICE_QUALIFIER void coop_traverse_until_border_split(masstree_node<tile_type, device_allocator_context_type>& current_node,
                                                          const key_slice_type& key_slice,
