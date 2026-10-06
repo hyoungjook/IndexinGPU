@@ -191,14 +191,15 @@ struct gpu_masstree {
   }
 
   // device-side APIs
-  template <bool concurrent, typename tile_type, typename keyptr_or_keystore, typename valptr_or_valstore>
+  template <bool concurrent, cuda::thread_scope scope = cuda::thread_scope_device,
+            typename tile_type, typename keyptr_or_keystore, typename valptr_or_valstore>
   DEVICE_QUALIFIER size_type cooperative_find(keyptr_or_keystore& key,
                                               size_type key_length,
                                               valptr_or_valstore& value,
                                               size_type max_value_length,
                                               const tile_type& tile,
                                               device_allocator_context_type& allocator) {
-    using node_type = masstree_node<tile_type, device_allocator_context_type>;
+                          using node_type = masstree_node<tile_type, device_allocator_context_type, scope>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     dummy_early_exit_check<node_type> dummy_early_exit;
     size_type slice = 0;
@@ -247,7 +248,8 @@ struct gpu_masstree {
     return 0;
   }
 
-  template <bool use_upper_key, bool concurrent, typename tile_type, typename keyptr_or_keystore>
+  template <bool use_upper_key, bool concurrent, cuda::thread_scope scope = cuda::thread_scope_device,
+            typename tile_type, typename keyptr_or_keystore>
   DEVICE_QUALIFIER size_type cooperative_scan(keyptr_or_keystore& lower_key,
                                               const size_type lower_key_length,
                                               const tile_type& tile,
@@ -261,7 +263,7 @@ struct gpu_masstree {
                                               key_slice_type* out_keys = nullptr,
                                               size_type* out_key_lengths = nullptr,
                                               const size_type out_key_max_length = 1) {
-    using node_type = masstree_node<tile_type, device_allocator_context_type>;
+                          using node_type = masstree_node<tile_type, device_allocator_context_type, scope>;
     using dynamic_stack_type_x2 = utils::dynamic_stack_u32<2, tile_type, device_allocator_context_type>;
     using dynamic_stack_type_x1 = utils::dynamic_stack_u32<1, tile_type, device_allocator_context_type>;
     dummy_early_exit_check<node_type> dummy_early_exit;
@@ -396,6 +398,7 @@ struct gpu_masstree {
 
   template <bool update_if_exists = false,
             bool enable_suffix = true,
+            cuda::thread_scope scope = cuda::thread_scope_device,
             typename tile_type,
             typename keyptr_or_keystore,
             typename valptr_or_valstore>
@@ -406,7 +409,7 @@ struct gpu_masstree {
                                            const tile_type& tile,
                                            device_allocator_context_type& allocator,
                                            device_reclaimer_context_type& reclaimer) {
-    using node_type = masstree_node<tile_type, device_allocator_context_type>;
+                        using node_type = masstree_node<tile_type, device_allocator_context_type, scope>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     struct split_early_exit_check {
       DEVICE_QUALIFIER bool check(const node_type& border_node) {
@@ -627,6 +630,7 @@ struct gpu_masstree {
   }
 
   template <bool enable_suffix = true,
+            cuda::thread_scope scope = cuda::thread_scope_device,
             typename tile_type,
             typename keyptr_or_keystore,
             typename valptr_or_valstore>
@@ -637,7 +641,7 @@ struct gpu_masstree {
                                            const tile_type& tile,
                                            device_allocator_context_type& allocator,
                                            device_reclaimer_context_type& reclaimer) {
-    using node_type = masstree_node<tile_type, device_allocator_context_type>;
+                        using node_type = masstree_node<tile_type, device_allocator_context_type, scope>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     struct split_early_exit_check {
       DEVICE_QUALIFIER bool check(const node_type& border_node) {
@@ -748,7 +752,9 @@ struct gpu_masstree {
     return false;
   }
 
-  template <bool concurrent, bool do_merge, bool pessimistic_merge, bool do_remove_empty_root, typename tile_type, typename keyptr_or_keystore>
+  template <bool concurrent, bool do_merge, bool pessimistic_merge, bool do_remove_empty_root,
+            cuda::thread_scope scope = cuda::thread_scope_device,
+            typename tile_type, typename keyptr_or_keystore>
   DEVICE_QUALIFIER bool cooperative_erase(keyptr_or_keystore& key,
                                           const size_type key_length,
                                           const tile_type& tile,
@@ -757,7 +763,7 @@ struct gpu_masstree {
     static_assert(concurrent || (!do_merge && !pessimistic_merge && !do_remove_empty_root));
     static_assert(do_merge || (!pessimistic_merge && !do_remove_empty_root));
     static_assert(pessimistic_merge || !do_remove_empty_root);
-    using node_type = masstree_node<tile_type, device_allocator_context_type>;
+    using node_type = masstree_node<tile_type, device_allocator_context_type, scope>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     using dynamic_stack_type = utils::dynamic_stack_u32<2, tile_type, device_allocator_context_type>;
     struct merge_early_exit_check {
@@ -981,15 +987,14 @@ struct gpu_masstree {
     }
   };
 
-  template <bool concurrent, utils::memory_order order, typename tile_type, typename early_exit_check>
-  DEVICE_QUALIFIER void coop_traverse_until_border(masstree_node<tile_type, device_allocator_context_type>& current_node,
+  template <bool concurrent, utils::memory_order order, typename node_type, typename tile_type, typename early_exit_check>
+  DEVICE_QUALIFIER void coop_traverse_until_border(node_type& current_node,
                                                    const key_slice_type& key_slice,
                                                    const tile_type& tile,
                                                    device_allocator_context_type& allocator,
                                                    bool lock_border_node,
                                                    early_exit_check& early_exit) {
     // starting from a local root node in a layer, return the border node and its index
-    using node_type = masstree_node<tile_type, device_allocator_context_type>;
     while (true) {
       if constexpr (concurrent) {
         traverse_side_links(current_node, key_slice, tile, allocator);
@@ -1020,8 +1025,8 @@ struct gpu_masstree {
   }
 
  private:
-  template <typename tile_type, typename early_exit_check>
-  DEVICE_QUALIFIER void coop_traverse_until_border_split(masstree_node<tile_type, device_allocator_context_type>& current_node,
+  template <typename node_type, typename tile_type, typename early_exit_check>
+  DEVICE_QUALIFIER void coop_traverse_until_border_split(node_type& current_node,
                                                          const key_slice_type& key_slice,
                                                          const tile_type& tile,
                                                          device_allocator_context_type& allocator,
@@ -1029,7 +1034,6 @@ struct gpu_masstree {
     // starting from a local root node in a layer, return the LOCKED border node and its index
     // proactively split full nodes while traversal. also the returned border node is not full.
     // if early exit condition is met, returned node is not locked by this warp (might locked by another)
-    using node_type = masstree_node<tile_type, device_allocator_context_type>;
     const size_type root_index = current_node.get_node_index();
     size_type parent_index = root_index;
     while (true) {
@@ -1150,8 +1154,8 @@ struct gpu_masstree {
     assert(false);
   }
 
-  template <typename tile_type, typename early_exit_check>
-  DEVICE_QUALIFIER void coop_traverse_until_border_merge(masstree_node<tile_type, device_allocator_context_type>& current_node,
+  template <typename node_type, typename tile_type, typename early_exit_check>
+  DEVICE_QUALIFIER void coop_traverse_until_border_merge(node_type& current_node,
                                                          const key_slice_type& key_slice,
                                                          const tile_type& tile,
                                                          device_allocator_context_type& allocator,
@@ -1160,7 +1164,6 @@ struct gpu_masstree {
     // starting from a local root node in a layer, return the LOCKED border node and its index
     // proactively merge/borrow underflow nodes while traversal. also the returned border node is not underflow.
     // if early exit condition is met, returned node is not locked by this warp (might locked by another)
-    using node_type = masstree_node<tile_type, device_allocator_context_type>;
     const size_type root_index = current_node.get_node_index();
     size_type parent_index = root_index;
     size_type sibling_index = root_index;

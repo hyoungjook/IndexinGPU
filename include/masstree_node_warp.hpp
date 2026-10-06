@@ -22,7 +22,8 @@
 #include <suffix_node_warp.hpp>
 #include <compute_hash.hpp>
 
-template <typename tile_type, typename allocator_type>
+template <typename tile_type, typename allocator_type,
+          cuda::thread_scope scope = cuda::thread_scope_device>
 struct masstree_node_warp {
   using elem_type = uint32_t;
   using key_type = elem_type;
@@ -91,7 +92,7 @@ struct masstree_node_warp {
     #ifndef DISABLE_CACHELINE_ATOMICITY_CHECKSUM
     do {
     #endif
-      lane_elem_ = utils::memory::cacheline_atomic_load<elem_type, order>(node_ptr, tile_);
+      lane_elem_ = utils::memory::cacheline_atomic_load<elem_type, order, scope>(node_ptr, tile_);
     #ifndef DISABLE_CACHELINE_ATOMICITY_CHECKSUM
     } while (!check_checksum<order>());
     #endif
@@ -102,7 +103,7 @@ struct masstree_node_warp {
     #ifndef DISABLE_CACHELINE_ATOMICITY_CHECKSUM
     write_checksum();
     #endif
-    utils::memory::cacheline_atomic_store<elem_type, order>(node_ptr, lane_elem_, tile_);
+    utils::memory::cacheline_atomic_store<elem_type, order, scope>(node_ptr, lane_elem_, tile_);
   }
   template <utils::memory_order order>
   DEVICE_QUALIFIER void store_unlock() {
@@ -205,13 +206,13 @@ struct masstree_node_warp {
   DEVICE_QUALIFIER bool try_lock_load() {
     auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
     if (tile_.thread_rank() == metadata_lane_) {
-      cuda::atomic_ref<elem_type, cuda::thread_scope_device> metadata_ref(node_ptr[metadata_lane_]);
+      cuda::atomic_ref<elem_type, scope> metadata_ref(node_ptr[metadata_lane_]);
       lane_elem_ = metadata_ref.fetch_or(lock_bit_mask_, cuda::memory_order_relaxed);
     }
     // if previously not locked, now it's locked
     bool is_locked = (tile_.shfl(lane_elem_, metadata_lane_) & lock_bit_mask_) == 0;
     if (is_locked) {
-      lane_elem_ = utils::memory::cacheline_atomic_load<elem_type, utils::memory_order::acq_rel>(node_ptr, tile_);
+      lane_elem_ = utils::memory::cacheline_atomic_load<elem_type, utils::memory_order::acq_rel, scope>(node_ptr, tile_);
       read_metadata_from_registers();
     }
     return is_locked;
@@ -223,7 +224,7 @@ struct masstree_node_warp {
     assert(is_locked());
     auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
     if (tile_.thread_rank() == metadata_lane_) {
-      cuda::atomic_ref<elem_type, cuda::thread_scope_device> metadata_ref(node_ptr[metadata_lane_]);
+      cuda::atomic_ref<elem_type, scope> metadata_ref(node_ptr[metadata_lane_]);
       metadata_ref.fetch_and(~lock_bit_mask_, cuda::memory_order_release);
     }
     // the node object can be used after this, so update regsiters
@@ -895,8 +896,8 @@ struct masstree_node_warp {
     return true;
   }
 
-  DEVICE_QUALIFIER masstree_node_warp<tile_type, allocator_type>& operator=(
-      const masstree_node_warp<tile_type, allocator_type>& other) {
+  DEVICE_QUALIFIER masstree_node_warp& operator=(
+      const masstree_node_warp& other) {
     node_index_ = other.node_index_;
     lane_elem_ = other.lane_elem_;
     metadata_ = other.metadata_;

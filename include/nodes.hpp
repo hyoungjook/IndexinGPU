@@ -22,9 +22,10 @@
 #include <suffix_node_warp.hpp>
 #include <suffix_node_subwarp.hpp>
 
-template <typename tile_type, typename allocator_type>
+template <typename tile_type, typename allocator_type,
+          cuda::thread_scope scope = cuda::thread_scope_device>
 using masstree_node = std::conditional_t<tile_type::size() == 32,
-                                         masstree_node_warp<tile_type, allocator_type>,
+                                         masstree_node_warp<tile_type, allocator_type, scope>,
                                          masstree_node_subwarp<tile_type, allocator_type>>;
 
 inline const uint32_t hashtable_node_capacity = 14;

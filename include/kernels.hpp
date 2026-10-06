@@ -115,7 +115,8 @@ __global__ void initialize_kernel(masstree tree, size_type* d_root_index) {
 
 template <typename masstree,
           bool update_if_exists = false,
-          bool enable_suffix = true>
+          bool enable_suffix = true,
+          cuda::thread_scope scope = cuda::thread_scope_device>
 struct insert_device_func {
   using key_slice_type = typename masstree::key_slice_type;
   using size_type = typename masstree::size_type;
@@ -154,14 +155,15 @@ struct insert_device_func {
     auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
     auto cur_key = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
     auto cur_value = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value, cur_rank, tile), cur_value_length, max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size, tile);
-    tree.template cooperative_insert<update_if_exists, enable_suffix>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer);
+    tree.template cooperative_insert<update_if_exists, enable_suffix, scope>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer);
   }
   template <bool use_shmem_key>
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
 
 template <typename masstree,
-          bool enable_suffix = true>
+          bool enable_suffix = true,
+          cuda::thread_scope scope = cuda::thread_scope_device>
 struct update_device_func {
   using key_slice_type = typename masstree::key_slice_type;
   using size_type = typename masstree::size_type;
@@ -200,13 +202,13 @@ struct update_device_func {
     auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
     auto cur_key = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
     auto cur_value = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value, cur_rank, tile), cur_value_length, max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size, tile);
-    tree.template cooperative_update<enable_suffix>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer);
+    tree.template cooperative_update<enable_suffix, scope>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer);
   }
   template <bool use_shmem_key>
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
 
-template <typename masstree, bool concurrent>
+template <typename masstree, bool concurrent, cuda::thread_scope scope = cuda::thread_scope_device>
 struct find_device_func {
   using key_slice_type = typename masstree::key_slice_type;
   using size_type = typename masstree::size_type;
@@ -243,7 +245,7 @@ struct find_device_func {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_key = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
     auto cur_value = utils::varlenkv::wrapper_output<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value, cur_rank, tile), max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size);
-    auto cur_value_length = tree.template cooperative_find<concurrent>(cur_key, cur_key_length, cur_value, max_value_length, tile, allocator);
+    auto cur_value_length = tree.template cooperative_find<concurrent, scope>(cur_key, cur_key_length, cur_value, max_value_length, tile, allocator);
     cur_value.flush(cur_value_length, tile, regs.value, cur_rank);
     if (tile.thread_rank() == cur_rank) {
       regs.value_length = cur_value_length;
@@ -256,7 +258,8 @@ struct find_device_func {
   }
 };
 
-template <typename masstree, bool concurrent, bool do_merge, bool pessimistic_merge, bool do_remove_empty_root>
+template <typename masstree, bool concurrent, bool do_merge, bool pessimistic_merge, bool do_remove_empty_root,
+          cuda::thread_scope scope = cuda::thread_scope_device>
 struct erase_device_func {
   using key_slice_type = typename masstree::key_slice_type;
   using size_type = typename masstree::size_type;
@@ -286,13 +289,14 @@ struct erase_device_func {
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, key_slice_type* key_shmem_buffer, int cur_rank) const {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_key = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.key, cur_rank, tile), cur_key_length, max_key_length, key_shmem_buffer, tile);
-    tree.template cooperative_erase<concurrent, do_merge, pessimistic_merge, do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, reclaimer);
+    tree.template cooperative_erase<concurrent, do_merge, pessimistic_merge, do_remove_empty_root, scope>(cur_key, cur_key_length, tile, allocator, reclaimer);
   }
   template <bool use_shmem_key>
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
 
-template <typename masstree, bool use_upper_key, bool concurrent>
+template <typename masstree, bool use_upper_key, bool concurrent,
+          cuda::thread_scope scope = cuda::thread_scope_device>
 struct scan_device_func {
   using key_slice_type = typename masstree::key_slice_type;
   using size_type = typename masstree::size_type;
@@ -350,7 +354,7 @@ struct scan_device_func {
     auto cur_value_lengths = tile.shfl(regs.value_lengths, cur_rank);
     auto cur_out_key = tile.shfl(regs.out_key, cur_rank);
     auto cur_out_key_length = tile.shfl(regs.out_key_length, cur_rank);
-    auto cur_count = tree.template cooperative_scan<use_upper_key, concurrent>(
+    auto cur_count = tree.template cooperative_scan<use_upper_key, concurrent, scope>(
       cur_lower_key, cur_lower_key_length, tile, allocator, cur_upper_key, cur_upper_key_length,
       max_count_per_query, cur_values, cur_value_lengths, max_value_length, cur_out_key, cur_out_key_length, max_key_length);
     if (tile.thread_rank() == cur_rank) {
@@ -367,7 +371,8 @@ template <typename masstree,
           bool enable_suffix = true,
           bool erase_do_merge = true,
           bool erase_pessimistic_merge = true,
-          bool erase_do_remove_empty_root = true>
+          bool erase_do_remove_empty_root = true,
+          cuda::thread_scope scope = cuda::thread_scope_device>
 struct mixed_device_func {
   using key_slice_type = typename masstree::key_slice_type;
   using size_type = typename masstree::size_type;
@@ -418,23 +423,23 @@ struct mixed_device_func {
     if (cur_type == request_type_insert) {
       auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
       auto cur_value = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value.input, cur_rank, tile), cur_value_length, max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size, tile);
-      auto cur_result = tree.template cooperative_insert<false, enable_suffix>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer);
+      auto cur_result = tree.template cooperative_insert<false, enable_suffix, scope>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else if (cur_type == request_type_update) {
       auto cur_value_length = tile.shfl(regs.value_length, cur_rank);
       auto cur_value = utils::varlenkv::wrapper_input<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value.input, cur_rank, tile), cur_value_length, max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size, tile);
-      auto cur_result = tree.template cooperative_update<enable_suffix>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer);
+      auto cur_result = tree.template cooperative_update<enable_suffix, scope>(cur_key, cur_key_length, cur_value, cur_value_length, tile, allocator, reclaimer);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else if (cur_type == request_type_find) {
       auto cur_value = utils::varlenkv::wrapper_output<use_shmem_key>(utils::varlenkv::shfl_reg(regs.value.output, cur_rank, tile), max_value_length, key_shmem_buffer + utils::varlenkv::shmem_buffer_size);
-      auto cur_value_length = tree.template cooperative_find<true>(cur_key, cur_key_length, cur_value, max_value_length, tile, allocator);
+      auto cur_value_length = tree.template cooperative_find<true, scope>(cur_key, cur_key_length, cur_value, max_value_length, tile, allocator);
       cur_value.flush(cur_value_length, tile, regs.value.output, cur_rank);
       if (tile.thread_rank() == cur_rank) { regs.value_length = cur_value_length; }
     }
     else if (cur_type == request_type_erase) {
-      auto cur_result = tree.template cooperative_erase<true, erase_do_merge, erase_pessimistic_merge, erase_do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, reclaimer);
+      auto cur_result = tree.template cooperative_erase<true, erase_do_merge, erase_pessimistic_merge, erase_do_remove_empty_root, scope>(cur_key, cur_key_length, tile, allocator, reclaimer);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else {  // request_type_successor

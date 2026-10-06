@@ -2,6 +2,7 @@ project(benchmarks)
 
 set(BENCHMARKS
     masstree_bench
+    masstree_block_bench
     fixedhashtable_bench
     extendhashtable_bench
     masstree_mix_bench

@@ -105,11 +105,12 @@ DEVICE_QUALIFIER void store(T* ptr, T value) {
   }
 }
 
-template <typename T, memory_order order, typename tile_type>
+template <typename T, memory_order order,
+          cuda::thread_scope scope = cuda::thread_scope_device, typename tile_type>
 DEVICE_QUALIFIER T cacheline_atomic_load(const T* base_ptr, const tile_type& tile) {
   T lane_elem;
   if constexpr (order == memory_order::acq_rel || order == memory_order::relaxed) {
-    cuda::atomic_ref<const T, cuda::thread_scope_device> ptr_ref(base_ptr[tile.thread_rank()]);
+    cuda::atomic_ref<const T, scope> ptr_ref(base_ptr[tile.thread_rank()]);
     tile.sync();
     if constexpr (order == memory_order::acq_rel) {
       lane_elem = ptr_ref.load(cuda::memory_order_acquire);
@@ -131,10 +132,11 @@ DEVICE_QUALIFIER T cacheline_atomic_load(const T* base_ptr, const tile_type& til
   return lane_elem;
 }
 
-template <typename T, memory_order order, typename tile_type>
+template <typename T, memory_order order,
+          cuda::thread_scope scope = cuda::thread_scope_device, typename tile_type>
 DEVICE_QUALIFIER void cacheline_atomic_store(T* base_ptr, T lane_elem, const tile_type& tile) {
   if constexpr (order == memory_order::acq_rel || order == memory_order::relaxed) {
-    cuda::atomic_ref<T, cuda::thread_scope_device> ptr_ref(base_ptr[tile.thread_rank()]);
+    cuda::atomic_ref<T, scope> ptr_ref(base_ptr[tile.thread_rank()]);
     tile.sync();
     if constexpr (order == memory_order::acq_rel) {
       ptr_ref.store(lane_elem, cuda::memory_order_release);
