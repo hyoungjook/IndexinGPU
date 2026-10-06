@@ -29,7 +29,7 @@
 //#define RECLAIMER_DEBUG
 #endif
 
-template <uint32_t buffer_size_per_block = 131072>
+template <uint32_t block_size = 128, uint32_t buffer_size_per_block = 131072>
 struct simple_debra_reclaimer {
   using size_type = uint32_t;
   using pointer_type = size_type;
@@ -89,7 +89,7 @@ struct simple_debra_reclaimer {
     };
   }
 
-  static constexpr uint32_t block_size_ = 128;
+  static constexpr uint32_t block_size_ = block_size;
 
 private:
   uint32_t compute_max_num_blocks() const {
