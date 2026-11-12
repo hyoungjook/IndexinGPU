@@ -143,32 +143,33 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
     block.sync();
   }
 
+  DEVICE_QUALIFIER void retire_perlane(const pointer_type& address) {
+    auto cur_bag = current_bag();
+    auto num_in_bag = atomicAdd(count_per_bag() + cur_bag, 1);
+    #ifdef RECLAIMER_DEBUG
+    atomicAdd(&reclaimer_.stats_->num_retires, 1ull);
+    atomicMax(&reclaimer_.stats_->max_bag_size, num_in_bag + 1);
+    #endif
+    // if shared memory buffer overflow, store in global memory
+    if (num_in_bag >= shmem_size_per_bag_) {
+      auto num_in_gmem = num_in_bag - shmem_size_per_bag_;
+      assert(num_in_gmem < (buffer_size_per_active_block_ / num_bags_)); // out of memory in bag
+      auto offset = reclaimer_.max_num_blocks_ +
+          buffer_size_per_active_block_ * blockIdx.x +
+          (buffer_size_per_active_block_ / num_bags_) * cur_bag +
+          num_in_gmem;
+      // atomic store is not required here b/c it's used by warps in the same block after block.sync()
+      reclaimer_.announce_[offset] = address;
+    }
+    else {
+      auto offset = cur_bag * shmem_size_per_bag_ + num_in_bag;
+      limbo_bags()[offset] = address;
+    }
+  }
+
   template <typename tile_type>
   DEVICE_QUALIFIER void retire(const pointer_type& address, const tile_type& tile) {
-    // add to current limbo bag
-    if (tile.thread_rank() == 0) {
-      auto cur_bag = current_bag();
-      auto num_in_bag = atomicAdd(count_per_bag() + cur_bag, 1);
-      #ifdef RECLAIMER_DEBUG
-      atomicAdd(&reclaimer_.stats_->num_retires, 1ull);
-      atomicMax(&reclaimer_.stats_->max_bag_size, num_in_bag + 1);
-      #endif
-      // if shared memory buffer overflow, store in global memory
-      if (num_in_bag >= shmem_size_per_bag_) {
-        auto num_in_gmem = num_in_bag - shmem_size_per_bag_;
-        assert(num_in_gmem < (buffer_size_per_active_block_ / num_bags_)); // out of memory in bag
-        auto offset = reclaimer_.max_num_blocks_ +
-            buffer_size_per_active_block_ * blockIdx.x +
-            (buffer_size_per_active_block_ / num_bags_) * cur_bag +
-            num_in_gmem;
-        // atomic store is not required here b/c it's used by warps in the same block after block.sync()
-        reclaimer_.announce_[offset] = address;
-      }
-      else {
-        auto offset = cur_bag * shmem_size_per_bag_ + num_in_bag;
-        limbo_bags()[offset] = address;
-      }
-    }
+    if (tile.thread_rank() == 0) retire_perlane(address);
   }
 
   template <typename block_type, typename allocator_type>

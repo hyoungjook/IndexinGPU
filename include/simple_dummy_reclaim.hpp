@@ -50,6 +50,8 @@ struct device_reclaimer_context<simple_dummy_reclaimer> {
                                             uint32_t num_active_blocks,
                                             const tile_type& block_wide_tile) noexcept {}
 
+  DEVICE_QUALIFIER void retire_perlane(const pointer_type& address) noexcept {}
+
   template <typename tile_type>
   DEVICE_QUALIFIER void retire(const pointer_type& address, const tile_type& tile) noexcept {}
 
